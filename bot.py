@@ -65,28 +65,32 @@ def days_to_seconds(days: int) -> int:
     return days * 24 * 60 * 60
 
 
+def format_age(ts: int) -> str:
+    diff = max(0, now_ts() - ts)
+    if diff < 60:
+        return "только что"
+    if diff < 3600:
+        mins = diff // 60
+        return f"{mins} мин назад"
+    if diff < 86400:
+        hrs = diff // 3600
+        return f"{hrs} ч назад"
+    days = diff // 86400
+    return f"{days} дн назад"
+
+
 def bot_link(start_param: Optional[str] = None) -> str:
     if start_param:
         return f"https://t.me/{BOT_USERNAME}?start={start_param}"
     return f"https://t.me/{BOT_USERNAME}"
 
 
-def share_post_link(post_id: int) -> str:
+def post_deeplink(post_id: int) -> str:
     return bot_link(f"post_{post_id}")
 
 
-def format_ts_ago(ts: int) -> str:
-    diff = max(0, now_ts() - ts)
-    if diff < 60:
-        return "только что"
-    if diff < 3600:
-        mins = diff // 60
-        return f"{mins} мин. назад"
-    if diff < 86400:
-        hrs = diff // 3600
-        return f"{hrs} ч. назад"
-    days = diff // 86400
-    return f"{days} дн. назад"
+def route_deeplink(post_type: str, from_country: str, to_country: str) -> str:
+    return bot_link(f"route_{post_type}_{from_country}_{to_country}")
 
 
 def connect_db():
@@ -317,8 +321,8 @@ def main_menu(user_id: Optional[int] = None):
         [KeyboardButton(text="🔎 Найти совпадения"), KeyboardButton(text="📋 Мои объявления")],
         [KeyboardButton(text="🔥 Популярные маршруты"), KeyboardButton(text="🆕 Новые объявления")],
         [KeyboardButton(text="🔔 Подписки"), KeyboardButton(text="📊 Статистика")],
-        [KeyboardButton(text="🆘 Жалоба"), KeyboardButton(text="⭐ Оставить отзыв")],
-        [KeyboardButton(text="💰 Поднять объявление"), KeyboardButton(text="ℹ️ Помощь")],
+        [KeyboardButton(text="💰 Поднять объявление"), KeyboardButton(text="⭐ Оставить отзыв")],
+        [KeyboardButton(text="🆘 Жалоба"), KeyboardButton(text="ℹ️ Помощь")],
     ]
     if user_id is not None and is_admin(user_id):
         keyboard.append([KeyboardButton(text="👨‍💼 Админка")])
@@ -357,7 +361,7 @@ def post_actions_kb(post_id: int, status: str):
             InlineKeyboardButton(text="👀 Совпадения", callback_data=f"matches:{post_id}")
         ],
         [
-            InlineKeyboardButton(text="📤 Поделиться", callback_data=f"share:{post_id}")
+            InlineKeyboardButton(text="📤 Поделиться", url=post_deeplink(post_id))
         ]
     ]
     if status != STATUS_ACTIVE:
@@ -378,6 +382,16 @@ def admin_post_actions_kb(post_id: int):
 
 
 def public_post_kb(post_id: int, owner_id: int, post_type: Optional[str] = None):
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✉️ Написать владельцу", callback_data=f"contact:{post_id}:{owner_id}")],
+            [InlineKeyboardButton(text="⚠️ Пожаловаться", callback_data=f"complain:{post_id}")],
+            [InlineKeyboardButton(text="📤 Поделиться", url=post_deeplink(post_id))]
+        ]
+    )
+
+
+def channel_post_kb(post_id: int, post_type: Optional[str] = None):
     second_button_text = "📦 Мне нужно отправить"
     second_button_url = bot_link("parcel")
     if post_type == TYPE_PARCEL:
@@ -388,7 +402,7 @@ def public_post_kb(post_id: int, owner_id: int, post_type: Optional[str] = None)
         inline_keyboard=[
             [InlineKeyboardButton(text="🤖 Открыть бота", url=bot_link())],
             [InlineKeyboardButton(text=second_button_text, url=second_button_url)],
-            [InlineKeyboardButton(text="📤 Поделиться", url=share_post_link(post_id))]
+            [InlineKeyboardButton(text="📤 Поделиться", url=post_deeplink(post_id))]
         ]
     )
 
@@ -398,6 +412,19 @@ def subscription_actions_kb():
         [InlineKeyboardButton(text="🔔 Подписаться на маршрут", callback_data="sub:new")],
         [InlineKeyboardButton(text="📋 Мои подписки", callback_data="sub:list")]
     ])
+
+
+def popular_routes_kb(rows: List[sqlite3.Row]):
+    buttons = []
+    for row in rows:
+        label = f"{row['from_country']} → {row['to_country']} ({row['cnt']})"
+        buttons.append([
+            InlineKeyboardButton(
+                text=label[:64],
+                callback_data=f"popular:{row['post_type']}:{row['from_country']}:{row['to_country']}"
+            )
+        ])
+    return InlineKeyboardMarkup(inline_keyboard=buttons or [[InlineKeyboardButton(text="Пока пусто", callback_data="noop")]])
 
 
 class CreatePost(StatesGroup):
@@ -444,29 +471,29 @@ def create_post_record(data: dict, user_id: int) -> int:
     expires_at = ts + days_to_seconds(POST_TTL_DAYS)
     with closing(connect_db()) as conn, conn:
         cur = conn.execute("""
-    INSERT INTO posts (
-        user_id, post_type, from_country, from_city, to_country, to_city,
-        travel_date, weight_kg, description, contact_note, status,
-        is_anonymous_contact, created_at, updated_at, bumped_at, expires_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-""", (
-    user_id,
-    data["post_type"],
-    data["from_country"],
-    data.get("from_city"),
-    data["to_country"],
-    data.get("to_city"),
-    data.get("travel_date"),
-    data.get("weight_kg"),
-    data["description"],
-    data.get("contact_note"),
-    STATUS_PENDING if ADMIN_IDS else STATUS_ACTIVE,
-    1,
-    ts,
-    ts,
-    ts,
-    expires_at
-))
+            INSERT INTO posts (
+                user_id, post_type, from_country, from_city, to_country, to_city,
+                travel_date, weight_kg, description, contact_note, status,
+                is_anonymous_contact, created_at, updated_at, bumped_at, expires_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            user_id,
+            data["post_type"],
+            data["from_country"],
+            data.get("from_city"),
+            data["to_country"],
+            data.get("to_city"),
+            data.get("travel_date"),
+            data.get("weight_kg"),
+            data["description"],
+            data.get("contact_note"),
+            STATUS_PENDING if ADMIN_IDS else STATUS_ACTIVE,
+            1,
+            ts,
+            ts,
+            ts,
+            expires_at
+        ))
         return cur.lastrowid
 
 
@@ -478,6 +505,72 @@ def get_post(post_id: int) -> Optional[sqlite3.Row]:
             LEFT JOIN users u ON u.user_id = p.user_id
             WHERE p.id=?
         """, (post_id,)).fetchone()
+
+
+def get_recent_posts(limit: int = 10) -> List[sqlite3.Row]:
+    with closing(connect_db()) as conn:
+        return conn.execute("""
+            SELECT p.*, u.username, u.full_name
+            FROM posts p
+            LEFT JOIN users u ON u.user_id = p.user_id
+            WHERE p.status='active'
+              AND (p.expires_at IS NULL OR p.expires_at > ?)
+            ORDER BY p.created_at DESC
+            LIMIT ?
+        """, (now_ts(), limit)).fetchall()
+
+
+def get_popular_routes(limit: int = 10) -> List[sqlite3.Row]:
+    with closing(connect_db()) as conn:
+        return conn.execute("""
+            SELECT post_type, from_country, to_country, COUNT(*) AS cnt
+            FROM posts
+            WHERE status='active'
+              AND (expires_at IS NULL OR expires_at > ?)
+            GROUP BY post_type, from_country, to_country
+            ORDER BY cnt DESC, MAX(COALESCE(bumped_at, created_at)) DESC
+            LIMIT ?
+        """, (now_ts(), limit)).fetchall()
+
+
+def search_route_posts(post_type: str, from_country: str, to_country: str, limit: int = 10) -> List[sqlite3.Row]:
+    with closing(connect_db()) as conn:
+        return conn.execute("""
+            SELECT p.*, u.username, u.full_name
+            FROM posts p
+            LEFT JOIN users u ON u.user_id = p.user_id
+            WHERE p.post_type=?
+              AND p.from_country=?
+              AND p.to_country=?
+              AND p.status='active'
+              AND (p.expires_at IS NULL OR p.expires_at > ?)
+            ORDER BY COALESCE(p.bumped_at, p.created_at) DESC
+            LIMIT ?
+        """, (post_type, from_country, to_country, now_ts(), limit)).fetchall()
+
+
+def service_stats() -> sqlite3.Row:
+    with closing(connect_db()) as conn:
+        return conn.execute("""
+            SELECT
+                (SELECT COUNT(*) FROM users) AS users_count,
+                (SELECT COUNT(*) FROM posts WHERE status='active' AND (expires_at IS NULL OR expires_at > ?)) AS active_posts,
+                (SELECT COUNT(*) FROM posts WHERE status='active' AND post_type='trip' AND (expires_at IS NULL OR expires_at > ?)) AS active_trips,
+                (SELECT COUNT(*) FROM posts WHERE status='active' AND post_type='parcel' AND (expires_at IS NULL OR expires_at > ?)) AS active_parcels
+        """, (now_ts(), now_ts(), now_ts())).fetchone()
+
+
+def top_route() -> Optional[sqlite3.Row]:
+    with closing(connect_db()) as conn:
+        return conn.execute("""
+            SELECT from_country, to_country, COUNT(*) AS cnt
+            FROM posts
+            WHERE status='active'
+              AND (expires_at IS NULL OR expires_at > ?)
+            GROUP BY from_country, to_country
+            ORDER BY cnt DESC
+            LIMIT 1
+        """, (now_ts(),)).fetchone()
 
 
 def add_route_subscription(user_id: int, post_type: str, from_country: str, to_country: str):
@@ -523,7 +616,7 @@ def publish_to_channel(bot: Bot, post_id: int):
         msg = await bot.send_message(
             CHANNEL_USERNAME,
             post_text(row, for_channel=True),
-            reply_markup=public_post_kb(post_id, row["user_id"], row["post_type"])
+            reply_markup=channel_post_kb(post_id, row["post_type"])
         )
         with closing(connect_db()) as conn, conn:
             conn.execute("UPDATE posts SET channel_message_id=? WHERE id=?", (msg.message_id, post_id))
@@ -537,6 +630,18 @@ async def safe_publish(bot: Bot, post_id: int):
             await coro
     except Exception as e:
         print(f"CHANNEL PUBLISH ERROR: {e}")
+
+
+async def remove_post_from_channel(bot: Bot, row):
+    if not CHANNEL_USERNAME or not row:
+        return
+    channel_message_id = row["channel_message_id"] if "channel_message_id" in row.keys() else None
+    if not channel_message_id:
+        return
+    try:
+        await bot.delete_message(CHANNEL_USERNAME, channel_message_id)
+    except Exception as e:
+        print(f"CHANNEL DELETE ERROR: {e}")
 
 
 def search_matches(post_type: str, from_country: str, to_country: str, exclude_user_id: Optional[int] = None):
@@ -627,25 +732,74 @@ async def notify_subscribers(bot: Bot, post_id: int):
     if not row or row["status"] != STATUS_ACTIVE:
         return
 
-    target_type = row["post_type"]
     with closing(connect_db()) as conn:
         subscribers = conn.execute("""
             SELECT * FROM route_subscriptions
             WHERE post_type=? AND from_country=? AND to_country=? AND user_id != ?
             ORDER BY created_at DESC
             LIMIT 50
-        """, (target_type, row["from_country"], row["to_country"], row["user_id"])).fetchall()
+        """, (row["post_type"], row["from_country"], row["to_country"], row["user_id"])).fetchall()
 
     for sub in subscribers:
         try:
             await bot.send_message(
                 sub["user_id"],
-                "🔔 По вашей подписке появилось новое объявление:\n\n"
+                "🔔 По вашей подписке появился новый маршрут:\n\n"
                 + post_text(row),
                 reply_markup=public_post_kb(row["id"], row["user_id"], row["post_type"])
             )
         except Exception:
             pass
+
+
+async def run_global_match_scan(bot: Bot):
+    try:
+        with closing(connect_db()) as conn:
+            rows = conn.execute("""
+                SELECT p.*, u.username, u.full_name
+                FROM posts p
+                LEFT JOIN users u ON u.user_id = p.user_id
+                WHERE p.status='active'
+                  AND (p.expires_at IS NULL OR p.expires_at > ?)
+                ORDER BY COALESCE(p.bumped_at, p.created_at) DESC
+                LIMIT 300
+            """, (now_ts(),)).fetchall()
+
+        for row in rows:
+            matches = search_matches(
+                row["post_type"],
+                row["from_country"],
+                row["to_country"],
+                exclude_user_id=row["user_id"]
+            )
+
+            for match in matches[:MATCH_NOTIFY_LIMIT]:
+                if match_already_notified(row["id"], match["id"]):
+                    continue
+
+                try:
+                    await bot.send_message(
+                        row["user_id"],
+                        "🔔 Найдено новое совпадение по вашему маршруту!\n\n"
+                        + post_text(match),
+                        reply_markup=public_post_kb(match["id"], match["user_id"], match["post_type"])
+                    )
+                except Exception as e:
+                    print(f"GLOBAL MATCH SEND A ERROR: {e}")
+
+                try:
+                    await bot.send_message(
+                        match["user_id"],
+                        "🔔 Найдено новое совпадение по вашему маршруту!\n\n"
+                        + post_text(row),
+                        reply_markup=public_post_kb(row["id"], row["user_id"], row["post_type"])
+                    )
+                except Exception as e:
+                    print(f"GLOBAL MATCH SEND B ERROR: {e}")
+
+                mark_match_notified(row["id"], match["id"])
+    except Exception as e:
+        print(f"GLOBAL MATCH SCAN ERROR: {e}")
 
 
 def owner_only(callback: CallbackQuery, post_id: int) -> Optional[sqlite3.Row]:
@@ -670,12 +824,16 @@ async def expire_old_posts(bot: Bot):
                 """, (now_ts(),)).fetchall()
 
             if rows:
+                for row in rows:
+                    await remove_post_from_channel(bot, row)
+
                 with closing(connect_db()) as conn, conn:
                     for row in rows:
                         conn.execute(
                             "UPDATE posts SET status=?, updated_at=? WHERE id=?",
                             (STATUS_EXPIRED, now_ts(), row["id"])
                         )
+
                 for row in rows:
                     try:
                         await bot.send_message(
@@ -684,71 +842,18 @@ async def expire_old_posts(bot: Bot):
                             "Откройте 'Мои объявления', чтобы активировать его снова.",
                             reply_markup=main_menu(row["user_id"])
                         )
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        print(f"EXPIRE USER NOTIFY ERROR: {e}")
         except Exception as e:
             print(f"EXPIRE LOOP ERROR: {e}")
 
         await asyncio.sleep(300)
 
 
-def get_recent_posts(limit: int = 10) -> List[sqlite3.Row]:
-    with closing(connect_db()) as conn:
-        return conn.execute("""
-            SELECT p.*, u.username, u.full_name
-            FROM posts p
-            LEFT JOIN users u ON u.user_id = p.user_id
-            WHERE p.status='active'
-              AND (p.expires_at IS NULL OR p.expires_at > ?)
-            ORDER BY COALESCE(p.bumped_at, p.created_at) DESC
-            LIMIT ?
-        """, (now_ts(), limit)).fetchall()
-
-
-def get_popular_routes(limit: int = 10) -> List[sqlite3.Row]:
-    with closing(connect_db()) as conn:
-        return conn.execute("""
-            SELECT from_country, to_country, COUNT(*) AS cnt
-            FROM posts
-            WHERE status='active'
-              AND (expires_at IS NULL OR expires_at > ?)
-            GROUP BY from_country, to_country
-            ORDER BY cnt DESC, MAX(created_at) DESC
-            LIMIT ?
-        """, (now_ts(), limit)).fetchall()
-
-
-def service_stats() -> dict:
-    with closing(connect_db()) as conn:
-        users = conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"]
-        active_posts = conn.execute("""
-            SELECT COUNT(*) AS c FROM posts
-            WHERE status='active' AND (expires_at IS NULL OR expires_at > ?)
-        """, (now_ts(),)).fetchone()["c"]
-        trips = conn.execute("""
-            SELECT COUNT(*) AS c FROM posts
-            WHERE status='active' AND post_type='trip' AND (expires_at IS NULL OR expires_at > ?)
-        """, (now_ts(),)).fetchone()["c"]
-        parcels = conn.execute("""
-            SELECT COUNT(*) AS c FROM posts
-            WHERE status='active' AND post_type='parcel' AND (expires_at IS NULL OR expires_at > ?)
-        """, (now_ts(),)).fetchone()["c"]
-        top_route = conn.execute("""
-            SELECT from_country, to_country, COUNT(*) AS cnt
-            FROM posts
-            WHERE status='active' AND (expires_at IS NULL OR expires_at > ?)
-            GROUP BY from_country, to_country
-            ORDER BY cnt DESC
-            LIMIT 1
-        """, (now_ts(),)).fetchone()
-
-    return {
-        "users": int(users or 0),
-        "active_posts": int(active_posts or 0),
-        "trips": int(trips or 0),
-        "parcels": int(parcels or 0),
-        "top_route": top_route,
-    }
+async def global_match_loop(bot: Bot):
+    while True:
+        await run_global_match_scan(bot)
+        await asyncio.sleep(300)
 
 
 @router.message(CommandStart())
@@ -759,7 +864,7 @@ async def start_handler(message: Message, state: FSMContext):
     start_arg = ""
     parts = (message.text or "").split(maxsplit=1)
     if len(parts) > 1:
-        start_arg = parts[1].strip().lower()
+        start_arg = parts[1].strip()
 
     text = (
         "👋 Привет.\n\n"
@@ -770,9 +875,7 @@ async def start_handler(message: Message, state: FSMContext):
         "• найти совпадения\n"
         "• подписаться на маршрут\n"
         "• смотреть новые объявления\n"
-        "• делиться объявлениями\n"
-        "• писать владельцу объявления\n"
-        "• оставлять отзывы\n\n"
+        "• делиться объявлениями\n\n"
         "⚠️ Бот не принимает оплату и не выступает посредником.\n"
         "Пользователи договариваются напрямую."
     )
@@ -784,19 +887,40 @@ async def start_handler(message: Message, state: FSMContext):
     if start_arg == "trip":
         await begin_create(message, state, TYPE_TRIP)
         return
+
     if start_arg.startswith("post_"):
         post_id_str = start_arg.replace("post_", "", 1)
         if post_id_str.isdigit():
             row = get_post(int(post_id_str))
             if row and row["status"] == STATUS_ACTIVE:
                 await message.answer(
-                    "Открыто объявление по ссылке:",
-                    reply_markup=main_menu(message.from_user.id)
-                )
-                await message.answer(
-                    post_text(row),
+                    "📤 Открыто объявление по ссылке:\n\n" + post_text(row),
                     reply_markup=public_post_kb(row["id"], row["user_id"], row["post_type"])
                 )
+            else:
+                await message.answer("Объявление не найдено или уже неактивно.")
+        return
+
+    if start_arg.startswith("route_"):
+        try:
+            _, post_type, from_country, to_country = start_arg.split("_", 3)
+            rows = search_route_posts(post_type, from_country, to_country, limit=10)
+            if not rows:
+                await message.answer(f"По маршруту {from_country} → {to_country} пока нет активных объявлений.")
+            else:
+                await message.answer(
+                    f"Маршрут: <b>{from_country} → {to_country}</b>\n"
+                    f"Тип: {'✈️ Попутчики' if post_type == TYPE_TRIP else '📦 Посылки'}\n"
+                    f"Найдено: {len(rows)}"
+                )
+                for row in rows:
+                    await message.answer(
+                        post_text(row),
+                        reply_markup=public_post_kb(row["id"], row["user_id"], row["post_type"])
+                    )
+        except Exception:
+            await message.answer("Не удалось открыть маршрут.")
+        return
 
 
 @router.message(Command("help"))
@@ -1001,8 +1125,12 @@ async def delete_post(callback: CallbackQuery):
     if not row:
         await callback.answer("Нет доступа", show_alert=True)
         return
+
+    await remove_post_from_channel(callback.bot, row)
+
     with closing(connect_db()) as conn, conn:
         conn.execute("DELETE FROM posts WHERE id=?", (post_id,))
+
     await callback.message.answer(f"Объявление {post_id} удалено.")
     await callback.answer()
 
@@ -1014,8 +1142,15 @@ async def deactivate_post(callback: CallbackQuery):
     if not row:
         await callback.answer("Нет доступа", show_alert=True)
         return
+
+    await remove_post_from_channel(callback.bot, row)
+
     with closing(connect_db()) as conn, conn:
-        conn.execute("UPDATE posts SET status=?, updated_at=? WHERE id=?", (STATUS_INACTIVE, now_ts(), post_id))
+        conn.execute(
+            "UPDATE posts SET status=?, updated_at=? WHERE id=?",
+            (STATUS_INACTIVE, now_ts(), post_id)
+        )
+
     await callback.message.answer(f"Объявление {post_id} деактивировано.")
     await callback.answer()
 
@@ -1027,20 +1162,25 @@ async def activate_post(callback: CallbackQuery, bot: Bot):
     if not row:
         await callback.answer("Нет доступа", show_alert=True)
         return
+
     new_status = STATUS_PENDING if ADMIN_IDS else STATUS_ACTIVE
     expires_at = now_ts() + days_to_seconds(POST_TTL_DAYS)
+
     with closing(connect_db()) as conn, conn:
         conn.execute(
             "UPDATE posts SET status=?, updated_at=?, expires_at=? WHERE id=?",
             (new_status, now_ts(), expires_at, post_id)
         )
+
     await callback.message.answer(
         f"Объявление {post_id} " + ("отправлено на повторную модерацию." if ADMIN_IDS else "активировано.")
     )
+
     if not ADMIN_IDS:
         await safe_publish(bot, post_id)
         await notify_match_users(bot, post_id)
         await notify_subscribers(bot, post_id)
+
     await callback.answer()
 
 
@@ -1060,24 +1200,12 @@ async def bump_post(callback: CallbackQuery):
     await callback.answer("Готово")
 
 
-@router.callback_query(F.data.startswith("share:"))
-async def share_post_handler(callback: CallbackQuery):
-    post_id = int(callback.data.split(":")[1])
-    row = get_post(post_id)
-    if not row:
-        await callback.answer("Объявление не найдено", show_alert=True)
-        return
-    await callback.message.answer(
-        f"📤 Ссылка на объявление:\n{share_post_link(post_id)}\n\n"
-        "Её можно отправить в Telegram, WeChat или чаты.",
-        reply_markup=main_menu(callback.from_user.id)
-    )
-    await callback.answer("Ссылка готова")
-
-
 @router.message(F.text == "💰 Поднять объявление")
 async def bump_info(message: Message):
-    await message.answer(BUMP_PRICE_TEXT + "\n\nОткрой 'Мои объявления' и нажми 'Поднять' у нужного объявления.", reply_markup=main_menu(message.from_user.id))
+    await message.answer(
+        BUMP_PRICE_TEXT + "\n\nОткрой 'Мои объявления' и нажми 'Поднять' у нужного объявления.",
+        reply_markup=main_menu(message.from_user.id)
+    )
 
 
 @router.message(Command("find"))
@@ -1152,28 +1280,43 @@ async def matches_for_post(callback: CallbackQuery):
 
 @router.message(F.text == "🔥 Популярные маршруты")
 async def popular_routes_handler(message: Message):
-    routes = get_popular_routes(10)
-    if not routes:
+    rows = get_popular_routes(10)
+    if not rows:
         await message.answer("Пока нет активных маршрутов.", reply_markup=main_menu(message.from_user.id))
         return
+    await message.answer("🔥 Популярные маршруты сейчас:", reply_markup=popular_routes_kb(rows))
 
-    text = ["🔥 <b>Популярные маршруты</b>\n"]
-    for i, r in enumerate(routes, 1):
-        text.append(f"{i}. {html.escape(r['from_country'])} → {html.escape(r['to_country'])} ({r['cnt']})")
-    await message.answer("\n".join(text), reply_markup=main_menu(message.from_user.id))
+
+@router.callback_query(F.data.startswith("popular:"))
+async def popular_route_open(callback: CallbackQuery):
+    _, post_type, from_country, to_country = callback.data.split(":", 3)
+    rows = search_route_posts(post_type, from_country, to_country, limit=10)
+    if not rows:
+        await callback.message.answer("По этому маршруту сейчас нет активных объявлений.")
+    else:
+        await callback.message.answer(
+            f"Маршрут: <b>{from_country} → {to_country}</b>\n"
+            f"Тип: {'✈️ Попутчики' if post_type == TYPE_TRIP else '📦 Посылки'}\n"
+            f"Найдено: {len(rows)}"
+        )
+        for row in rows:
+            await callback.message.answer(
+                post_text(row),
+                reply_markup=public_post_kb(row["id"], row["user_id"], row["post_type"])
+            )
+    await callback.answer()
 
 
 @router.message(F.text == "🆕 Новые объявления")
-async def new_posts_handler(message: Message):
+async def recent_posts_handler(message: Message):
     rows = get_recent_posts(10)
     if not rows:
         await message.answer("Пока нет новых активных объявлений.", reply_markup=main_menu(message.from_user.id))
         return
-
-    await message.answer("🆕 <b>Новые объявления</b>", reply_markup=main_menu(message.from_user.id))
+    await message.answer("🆕 Последние объявления:")
     for row in rows:
         await message.answer(
-            post_text(row) + f"\n<b>Добавлено:</b> {format_ts_ago(row['created_at'])}",
+            f"{post_text(row)}\n\n<b>Добавлено:</b> {format_age(row['created_at'])}",
             reply_markup=public_post_kb(row["id"], row["user_id"], row["post_type"])
         )
 
@@ -1181,20 +1324,17 @@ async def new_posts_handler(message: Message):
 @router.message(F.text == "📊 Статистика")
 async def stats_handler(message: Message):
     stats = service_stats()
-    lines = [
-        "📊 <b>Статистика сервиса</b>",
-        f"Пользователей: {stats['users']}",
-        f"Активных объявлений: {stats['active_posts']}",
-        f"✈️ Попутчиков: {stats['trips']}",
-        f"📦 Посылок: {stats['parcels']}",
-    ]
-    if stats["top_route"]:
-        lines.append(
-            f"🔥 Популярный маршрут: "
-            f"{html.escape(stats['top_route']['from_country'])} → {html.escape(stats['top_route']['to_country'])} "
-            f"({stats['top_route']['cnt']})"
-        )
-    await message.answer("\n".join(lines), reply_markup=main_menu(message.from_user.id))
+    route = top_route()
+    text = (
+        "📊 <b>Статистика сервиса</b>\n\n"
+        f"Пользователей: <b>{stats['users_count']}</b>\n"
+        f"Активных объявлений: <b>{stats['active_posts']}</b>\n"
+        f"✈️ Попутчиков: <b>{stats['active_trips']}</b>\n"
+        f"📦 Посылок: <b>{stats['active_parcels']}</b>\n"
+    )
+    if route:
+        text += f"\nПопулярный маршрут:\n<b>{route['from_country']} → {route['to_country']}</b> ({route['cnt']})"
+    await message.answer(text, reply_markup=main_menu(message.from_user.id))
 
 
 @router.message(F.text == "🔔 Подписки")
@@ -1430,6 +1570,7 @@ async def admin_menu(message: Message):
         complaints = conn.execute("SELECT COUNT(*) AS c FROM complaints").fetchone()["c"]
     await message.answer(
         f"Админка\n\nНа модерации: {pending}\nЖалоб: {complaints}\n\n"
+        "Команды:\n"
         "/admin_pending\n"
         "/admin_complaints\n"
         "/admin_ban USER_ID\n"
@@ -1617,6 +1758,7 @@ async def main():
     dp.include_router(router)
 
     asyncio.create_task(expire_old_posts(bot))
+    asyncio.create_task(global_match_loop(bot))
 
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)

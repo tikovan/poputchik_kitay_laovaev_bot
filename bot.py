@@ -420,7 +420,41 @@ def search_matches(
 
     with closing(connect_db()) as conn:
         return conn.execute(query, params).fetchall()
+async def notify_match_users(bot: Bot, new_post_id: int):
+    new_row = get_post(new_post_id)
+    if not new_row or new_row["status"] != STATUS_ACTIVE:
+        return
 
+    matches = search_matches(
+        new_row["post_type"],
+        new_row["from_country"],
+        new_row["to_country"],
+        exclude_user_id=new_row["user_id"]
+    )
+
+    if not matches:
+        return
+
+    for match in matches[:5]:
+        try:
+            await bot.send_message(
+                new_row["user_id"],
+                "🔔 Найдено совпадение по вашему объявлению!\n\n"
+                f"{post_text(match)}",
+                reply_markup=public_post_kb(match["id"], match["user_id"])
+            )
+        except Exception:
+            pass
+
+        try:
+            await bot.send_message(
+                match["user_id"],
+                "🔔 Появилось новое совпадение по вашему маршруту!\n\n"
+                f"{post_text(new_row)}",
+                reply_markup=public_post_kb(new_row["id"], new_row["user_id"])
+            )
+        except Exception:
+            pass
 
 @router.message(CommandStart())
 async def start_handler(message: Message, state: FSMContext):

@@ -632,7 +632,7 @@ async def finalize_post(message: Message, state: FSMContext, bot: Bot):
                 pass
     else:
         await safe_publish(bot, post_id)
-
+await notify_match_users(bot, post_id)
 
 @router.message(Command("my"))
 @router.message(F.text == "📋 Мои объявления")

@@ -239,10 +239,24 @@ def admin_post_actions_kb(post_id: int):
         ]
     ])
 
-def public_post_kb(post_id: int, owner_id: int):
+def def public_post_kb(post_id: int, owner_id: int):
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✉️ Написать через бота", callback_data=f"contact:{post_id}:{owner_id}")],
-        [InlineKeyboardButton(text="⚠️ Пожаловаться", callback_data=f"complain:{post_id}")]
+        [
+            InlineKeyboardButton(
+                text="🤖 Открыть бота",
+                url="https://t.me/poputchik_kitay_laovaev_bot"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text="📦 Добавить посылку",
+                url="https://t.me/poputchik_kitay_laovaev_bot?start=parcel"
+            ),
+            InlineKeyboardButton(
+                text="✈️ Добавить поездку",
+                url="https://t.me/poputchik_kitay_laovaev_bot?start=trip"
+            )
+        ]
     ])
 
 class CreatePost(StatesGroup):

@@ -444,18 +444,29 @@ def create_post_record(data: dict, user_id: int) -> int:
     expires_at = ts + days_to_seconds(POST_TTL_DAYS)
     with closing(connect_db()) as conn, conn:
         cur = conn.execute("""
-            INSERT INTO posts (
-                user_id, post_type, from_country, from_city, to_country, to_city,
-                travel_date, weight_kg, description, contact_note, status,
-                is_anonymous_contact, channel_message_id, created_at, updated_at,
-                bumped_at, expires_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            user_id, data["post_type"], data["from_country"], data.get("from_city"),
-            data["to_country"], data.get("to_city"), data.get("travel_date"),
-            data.get("weight_kg"), data["description"], data.get("contact_note"),
-            STATUS_PENDING if ADMIN_IDS else STATUS_ACTIVE, None, ts, ts, ts, expires_at
-        ))
+    INSERT INTO posts (
+        user_id, post_type, from_country, from_city, to_country, to_city,
+        travel_date, weight_kg, description, contact_note, status,
+        is_anonymous_contact, created_at, updated_at, bumped_at, expires_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+""", (
+    user_id,
+    data["post_type"],
+    data["from_country"],
+    data.get("from_city"),
+    data["to_country"],
+    data.get("to_city"),
+    data.get("travel_date"),
+    data.get("weight_kg"),
+    data["description"],
+    data.get("contact_note"),
+    STATUS_PENDING if ADMIN_IDS else STATUS_ACTIVE,
+    1,
+    ts,
+    ts,
+    ts,
+    expires_at
+))
         return cur.lastrowid
 
 

@@ -894,33 +894,65 @@ async def enter_description(message: Message, state: FSMContext):
 
 @router.message(CreatePost.contact_note)
 async def finalize_post(message: Message, state: FSMContext, bot: Bot):
-    data = await state.get_data()
-    data["contact_note"] = None if message.text.strip() == "-" else message.text.strip()[:200]
-    post_id = create_post_record(data, message.from_user.id)
-    row = get_post(post_id)
+    try:
+        data = await state.get_data()
+        data["contact_note"] = None if message.text.strip() == "-" else message.text.strip()[:200]
 
-    await state.clear()
-    await message.answer(
-        "Объявление создано.\n" +
-        ("Оно отправлено на модерацию." if ADMIN_IDS else "Оно уже активно."),
-        reply_markup=main_menu(message.from_user.id)
-    )
-    await message.answer(post_text(row), reply_markup=post_actions_kb(post_id, row["status"]))
+        post_id = create_post_record(data, message.from_user.id)
+        row = get_post(post_id)
 
-    if ADMIN_IDS and row["status"] == STATUS_PENDING:
-        for admin_id in ADMIN_IDS:
+        await state.clear()
+
+        if not row:
+            await message.answer(
+                "Ошибка: объявление создалось некорректно. Попробуйте ещё раз.",
+                reply_markup=main_menu(message.from_user.id)
+            )
+            return
+
+        await message.answer(
+            "✅ Объявление создано.\n" +
+            ("Оно отправлено на модерацию." if ADMIN_IDS else "Оно уже активно."),
+            reply_markup=main_menu(message.from_user.id)
+        )
+
+        await message.answer(
+            post_text(row),
+            reply_markup=post_actions_kb(post_id, row["status"])
+        )
+
+        if ADMIN_IDS and row["status"] == STATUS_PENDING:
+            for admin_id in ADMIN_IDS:
+                try:
+                    await bot.send_message(
+                        admin_id,
+                        "Новое объявление на модерации:\n\n" + post_text(row),
+                        reply_markup=admin_post_actions_kb(post_id)
+                    )
+                except Exception as e:
+                    print(f"ADMIN NOTIFY ERROR: {e}")
+        else:
             try:
-                await bot.send_message(
-                    admin_id,
-                    "Новое объявление на модерации:\n\n" + post_text(row),
-                    reply_markup=admin_post_actions_kb(post_id)
-                )
-            except Exception:
-                pass
-    else:
-        await safe_publish(bot, post_id)
-        await notify_match_users(bot, post_id)
-        await notify_subscribers(bot, post_id)
+                await safe_publish(bot, post_id)
+            except Exception as e:
+                print(f"SAFE_PUBLISH ERROR: {e}")
+
+            try:
+                await notify_match_users(bot, post_id)
+            except Exception as e:
+                print(f"NOTIFY_MATCH_USERS ERROR: {e}")
+
+            try:
+                await notify_subscribers(bot, post_id)
+            except Exception as e:
+                print(f"NOTIFY_SUBSCRIBERS ERROR: {e}")
+
+    except Exception as e:
+        print(f"FINALIZE_POST ERROR: {e}")
+        await message.answer(
+            f"Произошла ошибка при сохранении объявления: {e}",
+            reply_markup=main_menu(message.from_user.id)
+        )
 
 
 @router.message(Command("my"))

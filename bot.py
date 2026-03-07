@@ -71,6 +71,24 @@ def bot_link(start_param: Optional[str] = None) -> str:
     return f"https://t.me/{BOT_USERNAME}"
 
 
+def share_post_link(post_id: int) -> str:
+    return bot_link(f"post_{post_id}")
+
+
+def format_ts_ago(ts: int) -> str:
+    diff = max(0, now_ts() - ts)
+    if diff < 60:
+        return "только что"
+    if diff < 3600:
+        mins = diff // 60
+        return f"{mins} мин. назад"
+    if diff < 86400:
+        hrs = diff // 3600
+        return f"{hrs} ч. назад"
+    days = diff // 86400
+    return f"{days} дн. назад"
+
+
 def connect_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -169,7 +187,6 @@ def init_db():
         ON reviews(reviewed_user_id, created_at);
         """)
 
-        # Safe migrations for older DBs
         existing_users = [r["name"] for r in conn.execute("PRAGMA table_info(users)").fetchall()]
         if "is_verified" not in existing_users:
             conn.execute("ALTER TABLE users ADD COLUMN is_verified INTEGER DEFAULT 0")
@@ -228,10 +245,6 @@ def active_post_count(user_id: int) -> int:
 
 def short_post_type(post_type: str) -> str:
     return "✈️ Попутчик" if post_type == TYPE_TRIP else "📦 Посылка"
-
-
-def opposite_post_type(post_type: str) -> str:
-    return TYPE_PARCEL if post_type == TYPE_TRIP else TYPE_TRIP
 
 
 def user_rating_summary(user_id: int) -> Tuple[float, int]:
@@ -302,13 +315,13 @@ def main_menu(user_id: Optional[int] = None):
     keyboard = [
         [KeyboardButton(text="✈️ Добавить поездку"), KeyboardButton(text="📦 Добавить посылку")],
         [KeyboardButton(text="🔎 Найти совпадения"), KeyboardButton(text="📋 Мои объявления")],
-        [KeyboardButton(text="🔔 Подписки"), KeyboardButton(text="🆘 Жалоба")],
-        [KeyboardButton(text="💰 Поднять объявление"), KeyboardButton(text="⭐ Оставить отзыв")],
+        [KeyboardButton(text="🔥 Популярные маршруты"), KeyboardButton(text="🆕 Новые объявления")],
+        [KeyboardButton(text="🔔 Подписки"), KeyboardButton(text="📊 Статистика")],
+        [KeyboardButton(text="🆘 Жалоба"), KeyboardButton(text="⭐ Оставить отзыв")],
+        [KeyboardButton(text="💰 Поднять объявление"), KeyboardButton(text="ℹ️ Помощь")],
     ]
     if user_id is not None and is_admin(user_id):
-        keyboard.append([KeyboardButton(text="👨‍💼 Админка"), KeyboardButton(text="ℹ️ Помощь")])
-    else:
-        keyboard.append([KeyboardButton(text="ℹ️ Помощь")])
+        keyboard.append([KeyboardButton(text="👨‍💼 Админка")])
     return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 
 
@@ -343,6 +356,9 @@ def post_actions_kb(post_id: int, status: str):
             InlineKeyboardButton(text="🔼 Поднять", callback_data=f"bump:{post_id}"),
             InlineKeyboardButton(text="👀 Совпадения", callback_data=f"matches:{post_id}")
         ],
+        [
+            InlineKeyboardButton(text="📤 Поделиться", callback_data=f"share:{post_id}")
+        ]
     ]
     if status != STATUS_ACTIVE:
         rows.append([InlineKeyboardButton(text="▶️ Активировать", callback_data=f"activate:{post_id}")])
@@ -370,12 +386,9 @@ def public_post_kb(post_id: int, owner_id: int, post_type: Optional[str] = None)
 
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [
-                InlineKeyboardButton(text="🤖 Открыть бота", url=bot_link())
-            ],
-            [
-                InlineKeyboardButton(text=second_button_text, url=second_button_url)
-            ]
+            [InlineKeyboardButton(text="🤖 Открыть бота", url=bot_link())],
+            [InlineKeyboardButton(text=second_button_text, url=second_button_url)],
+            [InlineKeyboardButton(text="📤 Поделиться", url=share_post_link(post_id))]
         ]
     )
 
@@ -434,13 +447,14 @@ def create_post_record(data: dict, user_id: int) -> int:
             INSERT INTO posts (
                 user_id, post_type, from_country, from_city, to_country, to_city,
                 travel_date, weight_kg, description, contact_note, status,
-                is_anonymous_contact, created_at, updated_at, bumped_at, expires_at
+                is_anonymous_contact, channel_message_id, created_at, updated_at,
+                bumped_at, expires_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             user_id, data["post_type"], data["from_country"], data.get("from_city"),
             data["to_country"], data.get("to_city"), data.get("travel_date"),
             data.get("weight_kg"), data["description"], data.get("contact_note"),
-            STATUS_PENDING if ADMIN_IDS else STATUS_ACTIVE, 1, ts, ts, ts, expires_at
+            STATUS_PENDING if ADMIN_IDS else STATUS_ACTIVE, None, ts, ts, ts, expires_at
         ))
         return cur.lastrowid
 
@@ -615,7 +629,7 @@ async def notify_subscribers(bot: Bot, post_id: int):
         try:
             await bot.send_message(
                 sub["user_id"],
-                "🔔 По вашей подписке появился новый маршрут:\n\n"
+                "🔔 По вашей подписке появилось новое объявление:\n\n"
                 + post_text(row),
                 reply_markup=public_post_kb(row["id"], row["user_id"], row["post_type"])
             )
@@ -656,7 +670,7 @@ async def expire_old_posts(bot: Bot):
                         await bot.send_message(
                             row["user_id"],
                             f"⌛ Ваше объявление ID {row['id']} истекло и скрыто.\n"
-                            f"Откройте 'Мои объявления', чтобы активировать его снова.",
+                            "Откройте 'Мои объявления', чтобы активировать его снова.",
                             reply_markup=main_menu(row["user_id"])
                         )
                     except Exception:
@@ -665,6 +679,65 @@ async def expire_old_posts(bot: Bot):
             print(f"EXPIRE LOOP ERROR: {e}")
 
         await asyncio.sleep(300)
+
+
+def get_recent_posts(limit: int = 10) -> List[sqlite3.Row]:
+    with closing(connect_db()) as conn:
+        return conn.execute("""
+            SELECT p.*, u.username, u.full_name
+            FROM posts p
+            LEFT JOIN users u ON u.user_id = p.user_id
+            WHERE p.status='active'
+              AND (p.expires_at IS NULL OR p.expires_at > ?)
+            ORDER BY COALESCE(p.bumped_at, p.created_at) DESC
+            LIMIT ?
+        """, (now_ts(), limit)).fetchall()
+
+
+def get_popular_routes(limit: int = 10) -> List[sqlite3.Row]:
+    with closing(connect_db()) as conn:
+        return conn.execute("""
+            SELECT from_country, to_country, COUNT(*) AS cnt
+            FROM posts
+            WHERE status='active'
+              AND (expires_at IS NULL OR expires_at > ?)
+            GROUP BY from_country, to_country
+            ORDER BY cnt DESC, MAX(created_at) DESC
+            LIMIT ?
+        """, (now_ts(), limit)).fetchall()
+
+
+def service_stats() -> dict:
+    with closing(connect_db()) as conn:
+        users = conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"]
+        active_posts = conn.execute("""
+            SELECT COUNT(*) AS c FROM posts
+            WHERE status='active' AND (expires_at IS NULL OR expires_at > ?)
+        """, (now_ts(),)).fetchone()["c"]
+        trips = conn.execute("""
+            SELECT COUNT(*) AS c FROM posts
+            WHERE status='active' AND post_type='trip' AND (expires_at IS NULL OR expires_at > ?)
+        """, (now_ts(),)).fetchone()["c"]
+        parcels = conn.execute("""
+            SELECT COUNT(*) AS c FROM posts
+            WHERE status='active' AND post_type='parcel' AND (expires_at IS NULL OR expires_at > ?)
+        """, (now_ts(),)).fetchone()["c"]
+        top_route = conn.execute("""
+            SELECT from_country, to_country, COUNT(*) AS cnt
+            FROM posts
+            WHERE status='active' AND (expires_at IS NULL OR expires_at > ?)
+            GROUP BY from_country, to_country
+            ORDER BY cnt DESC
+            LIMIT 1
+        """, (now_ts(),)).fetchone()
+
+    return {
+        "users": int(users or 0),
+        "active_posts": int(active_posts or 0),
+        "trips": int(trips or 0),
+        "parcels": int(parcels or 0),
+        "top_route": top_route,
+    }
 
 
 @router.message(CommandStart())
@@ -685,6 +758,8 @@ async def start_handler(message: Message, state: FSMContext):
         "• добавить посылку\n"
         "• найти совпадения\n"
         "• подписаться на маршрут\n"
+        "• смотреть новые объявления\n"
+        "• делиться объявлениями\n"
         "• писать владельцу объявления\n"
         "• оставлять отзывы\n\n"
         "⚠️ Бот не принимает оплату и не выступает посредником.\n"
@@ -694,8 +769,23 @@ async def start_handler(message: Message, state: FSMContext):
 
     if start_arg == "parcel":
         await begin_create(message, state, TYPE_PARCEL)
-    elif start_arg == "trip":
+        return
+    if start_arg == "trip":
         await begin_create(message, state, TYPE_TRIP)
+        return
+    if start_arg.startswith("post_"):
+        post_id_str = start_arg.replace("post_", "", 1)
+        if post_id_str.isdigit():
+            row = get_post(int(post_id_str))
+            if row and row["status"] == STATUS_ACTIVE:
+                await message.answer(
+                    "Открыто объявление по ссылке:",
+                    reply_markup=main_menu(message.from_user.id)
+                )
+                await message.answer(
+                    post_text(row),
+                    reply_markup=public_post_kb(row["id"], row["user_id"], row["post_type"])
+                )
 
 
 @router.message(Command("help"))
@@ -927,6 +1017,21 @@ async def bump_post(callback: CallbackQuery):
     await callback.answer("Готово")
 
 
+@router.callback_query(F.data.startswith("share:"))
+async def share_post_handler(callback: CallbackQuery):
+    post_id = int(callback.data.split(":")[1])
+    row = get_post(post_id)
+    if not row:
+        await callback.answer("Объявление не найдено", show_alert=True)
+        return
+    await callback.message.answer(
+        f"📤 Ссылка на объявление:\n{share_post_link(post_id)}\n\n"
+        "Её можно отправить в Telegram, WeChat или чаты.",
+        reply_markup=main_menu(callback.from_user.id)
+    )
+    await callback.answer("Ссылка готова")
+
+
 @router.message(F.text == "💰 Поднять объявление")
 async def bump_info(message: Message):
     await message.answer(BUMP_PRICE_TEXT + "\n\nОткрой 'Мои объявления' и нажми 'Поднять' у нужного объявления.", reply_markup=main_menu(message.from_user.id))
@@ -1002,6 +1107,53 @@ async def matches_for_post(callback: CallbackQuery):
     await callback.answer()
 
 
+@router.message(F.text == "🔥 Популярные маршруты")
+async def popular_routes_handler(message: Message):
+    routes = get_popular_routes(10)
+    if not routes:
+        await message.answer("Пока нет активных маршрутов.", reply_markup=main_menu(message.from_user.id))
+        return
+
+    text = ["🔥 <b>Популярные маршруты</b>\n"]
+    for i, r in enumerate(routes, 1):
+        text.append(f"{i}. {html.escape(r['from_country'])} → {html.escape(r['to_country'])} ({r['cnt']})")
+    await message.answer("\n".join(text), reply_markup=main_menu(message.from_user.id))
+
+
+@router.message(F.text == "🆕 Новые объявления")
+async def new_posts_handler(message: Message):
+    rows = get_recent_posts(10)
+    if not rows:
+        await message.answer("Пока нет новых активных объявлений.", reply_markup=main_menu(message.from_user.id))
+        return
+
+    await message.answer("🆕 <b>Новые объявления</b>", reply_markup=main_menu(message.from_user.id))
+    for row in rows:
+        await message.answer(
+            post_text(row) + f"\n<b>Добавлено:</b> {format_ts_ago(row['created_at'])}",
+            reply_markup=public_post_kb(row["id"], row["user_id"], row["post_type"])
+        )
+
+
+@router.message(F.text == "📊 Статистика")
+async def stats_handler(message: Message):
+    stats = service_stats()
+    lines = [
+        "📊 <b>Статистика сервиса</b>",
+        f"Пользователей: {stats['users']}",
+        f"Активных объявлений: {stats['active_posts']}",
+        f"✈️ Попутчиков: {stats['trips']}",
+        f"📦 Посылок: {stats['parcels']}",
+    ]
+    if stats["top_route"]:
+        lines.append(
+            f"🔥 Популярный маршрут: "
+            f"{html.escape(stats['top_route']['from_country'])} → {html.escape(stats['top_route']['to_country'])} "
+            f"({stats['top_route']['cnt']})"
+        )
+    await message.answer("\n".join(lines), reply_markup=main_menu(message.from_user.id))
+
+
 @router.message(F.text == "🔔 Подписки")
 async def subscriptions_menu(message: Message):
     await message.answer("Подписки на маршруты:", reply_markup=subscription_actions_kb())
@@ -1045,7 +1197,7 @@ async def sub_to(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     await callback.message.answer(
         f"✅ Подписка сохранена: {data['from_country']} → {country}\n"
-        f"Бот будет присылать новые подходящие объявления.",
+        "Бот будет присылать новые подходящие объявления.",
         reply_markup=main_menu(callback.from_user.id)
     )
     await callback.answer()
@@ -1235,13 +1387,12 @@ async def admin_menu(message: Message):
         complaints = conn.execute("SELECT COUNT(*) AS c FROM complaints").fetchone()["c"]
     await message.answer(
         f"Админка\n\nНа модерации: {pending}\nЖалоб: {complaints}\n\n"
-        f"Команды:\n"
-        f"/admin_pending\n"
-        f"/admin_complaints\n"
-        f"/admin_ban USER_ID\n"
-        f"/admin_unban USER_ID\n"
-        f"/admin_verify USER_ID\n"
-        f"/admin_unverify USER_ID"
+        "/admin_pending\n"
+        "/admin_complaints\n"
+        "/admin_ban USER_ID\n"
+        "/admin_unban USER_ID\n"
+        "/admin_verify USER_ID\n"
+        "/admin_unverify USER_ID"
     )
 
 

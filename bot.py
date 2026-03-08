@@ -2144,74 +2144,14 @@ async def review_handler(callback: CallbackQuery):
         text = "⚠️ Спасибо! Отзыв: Плохо"
 
 
-if __name__ == "__main__":
-    asyncio.run(main())
+@router.message()
+async def debug_all(message: Message):
+    await message.answer(f"DEBUG: {repr(message.text)}")
 
-@router.callback_query(F.data == "noop")
-async def noop(callback: CallbackQuery):
-    await callback.answer()
-@router.inline_query()
-async def inline_search_handler(inline_query: InlineQuery):
-    query = (inline_query.query or "").strip()
-    rows = search_posts_inline(query, limit=10)
-
-    results = []
-
-    for row in rows:
-        title = f"{'✈️' if row['post_type'] == TYPE_TRIP else '📦'} {row['from_country']} → {row['to_country']}"
-        if row["from_city"] or row["to_city"]:
-            from_part = row["from_city"] or row["from_country"]
-            to_part = row["to_city"] or row["to_country"]
-            title = f"{'✈️' if row['post_type'] == TYPE_TRIP else '📦'} {from_part} → {to_part}"
-
-        description_parts = []
-        if row["travel_date"]:
-            description_parts.append(f"Дата: {row['travel_date']}")
-        if row["weight_kg"]:
-            description_parts.append(f"Вес: {row['weight_kg']}")
-        if row["description"]:
-            description_parts.append(row["description"][:80])
-
-        description = " | ".join(description_parts)[:200] or "Открыть объявление"
-
-        text = (
-            f"{post_text(row)}\n\n"
-            f"🤖 Открыть в боте: {post_deeplink(row['id'])}"
-        )
-
-        results.append(
-            InlineQueryResultArticle(
-                id=str(row["id"]),
-                title=title[:256],
-                description=description,
-                input_message_content=InputTextMessageContent(
-                    message_text=text,
-                    parse_mode=ParseMode.HTML,
-                    disable_web_page_preview=True,
-                ),
-                reply_markup=public_post_kb(row["id"], row["user_id"], row["post_type"]),
-            )
-        )
-
-    if not results:
-        results = [
-            InlineQueryResultArticle(
-                id="no_results",
-                title="Ничего не найдено",
-                description="Попробуйте: Китай Киев, Shenzhen Moscow, посылка, попутчик",
-                input_message_content=InputTextMessageContent(
-                    message_text=(
-                        "Ничего не найдено.\n\n"
-                        f"Открой бота и создай объявление: {bot_link()}"
-                    ),
-                    disable_web_page_preview=True,
-                ),
-            )
-        ]
-
-    await inline_query.answer(results, cache_time=1, is_personal=True)
 
 async def main():
+    global dp, bot
+
     if not BOT_TOKEN:
         raise RuntimeError("Set BOT_TOKEN env var")
 
@@ -2228,19 +2168,5 @@ async def main():
     await dp.start_polling(bot)
 
 
-@router.message()
-async def debug_all(message: Message):
-    await message.answer(f"DEBUG: {repr(message.text)}")
-
-
-async def main():
-    dp.include_router(router)
-
-    await bot.delete_webhook(drop_pending_updates=True)
-
-    await dp.start_polling(bot)
-
-
 if __name__ == "__main__":
-    import asyncio
     asyncio.run(main())

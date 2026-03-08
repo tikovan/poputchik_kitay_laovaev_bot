@@ -31,7 +31,11 @@ from aiogram.client.default import DefaultBotProperties
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-DB_PATH = os.getenv("DB_PATH", "bot.db")
+DB_PATH = os.getenv("DB_PATH", "/data/bot.db")
+
+db_dir = os.path.dirname(DB_PATH)
+if db_dir:
+    os.makedirs(db_dir, exist_ok=True)
 CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME", "")
 BOT_USERNAME = os.getenv("BOT_USERNAME", "Poputchik_china_bot").lstrip("@")
 ADMIN_IDS = {int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip().isdigit()}
@@ -320,6 +324,41 @@ def user_rating_summary(user_id: int) -> Tuple[float, int]:
         cnt = int(row["cnt"] or 0)
         return avg_rating, cnt
 
+def user_service_days(user_id: int) -> int:
+    with closing(connect_db()) as conn:
+        row = conn.execute(
+            "SELECT created_at FROM users WHERE user_id=?",
+            (user_id,)
+        ).fetchone()
+
+        if not row or not row["created_at"]:
+            return 0
+
+        return max(0, (now_ts() - int(row["created_at"])) // 86400)
+
+
+def user_service_text(user_id: int) -> str:
+    days = user_service_days(user_id)
+
+    if days < 30:
+        return f"{days} дн"
+    if days < 365:
+        months = max(1, days // 30)
+        return f"{months} мес"
+    years = max(1, days // 365)
+    return f"{years} г"
+
+
+def user_completed_deals_count(user_id: int) -> int:
+    with closing(connect_db()) as conn:
+        row = conn.execute("""
+            SELECT COUNT(*) AS cnt
+            FROM deals
+            WHERE status='completed'
+              AND (owner_user_id=? OR requester_user_id=?)
+        """, (user_id, user_id)).fetchone()
+
+        return int(row["cnt"] or 0)
 
 def is_user_verified(user_id: int) -> bool:
     with closing(connect_db()) as conn:
@@ -358,8 +397,15 @@ def post_text(row, for_channel: bool = False) -> str:
         route += f", {html.escape(row['to_city'])}"
 
     owner_user_id = row["user_id"]
+
     verified_badge = " ✅ Проверенный" if is_user_verified(owner_user_id) else ""
     rating_line = format_rating_line(owner_user_id)
+
+    # количество успешных передач
+    completed_deals = user_completed_deals_count(owner_user_id)
+
+    # сколько пользователь в сервисе
+    service_text = user_service_text(owner_user_id)
 
     lines = [
         f"<b>{short_post_type(row['post_type'])}{verified_badge}</b>",
@@ -368,6 +414,7 @@ def post_text(row, for_channel: bool = False) -> str:
 
     if row["travel_date"]:
         lines.append(f"<b>Дата:</b> {html.escape(row['travel_date'])}")
+
     if row["weight_kg"]:
         lines.append(f"<b>Вес/объем:</b> {html.escape(row['weight_kg'])}")
 
@@ -376,9 +423,19 @@ def post_text(row, for_channel: bool = False) -> str:
     if row["contact_note"]:
         lines.append(f"<b>Контакт:</b> {html.escape(row['contact_note'])}")
 
-    if rating_line:
-        lines.append(f"<b>Рейтинг:</b> {rating_line}")
+    # блок доверия пользователя
+    lines.append("")
+    lines.append("<b>👤 Профиль пользователя</b>")
 
+    if rating_line:
+        lines.append(f"⭐ <b>Рейтинг:</b> {rating_line}")
+    else:
+        lines.append("⭐ <b>Рейтинг:</b> пока нет отзывов")
+
+    lines.append(f"📦 <b>Передач:</b> {completed_deals}")
+    lines.append(f"📅 <b>В сервисе:</b> {service_text}")
+
+    lines.append("")
     lines.append(f"<b>ID объявления:</b> {row['id']}")
 
     if for_channel:
@@ -389,8 +446,6 @@ def post_text(row, for_channel: bool = False) -> str:
             lines.append(f"<b>Telegram:</b> @{html.escape(owner)}")
 
     return "\n".join(lines)
-
-
 def search_posts_inline(query: str, limit: int = 10) -> List[sqlite3.Row]:
     q = f"%{query.strip().lower()}%"
     with closing(connect_db()) as conn:

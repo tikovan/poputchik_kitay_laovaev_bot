@@ -473,7 +473,10 @@ def channel_post_kb(post_id: int, post_type: Optional[str] = None):
         inline_keyboard=[
             [InlineKeyboardButton(text="🤖 Открыть бота", url=bot_link())],
             [InlineKeyboardButton(text=second_button_text, url=second_button_url)],
-            [InlineKeyboardButton(text="📤 Поделиться", url=post_deeplink(post_id))]
+            [InlineKeyboardButton(
+    text="📤 Поделиться",
+    url=f"https://t.me/share/url?url={post_deeplink(post_id)}"
+)]
         ]
     )
 

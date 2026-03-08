@@ -31,7 +31,7 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 DB_PATH = os.getenv("DB_PATH", "bot.db")
 CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME", "")
-BOT_USERNAME = os.getenv("BOT_USERNAME", "poputchik_kitay_laovaev_bot").lstrip("@")
+BOT_USERNAME = os.getenv("BOT_USERNAME", "Poputchik_china_bot").lstrip("@")
 ADMIN_IDS = {int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip().isdigit()}
 BUMP_PRICE_TEXT = os.getenv(
     "BUMP_PRICE_TEXT",

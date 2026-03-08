@@ -157,6 +157,12 @@ def init_db():
             is_banned INTEGER DEFAULT 0,
             is_verified INTEGER DEFAULT 0
         );
+        
+CREATE TABLE IF NOT EXISTS banned_users (
+    user_id INTEGER PRIMARY KEY,
+    reason TEXT,
+    banned_at INTEGER NOT NULL
+);
 
         CREATE TABLE IF NOT EXISTS posts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -282,6 +288,27 @@ def upsert_user(message_or_callback):
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
 
+def is_user_banned(user_id: int) -> bool:
+    with closing(connect_db()) as conn:
+        row = conn.execute(
+            "SELECT 1 FROM banned_users WHERE user_id=?",
+            (user_id,)
+        ).fetchone()
+        return bool(row)
+
+
+def ban_user(user_id: int, reason: str = "too_many_complaints"):
+    with closing(connect_db()) as conn, conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO banned_users (user_id, reason, banned_at) VALUES (?, ?, ?)",
+            (user_id, reason, now_ts())
+        )
+
+        # скрываем объявления пользователя
+        conn.execute(
+            "UPDATE posts SET status=? WHERE user_id=? AND status=?",
+            (STATUS_DELETED, user_id, STATUS_ACTIVE)
+        )
 
 def anti_spam_check(user_id: int) -> Optional[str]:
     with closing(connect_db()) as conn, conn:
@@ -1292,6 +1319,12 @@ async def inline_search_handler(inline_query: InlineQuery):
 async def start_handler(message: Message, state: FSMContext):
     upsert_user(message)
     await state.clear()
+    if is_user_banned(message.from_user.id):
+    await message.answer(
+        "⛔ Ваш аккаунт заблокирован из-за жалоб пользователей.\n"
+        "Если вы считаете это ошибкой — напишите администратору."
+    )
+    return
 
     start_arg = ""
     if message.text and " " in message.text:
@@ -2002,24 +2035,67 @@ async def complaint_post_id(message: Message, state: FSMContext):
 async def complaint_reason(message: Message, state: FSMContext, bot: Bot):
     data = await state.get_data()
     post_id = data["post_id"]
+
+    row = get_post(post_id)
+    if not row:
+        await message.answer("Объявление не найдено.", reply_markup=main_menu(message.from_user.id))
+        await state.clear()
+        return
+
+    owner_user_id = row["user_id"]
+
     with closing(connect_db()) as conn, conn:
         conn.execute(
             "INSERT INTO complaints (post_id, from_user_id, reason, created_at) VALUES (?, ?, ?, ?)",
             (post_id, message.from_user.id, message.text.strip()[:1000], now_ts())
         )
+
+        # считаем количество жалоб на владельца объявления
+        complaints_count = conn.execute("""
+            SELECT COUNT(*) AS cnt
+            FROM complaints c
+            JOIN posts p ON p.id = c.post_id
+            WHERE p.user_id = ?
+        """, (owner_user_id,)).fetchone()["cnt"]
+
+        # если 3 или больше — баним пользователя и скрываем его объявления
+        if complaints_count >= 3:
+            conn.execute(
+                "UPDATE users SET is_banned=1 WHERE user_id=?",
+                (owner_user_id,)
+            )
+            conn.execute(
+                "UPDATE posts SET status=?, updated_at=? WHERE user_id=? AND status IN ('active','pending','inactive')",
+                (STATUS_INACTIVE, now_ts(), owner_user_id)
+            )
+
     await message.answer("Жалоба отправлена.", reply_markup=main_menu(message.from_user.id))
+
+    # уведомление админам
     for admin_id in ADMIN_IDS:
         try:
-            row = get_post(post_id)
             await bot.send_message(
                 admin_id,
-                f"Новая жалоба на объявление {post_id}:\n\nПричина: {message.text.strip()}\n\n"
-                + (post_text(row) if row else "Объявление не найдено")
+                f"Новая жалоба на объявление {post_id}:\n\n"
+                f"Причина: {message.text.strip()}\n\n"
+                f"Всего жалоб на пользователя: {complaints_count}\n\n"
+                + post_text(row)
             )
         except Exception:
             pass
-    await state.clear()
 
+    # уведомление пользователя о бане
+    if complaints_count >= 3:
+        try:
+            await bot.send_message(
+                owner_user_id,
+                "⛔ Ваш аккаунт автоматически заблокирован, потому что на ваши объявления поступило 3 жалобы.\n"
+                "Если это ошибка — свяжитесь с администратором."
+            )
+        except Exception:
+            pass
+
+    await state.clear()
 
 @router.message(F.text == "⭐ Оставить отзыв")
 async def review_start(message: Message, state: FSMContext):

@@ -1174,13 +1174,7 @@ async def begin_create(message: Message, state: FSMContext, post_type: str):
 
     await state.clear()
     await state.update_data(post_type=post_type)
-    await state.set_state(CreatePost.from_country)
-    await message.answer("Выбери страну отправления:", reply_markup=ReplyKeyboardRemove())
-    await message.answer("Страна отправления:", reply_markup=countries_kb("from"))
-
-
-@router.message(Command("new_trip"))
-@router.message(F.text == "✈️ Добавить поездку")
+    await state.set_s "✈️ Взять посылку")
 async def add_trip(message: Message, state: FSMContext):
     await begin_create(message, state, TYPE_TRIP)
 

@@ -337,11 +337,11 @@ def format_rating_line(user_id: int) -> Optional[str]:
 
 def format_coincidence_badges(score: int, notes: List[str]) -> str:
     if score >= 75:
-        level = "✅ Сильное совпадение"
+        level = "✅ Совпадение"
     elif score >= 55:
-        level = "🟡 Хорошее совпадение"
+        level = "🟡 Частичное совпадение"
     else:
-        level = "⚠️ Возможное совпадение"
+        level = "⚠️ Минимальное совпадение"
 
     if notes:
         return f"{level}\n" + "\n".join(f"• {html.escape(note)}" for note in notes)
@@ -377,7 +377,7 @@ def post_text(row, for_channel: bool = False) -> str:
     lines.append(f"<b>ID объявления:</b> {row['id']}")
 
     if for_channel:
-        lines.append("Откройте бота, чтобы добавить своё объявление или найти совпадения.")
+        lines.append("Откройте бот, чтобы добавить своё объявление или найти совпадения.")
     else:
         owner = row["username"] if "username" in row.keys() else None
         if owner:
@@ -388,7 +388,7 @@ def post_text(row, for_channel: bool = False) -> str:
 
 def main_menu(user_id: Optional[int] = None):
     keyboard = [
-        [KeyboardButton(text="✈️ Добавить поездку"), KeyboardButton(text="📦 Добавить посылку")],
+        [KeyboardButton(text="✈️ Взять посылку"), KeyboardButton(text="📦 Отправить посылку")],
         [KeyboardButton(text="🔎 Найти совпадения"), KeyboardButton(text="📋 Мои объявления")],
         [KeyboardButton(text="🔥 Популярные маршруты"), KeyboardButton(text="🆕 Новые объявления")],
         [KeyboardButton(text="🔔 Подписки"), KeyboardButton(text="📊 Статистика")],
@@ -1082,29 +1082,19 @@ async def start_handler(message: Message, state: FSMContext):
         "👋 <b>Привет.</b>\n\n"
 
         "Это <b>Попутчик Китай</b> — бот для передачи посылок через попутчиков.\n\n"
-
-        "✈️ <b>Летите из Китая?</b>\n"
-        "📦 <b>Нужно передать посылку?</b>\n\n"
-
-        "<b>Здесь можно:</b>\n\n"
-
-        "• добавить поездку\n"
-        "• добавить посылку\n"
-        "• найти попутчика\n"
-        "• написать владельцу объявления\n"
-        "• управлять своими объявлениями\n\n"
-
-        "🔎 <b>Все новые объявления публикуются в канале</b>\n"
-        "Обязательно подпишись:\n"
-        "t.me/china_poputchik\n\n"
-
-        "<b>Добавить объявление:</b>\n"
-        "👇\n"
-        "@Poputchik_china_bot\n\n"
-
-        "⭐ Нравится наш проект?\n"
-        "Не забывай читать:\n"
-        "Laovaev.Net\n\n"
+  
+        "<b>Здесь ты сможешь отправить свою и доставить посылку других людей за вознаграждение.</b>\n\n"
+        
+        "🔎 <b>Первым делом подпишись на наш канал. Туда будут приходить все новые обьявления о посылках </b>\n"
+       "t.me/china_poputchik\n\n"
+        
+        "Я сам буду искать попутчиков для тебя.\n"
+        "Я сам буду уведомлять тебя о совпадениях.\n"
+        
+        "Что же необходимо от тебя?\n"
+        
+        "<b>Нажми на кнопку МЕНЮ и тчательно заполни заявку</b>\n"
+        "📦 <b>P.s. Если у тебя что-то не получается - перезапусти БОТ снова нажав на кнопку НАЧАТЬ.</b>\n\
 
         "⬇️ <b>Выберите действие в меню ниже</b>"
     )

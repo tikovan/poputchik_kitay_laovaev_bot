@@ -2019,3 +2019,6 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+@router.message()
+async def debug_all(message: Message):
+    await message.answer(f"DEBUG: {repr(message.text)}")

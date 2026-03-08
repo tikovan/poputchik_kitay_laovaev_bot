@@ -110,10 +110,7 @@ def parse_weight_kg(value: Optional[str]) -> Optional[float]:
 def parse_date_loose(value: Optional[str]) -> Optional[datetime]:
     """
     Поддерживает:
-    - YYYY-MM-DD
     - DD.MM.YYYY
-    - DD/MM/YYYY
-    - DD-MM-YYYY
     Если не распознано — None.
     """
     if not value:
@@ -1095,7 +1092,7 @@ async def start_handler(message: Message, state: FSMContext):
 
     "<b>Нажми на кнопку МЕНЮ и тщательно заполни заявку.</b>\n\n"
 
-    "📦 <b>P.S. Если у тебя что-то не получается — перезапусти бота, снова нажав на кнопку НАЧАТЬ.</b>\n\n"
+    "🤖 <b>P.S. Если у тебя что-то не получается — перезапусти бот, снова нажав на кнопку НАЧАТЬ.</b>\n\n"
 
     "⬇️ <b>Выберите действие в меню ниже</b>"
 )
@@ -1154,10 +1151,10 @@ async def help_handler(message: Message):
         "/help — помощь\n"
         "/my — мои объявления\n"
         "/find — поиск совпадений\n"
-        "/new_trip — добавить поездку\n"
-        "/new_parcel — добавить посылку\n"
+        "/new_trip — Взять посылку\n"
+        "/new_parcel — Отправить посылку\n"
         "/admin — админка\n\n"
-        "Важно: бот — только площадка для поиска. Мы не принимаем оплату и не выступаем посредником.",
+        "Важно: бот — информационная площадка для поиска. Мы не принимаем оплату и не несем ответственности за действия сторон- участников.",
         reply_markup=main_menu(message.from_user.id)
     )
 
@@ -1245,7 +1242,7 @@ async def enter_weight(message: Message, state: FSMContext):
 async def enter_description(message: Message, state: FSMContext):
     await state.update_data(description=message.text.strip()[:1000])
     await state.set_state(CreatePost.contact_note)
-    await message.answer("Доп. контакт или примечание. Например: WeChat / только text / без звонков. Если не надо — напиши '-'")
+    await message.answer("Доп. контакт или примечание. Например: WeChat ID / только текст / без звонков. Если не надо — напиши '-'")
 
 
 @router.message(CreatePost.contact_note)

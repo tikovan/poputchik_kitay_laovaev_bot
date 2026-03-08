@@ -200,6 +200,37 @@ def init_db():
             is_verified INTEGER DEFAULT 0
         );
 
+        CREATE TABLE IF NOT EXISTS deals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            post_id INTEGER NOT NULL,
+            owner_user_id INTEGER NOT NULL,
+            requester_user_id INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            created_at INTEGER NOT NULL,
+            completed_at INTEGER
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_deals_owner
+        ON deals(owner_user_id, status, created_at);
+
+        CREATE INDEX IF NOT EXISTS idx_deals_requester
+        ON deals(requester_user_id, status, created_at);
+        
+        CREATE TABLE IF NOT EXISTS deals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            post_id INTEGER NOT NULL,
+            owner_user_id INTEGER NOT NULL,
+            requester_user_id INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            created_at INTEGER NOT NULL,
+            completed_at INTEGER
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_deals_owner
+        ON deals(owner_user_id, status, created_at);
+
+        CREATE INDEX IF NOT EXISTS idx_deals_requester
+        ON deals(requester_user_id, status, created_at);
         CREATE TABLE IF NOT EXISTS posts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL,
@@ -414,7 +445,85 @@ def post_text(row, for_channel: bool = False) -> str:
             lines.append(f"<b>Telegram:</b> @{html.escape(owner)}")
 
     return "\n".join(lines)
+def ensure_deal(post_id: int, owner_user_id: int, requester_user_id: int) -> int:
+    with closing(connect_db()) as conn, conn:
+        row = conn.execute("""
+            SELECT id
+            FROM deals
+            WHERE post_id=? AND owner_user_id=? AND requester_user_id=?
+            ORDER BY id DESC
+            LIMIT 1
+        """, (post_id, owner_user_id, requester_user_id)).fetchone()
 
+        if row:
+            return int(row["id"])
+
+        cur = conn.execute("""
+            INSERT INTO deals (post_id, owner_user_id, requester_user_id, status, created_at)
+            VALUES (?, ?, ?, 'pending', ?)
+        """, (post_id, owner_user_id, requester_user_id, now_ts()))
+
+        return int(cur.lastrowid)
+
+
+def mark_deal_completed(post_id: int, user_id: int) -> bool:
+    with closing(connect_db()) as conn, conn:
+        row = conn.execute("""
+            SELECT id
+            FROM deals
+            WHERE post_id=?
+              AND (owner_user_id=? OR requester_user_id=?)
+              AND status='pending'
+            ORDER BY id DESC
+            LIMIT 1
+        """, (post_id, user_id, user_id)).fetchone()
+
+        if not row:
+            return False
+
+        conn.execute("""
+            UPDATE deals
+            SET status='completed', completed_at=?
+            WHERE id=?
+        """, (now_ts(), row["id"]))
+
+        return True
+def public_post_kb(post_id: int, owner_id: int, post_type: Optional[str] = None):
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✉️ Написать владельцу", callback_data=f"contact:{post_id}:{owner_id}")],
+            [
+                InlineKeyboardButton(text="✅ Сделка состоялась", callback_data=f"deal_ok:{post_id}"),
+                InlineKeyboardButton(text="❌ Не договорились", callback_data=f"deal_fail:{post_id}")
+            ],
+            [InlineKeyboardButton(text="⭐ Оставить отзыв", callback_data=f"leave_review:{post_id}:{owner_id}")],
+            [InlineKeyboardButton(text="⚠️ Пожаловаться", callback_data=f"complain:{post_id}")],
+            [InlineKeyboardButton(text="📤 Поделиться", url=post_deeplink(post_id))]
+        ]
+    )
+
+def mark_deal_failed(post_id: int, user_id: int) -> bool:
+    with closing(connect_db()) as conn, conn:
+        row = conn.execute("""
+            SELECT id
+            FROM deals
+            WHERE post_id=?
+              AND (owner_user_id=? OR requester_user_id=?)
+              AND status='pending'
+            ORDER BY id DESC
+            LIMIT 1
+        """, (post_id, user_id, user_id)).fetchone()
+
+        if not row:
+            return False
+
+        conn.execute("""
+            UPDATE deals
+            SET status='failed'
+            WHERE id=?
+        """, (row["id"],))
+
+        return True
 
 def main_menu(user_id: Optional[int] = None):
     keyboard = [
@@ -483,14 +592,53 @@ def admin_post_actions_kb(post_id: int):
 
 
 def public_post_kb(post_id: int, owner_id: int, post_type: Optional[str] = None):
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="✉️ Написать владельцу", callback_data=f"contact:{post_id}:{owner_id}")],
-            [InlineKeyboardButton(text="⚠️ Пожаловаться", callback_data=f"complain:{post_id}")],
-            [InlineKeyboardButton(text="📤 Поделиться", url=post_deeplink(post_id))]
-        ]
-    )
+    rows = []
 
+    # написать владельцу
+    rows.append([
+        InlineKeyboardButton(
+            text="✉️ Написать владельцу",
+            callback_data=f"contact:{post_id}:{owner_id}"
+        )
+    ])
+
+    # результат сделки
+    rows.append([
+        InlineKeyboardButton(
+            text="✅ Сделка состоялась",
+            callback_data=f"deal_ok:{post_id}"
+        ),
+        InlineKeyboardButton(
+            text="❌ Не договорились",
+            callback_data=f"deal_fail:{post_id}"
+        )
+    ])
+
+    # отзыв
+    rows.append([
+        InlineKeyboardButton(
+            text="⭐ Оставить отзыв",
+            callback_data=f"leave_review:{post_id}:{owner_id}"
+        )
+    ])
+
+    # жалоба
+    rows.append([
+        InlineKeyboardButton(
+            text="⚠️ Пожаловаться",
+            callback_data=f"complain:{post_id}"
+        )
+    ])
+
+    # поделиться
+    rows.append([
+        InlineKeyboardButton(
+            text="📤 Поделиться",
+            url=post_deeplink(post_id)
+        )
+    ])
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 def channel_post_kb(post_id: int, post_type: Optional[str] = None):
     second_button_text = "📦 Мне нужно отправить"
@@ -516,7 +664,19 @@ def subscription_actions_kb():
         [InlineKeyboardButton(text="🔔 Подписаться на маршрут", callback_data="sub:new")],
         [InlineKeyboardButton(text="📋 Мои подписки", callback_data="sub:list")]
     ])
-
+def public_post_kb(post_id: int, owner_id: int, post_type: Optional[str] = None):
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✉️ Написать владельцу", callback_data=f"contact:{post_id}:{owner_id}")],
+            [
+                InlineKeyboardButton(text="✅ Сделка состоялась", callback_data=f"deal_ok:{post_id}"),
+                InlineKeyboardButton(text="❌ Не договорились", callback_data=f"deal_fail:{post_id}")
+            ],
+            [InlineKeyboardButton(text="⭐ Оставить отзыв", callback_data=f"leave_review:{post_id}:{owner_id}")],
+            [InlineKeyboardButton(text="⚠️ Пожаловаться", callback_data=f"complain:{post_id}")],
+            [InlineKeyboardButton(text="📤 Поделиться", url=post_deeplink(post_id))]
+        ]
+    )
 
 def popular_routes_kb(rows: List[sqlite3.Row]):
     buttons = []
@@ -749,6 +909,74 @@ def delete_subscription(user_id: int, sub_id: int) -> bool:
         cur = conn.execute("DELETE FROM route_subscriptions WHERE id=? AND user_id=?", (sub_id, user_id))
         return cur.rowcount > 0
 
+def ensure_deal(post_id: int, owner_user_id: int, requester_user_id: int) -> int:
+    with closing(connect_db()) as conn, conn:
+        row = conn.execute("""
+            SELECT id
+            FROM deals
+            WHERE post_id=? AND owner_user_id=? AND requester_user_id=?
+            ORDER BY id DESC
+            LIMIT 1
+        """, (post_id, owner_user_id, requester_user_id)).fetchone()
+
+        if row:
+            return int(row["id"])
+
+        cur = conn.execute("""
+            INSERT INTO deals (post_id, owner_user_id, requester_user_id, status, created_at)
+            VALUES (?, ?, ?, 'pending', ?)
+        """, (post_id, owner_user_id, requester_user_id, now_ts()))
+
+        return int(cur.lastrowid)
+
+
+def mark_deal_completed(post_id: int, user_id: int) -> bool:
+    with closing(connect_db()) as conn, conn:
+        row = conn.execute("""
+            SELECT id
+            FROM deals
+            WHERE post_id=?
+              AND (owner_user_id=? OR requester_user_id=?)
+              AND status='pending'
+            ORDER BY id DESC
+            LIMIT 1
+        """, (post_id, user_id, user_id)).fetchone()
+
+        if not row:
+            return False
+
+        conn.execute("""
+            UPDATE deals
+            SET status='completed', completed_at=?
+            WHERE id=?
+        """, (now_ts(), row["id"]))
+
+        return True
+
+
+def mark_deal_failed(post_id: int, user_id: int) -> bool:
+    with closing(connect_db()) as conn, conn:
+        row = conn.execute("""
+            SELECT id
+            FROM deals
+            WHERE post_id=?
+              AND (owner_user_id=? OR requester_user_id=?)
+              AND status='pending'
+            ORDER BY id DESC
+            LIMIT 1
+        """, (post_id, user_id, user_id)).fetchone()
+
+        if not row:
+            return False
+
+        conn.execute("""
+            UPDATE deals
+            SET status='failed'
+            WHERE id=?
+        """, (row["id"],))
+
+        return True
+
 
 def coincidence_already_notified(post_a_id: int, post_b_id: int) -> bool:
     a, b = sorted([post_a_id, post_b_id])
@@ -920,6 +1148,19 @@ def get_coincidences(
     results.sort(key=lambda x: (x["score"], x["row"]["bumped_at"] or x["row"]["created_at"]), reverse=True)
     return results[:limit]
 
+def public_post_kb(post_id: int, owner_id: int, post_type: Optional[str] = None):
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✉️ Написать владельцу", callback_data=f"contact:{post_id}:{owner_id}")],
+            [
+                InlineKeyboardButton(text="✅ Сделка состоялась", callback_data=f"deal_ok:{post_id}"),
+                InlineKeyboardButton(text="❌ Не договорились", callback_data=f"deal_fail:{post_id}")
+            ],
+            [InlineKeyboardButton(text="⭐ Оставить отзыв", callback_data=f"leave_review:{post_id}:{owner_id}")],
+            [InlineKeyboardButton(text="⚠️ Пожаловаться", callback_data=f"complain:{post_id}")],
+            [InlineKeyboardButton(text="📤 Поделиться", url=post_deeplink(post_id))]
+        ]
+    )
 
 def publish_to_channel(bot: Bot, post_id: int):
     if not CHANNEL_USERNAME:
@@ -1953,7 +2194,97 @@ async def admin_menu(message: Message):
         "/admin_verify USER_ID\n"
         "/admin_unverify USER_ID"
     )
+@router.callback_query(F.data.startswith("deal_ok:"))
+async def deal_ok_handler(callback: CallbackQuery):
+    post_id = int(callback.data.split(":")[1])
 
+    ok = mark_deal_completed(post_id, callback.from_user.id)
+
+    if not ok:
+        await callback.message.answer("Не удалось найти активную сделку для этого объявления.")
+        await callback.answer()
+        return
+
+    row = get_post(post_id)
+    owner_id = row["user_id"] if row else 0
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⭐ Оставить отзыв", callback_data=f"leave_review:{post_id}:{owner_id}")],
+        [InlineKeyboardButton(text="Позже", callback_data="noop")]
+    ])
+
+    await callback.message.answer(
+        "✅ Сделка отмечена как успешная.\n\nХотите сразу оставить отзыв?",
+        reply_markup=kb
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("deal_fail:"))
+async def deal_fail_handler(callback: CallbackQuery):
+    post_id = int(callback.data.split(":")[1])
+
+    ok = mark_deal_failed(post_id, callback.from_user.id)
+
+    if ok:
+        await callback.message.answer("❌ Сделка отмечена как несостоявшаяся.")
+    else:
+        await callback.message.answer("Не удалось найти активную сделку для этого объявления.")
+
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("leave_review:"))
+async def leave_review_handler(callback: CallbackQuery, state: FSMContext):
+    _, post_id_str, owner_id_str = callback.data.split(":")
+    post_id = int(post_id_str)
+    owner_id = int(owner_id_str)
+
+    row = get_post(post_id)
+    if not row:
+        await callback.message.answer("Объявление не найдено.")
+        await callback.answer()
+        return
+
+    reviewed_user_id = owner_id
+
+    if reviewed_user_id == callback.from_user.id:
+        await callback.message.answer("Нельзя оставить отзыв самому себе.")
+        await callback.answer()
+        return
+
+    await state.clear()
+    await state.update_data(reviewed_user_id=reviewed_user_id, post_id=post_id)
+    await state.set_state(ReviewFlow.rating)
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="1", callback_data="review_rating:1"),
+            InlineKeyboardButton(text="2", callback_data="review_rating:2"),
+            InlineKeyboardButton(text="3", callback_data="review_rating:3")
+        ],
+        [
+            InlineKeyboardButton(text="4", callback_data="review_rating:4"),
+            InlineKeyboardButton(text="5", callback_data="review_rating:5")
+        ]
+    ])
+
+    await callback.message.answer(
+        "Поставьте оценку пользователю от 1 до 5:",
+        reply_markup=kb
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("review_rating:"))
+async def review_rating_callback(callback: CallbackQuery, state: FSMContext):
+    rating = int(callback.data.split(":")[1])
+
+    await state.update_data(rating=rating)
+    await state.set_state(ReviewFlow.text)
+
+    await callback.message.answer("Напишите короткий отзыв или отправьте '-' если без текста.")
+    await callback.answer()
 
 @router.message(Command("admin_pending"))
 async def admin_pending(message: Message):
@@ -2131,6 +2462,42 @@ async def deal_done_handler(callback: CallbackQuery):
         reply_markup=kb
     )
     await callback.answer()
+
+@router.message(ReviewFlow.text)
+async def review_finish(message: Message, state: FSMContext):
+    data = await state.get_data()
+
+    review_text = None if message.text.strip() == "-" else message.text.strip()[:500]
+    reviewed_user_id = data["reviewed_user_id"]
+    post_id = data["post_id"]
+    rating = data["rating"]
+
+    with closing(connect_db()) as conn, conn:
+        try:
+            conn.execute("""
+                INSERT INTO reviews (reviewer_user_id, reviewed_user_id, post_id, rating, text, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (
+                message.from_user.id,
+                reviewed_user_id,
+                post_id,
+                rating,
+                review_text,
+                now_ts()
+            ))
+        except sqlite3.IntegrityError:
+            await message.answer(
+                "Такой отзыв уже оставлен.",
+                reply_markup=main_menu(message.from_user.id)
+            )
+            await state.clear()
+            return
+
+    await message.answer(
+        "⭐ Спасибо! Отзыв сохранен.",
+        reply_markup=main_menu(message.from_user.id)
+    )
+    await state.clear()
 
 @router.callback_query(F.data.startswith("review_"))
 async def review_handler(callback: CallbackQuery):

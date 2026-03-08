@@ -569,10 +569,12 @@ def public_post_kb(post_id: int, owner_id: int, post_type: Optional[str] = None)
             ],
             [InlineKeyboardButton(text="⭐ Оставить отзыв", callback_data=f"leave_review:{post_id}:{owner_id}")],
             [InlineKeyboardButton(text="⚠️ Пожаловаться", callback_data=f"complain:{post_id}")],
-            [InlineKeyboardButton(text="📤 Поделиться", url=post_deeplink(post_id))]
+            [InlineKeyboardButton(
+                text="📤 Поделиться",
+                url=f"https://t.me/share/url?url={post_deeplink(post_id)}"
+            )]
         ]
     )
-
 
 def channel_post_kb(post_id: int, post_type: Optional[str] = None):
     if post_type == TYPE_PARCEL:
@@ -1390,7 +1392,7 @@ async def choose_to_country(callback: CallbackQuery, state: FSMContext):
 async def enter_to_city(message: Message, state: FSMContext):
     await state.update_data(to_city=None if message.text.strip() == "-" else message.text.strip()[:80])
     await state.set_state(CreatePost.travel_date)
-    await message.answer("Дата поездки/отправки. Например: 2026-03-15 или 15.03.2026. Если дата не точная — напиши как удобно.")
+    await message.answer("Дата поездки/отправки. Например: 15.03.2026. Если дата не точная — напиши как удобно.")
 
 
 @router.message(CreatePost.travel_date)

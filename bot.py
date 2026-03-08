@@ -1319,10 +1319,9 @@ async def inline_search_handler(inline_query: InlineQuery):
 async def start_handler(message: Message, state: FSMContext):
     upsert_user(message)
     await state.clear()
-    if is_user_banned(message.from_user.id):
+    if complaints_count >= 3:
     await message.answer(
-        "⛔ Ваш аккаунт заблокирован из-за жалоб пользователей.\n"
-        "Если вы считаете это ошибкой — напишите администратору."
+        "⛔ Пользователь получил 3 жалобы и был автоматически заблокирован."
     )
     return
 

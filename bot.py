@@ -1075,28 +1075,66 @@ async def start_handler(message: Message, state: FSMContext):
     upsert_user(message)
     await state.clear()
 
+    start_arg = ""
+    if message.text and " " in message.text:
+        start_arg = message.text.split(" ", 1)[1].strip()
+
+    if start_arg == "parcel":
+        await begin_create(message, state, TYPE_PARCEL)
+        return
+
+    if start_arg == "trip":
+        await begin_create(message, state, TYPE_TRIP)
+        return
+
+    if start_arg.startswith("post_"):
+        post_id_str = start_arg.replace("post_", "", 1)
+        if post_id_str.isdigit():
+            row = get_post(int(post_id_str))
+            if row and row["status"] == STATUS_ACTIVE:
+                await message.answer(
+                    "📤 Открыто объявление по ссылке:\n\n" + post_text(row),
+                    reply_markup=public_post_kb(row["id"], row["user_id"], row["post_type"])
+                )
+            else:
+                await message.answer("Объявление не найдено или уже неактивно.")
+        return
+
+    if start_arg.startswith("route_"):
+        try:
+            _, post_type, from_country, to_country = start_arg.split("_", 3)
+            rows = search_route_posts(post_type, from_country, to_country, limit=10)
+            if not rows:
+                await message.answer(f"По маршруту {from_country} → {to_country} пока нет активных объявлений.")
+            else:
+                await message.answer(
+                    f"Маршрут: <b>{from_country} → {to_country}</b>\n"
+                    f"Тип: {'✈️ Попутчики' if post_type == TYPE_TRIP else '📦 Посылки'}\n"
+                    f"Найдено: {len(rows)}"
+                )
+                for row in rows:
+                    await message.answer(
+                        post_text(row),
+                        reply_markup=public_post_kb(row["id"], row["user_id"], row["post_type"])
+                    )
+        except Exception:
+            await message.answer("Не удалось открыть маршрут.")
+        return
+
     text = (
-    "👋 <b>Привет.</b>\n\n"
+        "👋 <b>Привет.</b>\n\n"
+        "Это <b>Попутчик Китай</b> — бот для передачи посылок через попутчиков.\n\n"
+        "<b>Здесь ты сможешь отправить свою и доставить посылку других людей за вознаграждение.</b>\n\n"
+        "🔎 <b>Первым делом подпишись на наш канал. Туда будут приходить все уведомления о новых посылках.</b>\n"
+        "t.me/china_poputchik\n\n"
+        "Я сам буду искать попутчиков для тебя.\n"
+        "Я сам буду уведомлять тебя о совпадениях.\n\n"
+        "Что же необходимо от тебя?\n\n"
+        "<b>Нажми на кнопку МЕНЮ и тщательно заполни заявку.</b>\n\n"
+        "🤖 <b>P.S. Если у тебя что-то не получается — перезапусти бот, снова нажав на кнопку НАЧАТЬ.</b>\n\n"
+        "⬇️ <b>Выберите действие в меню ниже</b>"
+    )
 
-    "Это <b>Попутчик Китай</b> — бот для передачи посылок через попутчиков.\n\n"
-
-    "<b>Здесь ты сможешь отправить свою и доставить посылку других людей за вознаграждение.</b>\n\n"
-
-    "🔎 <b>Первым делом подпишись на наш канал. Туда будут приходить все новые объявления о посылках.</b>\n"
-    "t.me/china_poputchik\n\n"
-
-    "Я сам буду искать попутчиков для тебя.\n"
-    "Я сам буду уведомлять тебя о совпадениях.\n\n"
-
-    "Что же необходимо от тебя?\n\n"
-
-    "<b>Нажми на кнопку МЕНЮ и тщательно заполни заявку.</b>\n\n"
-
-    "🤖 <b>P.S. Если у тебя что-то не получается — перезапусти бот, снова нажав на кнопку НАЧАТЬ.</b>\n\n"
-
-    "⬇️ <b>Выберите действие в меню ниже</b>"
-)
-    
     await message.answer(text, reply_markup=main_menu(message.from_user.id))
 
     if start_arg == "parcel":

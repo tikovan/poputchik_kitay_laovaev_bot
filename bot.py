@@ -1172,9 +1172,11 @@ async def begin_create(message: Message, state: FSMContext, post_type: str):
         )
         return
 
-    await state.clear()
-    await state.update_data(post_type=post_type)
+@router.message(Command("new_trip"))
+@router.message(F.text == "✈️ Взять посылку")
 async def add_trip(message: Message, state: FSMContext):
+    await state.clear()
+    await state.update_data(post_type=TYPE_TRIP)
     await begin_create(message, state, TYPE_TRIP)
 
 

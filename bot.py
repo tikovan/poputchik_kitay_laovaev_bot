@@ -2228,8 +2228,19 @@ async def main():
     await dp.start_polling(bot)
 
 
-if __name__ == "__main__":
-    asyncio.run(main())
 @router.message()
 async def debug_all(message: Message):
     await message.answer(f"DEBUG: {repr(message.text)}")
+
+
+async def main():
+    dp.include_router(router)
+
+    await bot.delete_webhook(drop_pending_updates=True)
+
+    await dp.start_polling(bot)
+
+
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(main())

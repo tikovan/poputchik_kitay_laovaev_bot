@@ -2146,7 +2146,9 @@ async def review_handler(callback: CallbackQuery):
 await callback.message.answer(
     text,
     reply_markup=public_post_kb(post_id, owner_id, post_type)
-)    await callback.answer()
+)    
+
+await callback.answer()
 
 @router.callback_query(F.data == "noop")
 async def noop(callback: CallbackQuery):

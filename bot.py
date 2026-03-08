@@ -2144,7 +2144,8 @@ async def review_handler(callback: CallbackQuery):
         text = "⚠️ Спасибо! Отзыв: Плохо"
 
 
-await callback.answer()
+if __name__ == "__main__":
+    asyncio.run(main())
 
 @router.callback_query(F.data == "noop")
 async def noop(callback: CallbackQuery):

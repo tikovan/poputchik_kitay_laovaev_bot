@@ -1174,7 +1174,6 @@ async def begin_create(message: Message, state: FSMContext, post_type: str):
 
     await state.clear()
     await state.update_data(post_type=post_type)
-    await state.set_state("✈️ Взять посылку")
 async def add_trip(message: Message, state: FSMContext):
     await begin_create(message, state, TYPE_TRIP)
 

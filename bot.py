@@ -575,23 +575,22 @@ def public_post_kb(post_id: int, owner_id: int, post_type: Optional[str] = None)
 
 
 def channel_post_kb(post_id: int, post_type: Optional[str] = None):
-    second_button_text = "📦 Открыть бот и отправить"
-    second_button_url = bot_link("parcel")
     if post_type == TYPE_PARCEL:
-        second_button_text = "✈️ Открыть бот и взять"
-        second_button_url = bot_link("trip")
+        action_text = "✈️ Взять эту посылку"
+        action_url = bot_link("trip")
+    else:
+        action_text = "📦 Отправить этим маршрутом"
+        action_url = bot_link("parcel")
 
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="🤖 Открыть бота", url=bot_link())],
-            [InlineKeyboardButton(text=second_button_text, url=second_button_url)],
+            [InlineKeyboardButton(text=action_text, url=action_url)],
             [InlineKeyboardButton(
                 text="📤 Поделиться",
                 url=f"https://t.me/share/url?url={post_deeplink(post_id)}"
             )]
         ]
     )
-
 
 def subscription_actions_kb():
     return InlineKeyboardMarkup(inline_keyboard=[

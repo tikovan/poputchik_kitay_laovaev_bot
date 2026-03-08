@@ -1161,10 +1161,12 @@ async def help_handler(message: Message):
 
 async def begin_create(message: Message, state: FSMContext, post_type: str):
     upsert_user(message)
+
     limit = anti_spam_check(message.from_user.id)
     if limit:
         await message.answer(limit)
         return
+
     if active_post_count(message.from_user.id) >= MAX_ACTIVE_POSTS_PER_USER:
         await message.answer(
             f"Лимит активных объявлений: {MAX_ACTIVE_POSTS_PER_USER}. "
@@ -1172,19 +1174,27 @@ async def begin_create(message: Message, state: FSMContext, post_type: str):
         )
         return
 
+    await state.clear()
+    await state.update_data(post_type=post_type)
+    await state.set_state(CreatePost.from_country)
+
+    title = "✈️ Оформляем заявку: взять посылку" if post_type == TYPE_TRIP else "📦 Оформляем заявку: отправить посылку"
+
+    await message.answer(
+        f"{title}\n\nВыбери страну отправления:",
+        reply_markup=countries_kb("from")
+    )
+
 @router.message(Command("new_trip"))
 @router.message(F.text == "✈️ Взять посылку")
 async def add_trip(message: Message, state: FSMContext):
-    await state.clear()
-    await state.update_data(post_type=TYPE_TRIP)
     await begin_create(message, state, TYPE_TRIP)
 
 
 @router.message(Command("new_parcel"))
-@router.message(F.text == "📦 Добавить посылку")
+@router.message(F.text == "📦 Отправить посылку")
 async def add_parcel(message: Message, state: FSMContext):
     await begin_create(message, state, TYPE_PARCEL)
-
 
 @router.callback_query(F.data.startswith("from:"))
 async def choose_from_country(callback: CallbackQuery, state: FSMContext):

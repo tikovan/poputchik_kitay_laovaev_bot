@@ -22,7 +22,6 @@ from aiogram.types import (
     InlineKeyboardButton,
     ReplyKeyboardMarkup,
     KeyboardButton,
-    ReplyKeyboardRemove,
     InlineQuery,
     InlineQueryResultArticle,
     InputTextMessageContent,
@@ -89,21 +88,12 @@ def normalize_text(value: Optional[str]) -> str:
 
 
 def parse_weight_kg(value: Optional[str]) -> Optional[float]:
-    """
-    Из текста вроде:
-    - "до 3 кг"
-    - "3kg"
-    - "примерно 8.5"
-    пытается вытащить число.
-    """
     if not value:
         return None
-
     text = value.lower().replace(",", ".")
     found = re.findall(r"\d+(?:\.\d+)?", text)
     if not found:
         return None
-
     try:
         return float(found[0])
     except ValueError:
@@ -111,16 +101,10 @@ def parse_weight_kg(value: Optional[str]) -> Optional[float]:
 
 
 def parse_date_loose(value: Optional[str]) -> Optional[datetime]:
-    """
-    Поддерживает:
-    - DD.MM.YYYY
-    Если не распознано — None.
-    """
     if not value:
         return None
 
     text = value.strip()
-
     fmts = [
         "%Y-%m-%d",
         "%d.%m.%Y",
@@ -155,37 +139,7 @@ def connect_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
-def search_posts_inline(query: str, limit: int = 10) -> List[sqlite3.Row]:
-    q = f"%{query.strip().lower()}%"
-    with closing(connect_db()) as conn:
-        if query.strip():
-            return conn.execute("""
-                SELECT p.*, u.username, u.full_name
-                FROM posts p
-                LEFT JOIN users u ON u.user_id = p.user_id
-                WHERE p.status='active'
-                  AND (p.expires_at IS NULL OR p.expires_at > ?)
-                  AND (
-                        lower(p.from_country) LIKE ?
-                     OR lower(COALESCE(p.from_city, '')) LIKE ?
-                     OR lower(p.to_country) LIKE ?
-                     OR lower(COALESCE(p.to_city, '')) LIKE ?
-                     OR lower(COALESCE(p.description, '')) LIKE ?
-                     OR lower(COALESCE(p.travel_date, '')) LIKE ?
-                  )
-                ORDER BY COALESCE(p.bumped_at, p.created_at) DESC
-                LIMIT ?
-            """, (now_ts(), q, q, q, q, q, q, limit)).fetchall()
 
-        return conn.execute("""
-            SELECT p.*, u.username, u.full_name
-            FROM posts p
-            LEFT JOIN users u ON u.user_id = p.user_id
-            WHERE p.status='active'
-              AND (p.expires_at IS NULL OR p.expires_at > ?)
-            ORDER BY COALESCE(p.bumped_at, p.created_at) DESC
-            LIMIT ?
-        """, (now_ts(), limit)).fetchall()
 
 def init_db():
     with closing(connect_db()) as conn, conn:
@@ -200,37 +154,6 @@ def init_db():
             is_verified INTEGER DEFAULT 0
         );
 
-        CREATE TABLE IF NOT EXISTS deals (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            post_id INTEGER NOT NULL,
-            owner_user_id INTEGER NOT NULL,
-            requester_user_id INTEGER NOT NULL,
-            status TEXT NOT NULL DEFAULT 'pending',
-            created_at INTEGER NOT NULL,
-            completed_at INTEGER
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_deals_owner
-        ON deals(owner_user_id, status, created_at);
-
-        CREATE INDEX IF NOT EXISTS idx_deals_requester
-        ON deals(requester_user_id, status, created_at);
-        
-        CREATE TABLE IF NOT EXISTS deals (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            post_id INTEGER NOT NULL,
-            owner_user_id INTEGER NOT NULL,
-            requester_user_id INTEGER NOT NULL,
-            status TEXT NOT NULL DEFAULT 'pending',
-            created_at INTEGER NOT NULL,
-            completed_at INTEGER
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_deals_owner
-        ON deals(owner_user_id, status, created_at);
-
-        CREATE INDEX IF NOT EXISTS idx_deals_requester
-        ON deals(requester_user_id, status, created_at);
         CREATE TABLE IF NOT EXISTS posts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL,
@@ -297,6 +220,16 @@ def init_db():
             UNIQUE(post_a_id, post_b_id)
         );
 
+        CREATE TABLE IF NOT EXISTS deals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            post_id INTEGER NOT NULL,
+            owner_user_id INTEGER NOT NULL,
+            requester_user_id INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            created_at INTEGER NOT NULL,
+            completed_at INTEGER
+        );
+
         CREATE INDEX IF NOT EXISTS idx_posts_search
         ON posts(post_type, status, from_country, to_country, created_at);
 
@@ -308,6 +241,12 @@ def init_db():
 
         CREATE INDEX IF NOT EXISTS idx_reviews_user
         ON reviews(reviewed_user_id, created_at);
+
+        CREATE INDEX IF NOT EXISTS idx_deals_owner
+        ON deals(owner_user_id, status, created_at);
+
+        CREATE INDEX IF NOT EXISTS idx_deals_requester
+        ON deals(requester_user_id, status, created_at);
         """)
 
         existing_users = [r["name"] for r in conn.execute("PRAGMA table_info(users)").fetchall()]
@@ -426,15 +365,20 @@ def post_text(row, for_channel: bool = False) -> str:
         f"<b>{short_post_type(row['post_type'])}{verified_badge}</b>",
         f"<b>Маршрут:</b> {route}",
     ]
+
     if row["travel_date"]:
         lines.append(f"<b>Дата:</b> {html.escape(row['travel_date'])}")
     if row["weight_kg"]:
         lines.append(f"<b>Вес/объем:</b> {html.escape(row['weight_kg'])}")
+
     lines.append(f"<b>Описание:</b> {html.escape(row['description'])}")
+
     if row["contact_note"]:
         lines.append(f"<b>Контакт:</b> {html.escape(row['contact_note'])}")
+
     if rating_line:
         lines.append(f"<b>Рейтинг:</b> {rating_line}")
+
     lines.append(f"<b>ID объявления:</b> {row['id']}")
 
     if for_channel:
@@ -445,6 +389,41 @@ def post_text(row, for_channel: bool = False) -> str:
             lines.append(f"<b>Telegram:</b> @{html.escape(owner)}")
 
     return "\n".join(lines)
+
+
+def search_posts_inline(query: str, limit: int = 10) -> List[sqlite3.Row]:
+    q = f"%{query.strip().lower()}%"
+    with closing(connect_db()) as conn:
+        if query.strip():
+            return conn.execute("""
+                SELECT p.*, u.username, u.full_name
+                FROM posts p
+                LEFT JOIN users u ON u.user_id = p.user_id
+                WHERE p.status='active'
+                  AND (p.expires_at IS NULL OR p.expires_at > ?)
+                  AND (
+                        lower(p.from_country) LIKE ?
+                     OR lower(COALESCE(p.from_city, '')) LIKE ?
+                     OR lower(p.to_country) LIKE ?
+                     OR lower(COALESCE(p.to_city, '')) LIKE ?
+                     OR lower(COALESCE(p.description, '')) LIKE ?
+                     OR lower(COALESCE(p.travel_date, '')) LIKE ?
+                  )
+                ORDER BY COALESCE(p.bumped_at, p.created_at) DESC
+                LIMIT ?
+            """, (now_ts(), q, q, q, q, q, q, limit)).fetchall()
+
+        return conn.execute("""
+            SELECT p.*, u.username, u.full_name
+            FROM posts p
+            LEFT JOIN users u ON u.user_id = p.user_id
+            WHERE p.status='active'
+              AND (p.expires_at IS NULL OR p.expires_at > ?)
+            ORDER BY COALESCE(p.bumped_at, p.created_at) DESC
+            LIMIT ?
+        """, (now_ts(), limit)).fetchall()
+
+
 def ensure_deal(post_id: int, owner_user_id: int, requester_user_id: int) -> int:
     with closing(connect_db()) as conn, conn:
         row = conn.execute("""
@@ -488,19 +467,7 @@ def mark_deal_completed(post_id: int, user_id: int) -> bool:
         """, (now_ts(), row["id"]))
 
         return True
-def public_post_kb(post_id: int, owner_id: int, post_type: Optional[str] = None):
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="✉️ Написать владельцу", callback_data=f"contact:{post_id}:{owner_id}")],
-            [
-                InlineKeyboardButton(text="✅ Сделка состоялась", callback_data=f"deal_ok:{post_id}"),
-                InlineKeyboardButton(text="❌ Не договорились", callback_data=f"deal_fail:{post_id}")
-            ],
-            [InlineKeyboardButton(text="⭐ Оставить отзыв", callback_data=f"leave_review:{post_id}:{owner_id}")],
-            [InlineKeyboardButton(text="⚠️ Пожаловаться", callback_data=f"complain:{post_id}")],
-            [InlineKeyboardButton(text="📤 Поделиться", url=post_deeplink(post_id))]
-        ]
-    )
+
 
 def mark_deal_failed(post_id: int, user_id: int) -> bool:
     with closing(connect_db()) as conn, conn:
@@ -524,6 +491,7 @@ def mark_deal_failed(post_id: int, user_id: int) -> bool:
         """, (row["id"],))
 
         return True
+
 
 def main_menu(user_id: Optional[int] = None):
     keyboard = [
@@ -555,7 +523,7 @@ def countries_kb(prefix: str):
 def my_posts_kb(posts: List[sqlite3.Row]):
     rows = []
     for p in posts:
-        label = f"{p['id']} • {('✈️' if p['post_type']=='trip' else '📦')} • {p['from_country']}→{p['to_country']} • {p['status']}"
+        label = f"{p['id']} • {('✈️' if p['post_type'] == 'trip' else '📦')} • {p['from_country']}→{p['to_country']} • {p['status']}"
         rows.append([InlineKeyboardButton(text=label[:64], callback_data=f"mypost:{p['id']}")])
     return InlineKeyboardMarkup(inline_keyboard=rows or [[InlineKeyboardButton(text="Нет объявлений", callback_data="noop")]])
 
@@ -592,79 +560,6 @@ def admin_post_actions_kb(post_id: int):
 
 
 def public_post_kb(post_id: int, owner_id: int, post_type: Optional[str] = None):
-    rows = []
-
-    # написать владельцу
-    rows.append([
-        InlineKeyboardButton(
-            text="✉️ Написать владельцу",
-            callback_data=f"contact:{post_id}:{owner_id}"
-        )
-    ])
-
-    # результат сделки
-    rows.append([
-        InlineKeyboardButton(
-            text="✅ Сделка состоялась",
-            callback_data=f"deal_ok:{post_id}"
-        ),
-        InlineKeyboardButton(
-            text="❌ Не договорились",
-            callback_data=f"deal_fail:{post_id}"
-        )
-    ])
-
-    # отзыв
-    rows.append([
-        InlineKeyboardButton(
-            text="⭐ Оставить отзыв",
-            callback_data=f"leave_review:{post_id}:{owner_id}"
-        )
-    ])
-
-    # жалоба
-    rows.append([
-        InlineKeyboardButton(
-            text="⚠️ Пожаловаться",
-            callback_data=f"complain:{post_id}"
-        )
-    ])
-
-    # поделиться
-    rows.append([
-        InlineKeyboardButton(
-            text="📤 Поделиться",
-            url=post_deeplink(post_id)
-        )
-    ])
-
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-def channel_post_kb(post_id: int, post_type: Optional[str] = None):
-    second_button_text = "📦 Мне нужно отправить"
-    second_button_url = bot_link("parcel")
-    if post_type == TYPE_PARCEL:
-        second_button_text = "✈️ Могу взять"
-        second_button_url = bot_link("trip")
-
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="🤖 Открыть бота", url=bot_link())],
-            [InlineKeyboardButton(text=second_button_text, url=second_button_url)],
-            [InlineKeyboardButton(
-    text="📤 Поделиться",
-    url=f"https://t.me/share/url?url={post_deeplink(post_id)}"
-)]
-        ]
-    )
-
-
-def subscription_actions_kb():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔔 Подписаться на маршрут", callback_data="sub:new")],
-        [InlineKeyboardButton(text="📋 Мои подписки", callback_data="sub:list")]
-    ])
-def public_post_kb(post_id: int, owner_id: int, post_type: Optional[str] = None):
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="✉️ Написать владельцу", callback_data=f"contact:{post_id}:{owner_id}")],
@@ -678,6 +573,33 @@ def public_post_kb(post_id: int, owner_id: int, post_type: Optional[str] = None)
         ]
     )
 
+
+def channel_post_kb(post_id: int, post_type: Optional[str] = None):
+    second_button_text = "📦 Открыть бот и отправить"
+    second_button_url = bot_link("parcel")
+    if post_type == TYPE_PARCEL:
+        second_button_text = "✈️ Открыть бот и взять"
+        second_button_url = bot_link("trip")
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🤖 Открыть бота", url=bot_link())],
+            [InlineKeyboardButton(text=second_button_text, url=second_button_url)],
+            [InlineKeyboardButton(
+                text="📤 Поделиться",
+                url=f"https://t.me/share/url?url={post_deeplink(post_id)}"
+            )]
+        ]
+    )
+
+
+def subscription_actions_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔔 Подписаться на маршрут", callback_data="sub:new")],
+        [InlineKeyboardButton(text="📋 Мои подписки", callback_data="sub:list")]
+    ])
+
+
 def popular_routes_kb(rows: List[sqlite3.Row]):
     buttons = []
     for row in rows:
@@ -690,48 +612,7 @@ def popular_routes_kb(rows: List[sqlite3.Row]):
         ])
     return InlineKeyboardMarkup(inline_keyboard=buttons or [[InlineKeyboardButton(text="Пока пусто", callback_data="noop")]])
 
-def public_post_kb(post_id, owner_id, post_type):
 
-    rows = []
-
-    if post_type == TYPE_PARCEL:
-        rows.append([
-            InlineKeyboardButton(
-                text="✈️ Я могу взять эту посылку",
-                url=bot_link(f"trip_from_post_{post_id}")
-            )
-        ])
-    else:
-        rows.append([
-            InlineKeyboardButton(
-                text="📦 Хочу отправить этим маршрутом",
-                url=bot_link(f"parcel_from_post_{post_id}")
-            )
-        ])
-
-    rows.append([
-        InlineKeyboardButton(
-            text="✉️ Написать владельцу",
-            callback_data=f"contact:{post_id}:{owner_id}"
-        )
-    ])
-
-    rows.append([
-        InlineKeyboardButton(
-            text="⭐ Сделка завершена",
-            callback_data=f"deal_done:{post_id}"
-        )
-    ])
-
-    rows.append([
-        InlineKeyboardButton(
-            text="📤 Поделиться",
-            url=post_deeplink(post_id)
-        )
-    ])
-
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-    
 class CreatePost(StatesGroup):
     from_country = State()
     from_city = State()
@@ -899,7 +780,7 @@ def list_route_subscriptions(user_id: int) -> List[sqlite3.Row]:
 def subscription_list_kb(subs: List[sqlite3.Row]):
     rows = []
     for s in subs:
-        label = f"{s['id']} • {('✈️' if s['post_type']=='trip' else '📦')} • {s['from_country']}→{s['to_country']}"
+        label = f"{s['id']} • {('✈️' if s['post_type'] == 'trip' else '📦')} • {s['from_country']}→{s['to_country']}"
         rows.append([InlineKeyboardButton(text=label[:64], callback_data=f"subdel:{s['id']}")])
     return InlineKeyboardMarkup(inline_keyboard=rows or [[InlineKeyboardButton(text="Нет подписок", callback_data="noop")]])
 
@@ -908,74 +789,6 @@ def delete_subscription(user_id: int, sub_id: int) -> bool:
     with closing(connect_db()) as conn, conn:
         cur = conn.execute("DELETE FROM route_subscriptions WHERE id=? AND user_id=?", (sub_id, user_id))
         return cur.rowcount > 0
-
-def ensure_deal(post_id: int, owner_user_id: int, requester_user_id: int) -> int:
-    with closing(connect_db()) as conn, conn:
-        row = conn.execute("""
-            SELECT id
-            FROM deals
-            WHERE post_id=? AND owner_user_id=? AND requester_user_id=?
-            ORDER BY id DESC
-            LIMIT 1
-        """, (post_id, owner_user_id, requester_user_id)).fetchone()
-
-        if row:
-            return int(row["id"])
-
-        cur = conn.execute("""
-            INSERT INTO deals (post_id, owner_user_id, requester_user_id, status, created_at)
-            VALUES (?, ?, ?, 'pending', ?)
-        """, (post_id, owner_user_id, requester_user_id, now_ts()))
-
-        return int(cur.lastrowid)
-
-
-def mark_deal_completed(post_id: int, user_id: int) -> bool:
-    with closing(connect_db()) as conn, conn:
-        row = conn.execute("""
-            SELECT id
-            FROM deals
-            WHERE post_id=?
-              AND (owner_user_id=? OR requester_user_id=?)
-              AND status='pending'
-            ORDER BY id DESC
-            LIMIT 1
-        """, (post_id, user_id, user_id)).fetchone()
-
-        if not row:
-            return False
-
-        conn.execute("""
-            UPDATE deals
-            SET status='completed', completed_at=?
-            WHERE id=?
-        """, (now_ts(), row["id"]))
-
-        return True
-
-
-def mark_deal_failed(post_id: int, user_id: int) -> bool:
-    with closing(connect_db()) as conn, conn:
-        row = conn.execute("""
-            SELECT id
-            FROM deals
-            WHERE post_id=?
-              AND (owner_user_id=? OR requester_user_id=?)
-              AND status='pending'
-            ORDER BY id DESC
-            LIMIT 1
-        """, (post_id, user_id, user_id)).fetchone()
-
-        if not row:
-            return False
-
-        conn.execute("""
-            UPDATE deals
-            SET status='failed'
-            WHERE id=?
-        """, (row["id"],))
-
-        return True
 
 
 def coincidence_already_notified(post_a_id: int, post_b_id: int) -> bool:
@@ -998,11 +811,7 @@ def mark_coincidence_notified(post_a_id: int, post_b_id: int):
 
 
 def calculate_coincidence_score(source_row: sqlite3.Row, candidate_row: sqlite3.Row) -> Tuple[int, List[str]]:
-    """
-    source_row — текущее объявление
-    candidate_row — противоположный тип объявления
-    """
-    score = 40  # базовое совпадение по странам
+    score = 40
     notes: List[str] = []
 
     source_from_city = normalize_text(source_row["from_city"])
@@ -1010,7 +819,6 @@ def calculate_coincidence_score(source_row: sqlite3.Row, candidate_row: sqlite3.
     source_to_city = normalize_text(source_row["to_city"])
     candidate_to_city = normalize_text(candidate_row["to_city"])
 
-    # Город отправления
     if source_from_city and candidate_from_city:
         if source_from_city == candidate_from_city:
             score += 15
@@ -1022,7 +830,6 @@ def calculate_coincidence_score(source_row: sqlite3.Row, candidate_row: sqlite3.
         score += 6
         notes.append("Один из городов отправления не указан")
 
-    # Город назначения
     if source_to_city and candidate_to_city:
         if source_to_city == candidate_to_city:
             score += 15
@@ -1034,7 +841,6 @@ def calculate_coincidence_score(source_row: sqlite3.Row, candidate_row: sqlite3.
         score += 6
         notes.append("Один из городов назначения не указан")
 
-    # Дата
     source_date = parse_date_loose(source_row["travel_date"])
     candidate_date = parse_date_loose(candidate_row["travel_date"])
     if source_date and candidate_date:
@@ -1052,11 +858,9 @@ def calculate_coincidence_score(source_row: sqlite3.Row, candidate_row: sqlite3.
         score += 4
         notes.append("Хотя бы одна дата указана неточно")
 
-    # Вес
     source_weight = parse_weight_kg(source_row["weight_kg"])
     candidate_weight = parse_weight_kg(candidate_row["weight_kg"])
 
-    # Нужно понять кто попутчик, кто посылка
     trip_weight = None
     parcel_weight = None
     if source_row["post_type"] == TYPE_TRIP:
@@ -1148,19 +952,6 @@ def get_coincidences(
     results.sort(key=lambda x: (x["score"], x["row"]["bumped_at"] or x["row"]["created_at"]), reverse=True)
     return results[:limit]
 
-def public_post_kb(post_id: int, owner_id: int, post_type: Optional[str] = None):
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="✉️ Написать владельцу", callback_data=f"contact:{post_id}:{owner_id}")],
-            [
-                InlineKeyboardButton(text="✅ Сделка состоялась", callback_data=f"deal_ok:{post_id}"),
-                InlineKeyboardButton(text="❌ Не договорились", callback_data=f"deal_fail:{post_id}")
-            ],
-            [InlineKeyboardButton(text="⭐ Оставить отзыв", callback_data=f"leave_review:{post_id}:{owner_id}")],
-            [InlineKeyboardButton(text="⚠️ Пожаловаться", callback_data=f"complain:{post_id}")],
-            [InlineKeyboardButton(text="📤 Поделиться", url=post_deeplink(post_id))]
-        ]
-    )
 
 def publish_to_channel(bot: Bot, post_id: int):
     if not CHANNEL_USERNAME:
@@ -1266,8 +1057,7 @@ async def notify_subscribers(bot: Bot, post_id: int):
         try:
             await bot.send_message(
                 sub["user_id"],
-                "🔔 По вашей подписке появилось новое объявление:\n\n"
-                + post_text(row),
+                "🔔 По вашей подписке появилось новое объявление:\n\n" + post_text(row),
                 reply_markup=public_post_kb(row["id"], row["user_id"], row["post_type"])
             )
         except Exception as e:
@@ -1385,6 +1175,67 @@ async def global_coincidence_loop(bot: Bot):
         await asyncio.sleep(300)
 
 
+@router.inline_query()
+async def inline_search_handler(inline_query: InlineQuery):
+    query = (inline_query.query or "").strip()
+    rows = search_posts_inline(query, limit=10)
+    results = []
+
+    for row in rows:
+        title = f"{'✈️' if row['post_type'] == TYPE_TRIP else '📦'} {row['from_country']} → {row['to_country']}"
+        if row["from_city"] or row["to_city"]:
+            from_part = row["from_city"] or row["from_country"]
+            to_part = row["to_city"] or row["to_country"]
+            title = f"{'✈️' if row['post_type'] == TYPE_TRIP else '📦'} {from_part} → {to_part}"
+
+        description_parts = []
+        if row["travel_date"]:
+            description_parts.append(f"Дата: {row['travel_date']}")
+        if row["weight_kg"]:
+            description_parts.append(f"Вес: {row['weight_kg']}")
+        if row["description"]:
+            description_parts.append(row["description"][:80])
+
+        description = " | ".join(description_parts)[:200] or "Открыть объявление"
+
+        text = (
+            f"{post_text(row)}\n\n"
+            f"🤖 Открыть в боте: {post_deeplink(row['id'])}"
+        )
+
+        results.append(
+            InlineQueryResultArticle(
+                id=str(row["id"]),
+                title=title[:256],
+                description=description,
+                input_message_content=InputTextMessageContent(
+                    message_text=text,
+                    parse_mode=ParseMode.HTML,
+                    disable_web_page_preview=True,
+                ),
+                reply_markup=public_post_kb(row["id"], row["user_id"], row["post_type"]),
+            )
+        )
+
+    if not results:
+        results = [
+            InlineQueryResultArticle(
+                id="no_results",
+                title="Ничего не найдено",
+                description="Попробуйте: Китай Киев, Shenzhen Moscow, посылка, попутчик",
+                input_message_content=InputTextMessageContent(
+                    message_text=(
+                        "Ничего не найдено.\n\n"
+                        f"Открой бота и создай объявление: {bot_link()}"
+                    ),
+                    disable_web_page_preview=True,
+                ),
+            )
+        ]
+
+    await inline_query.answer(results, cache_time=1, is_personal=True)
+
+
 @router.message(CommandStart())
 async def start_handler(message: Message, state: FSMContext):
     upsert_user(message)
@@ -1452,47 +1303,6 @@ async def start_handler(message: Message, state: FSMContext):
 
     await message.answer(text, reply_markup=main_menu(message.from_user.id))
 
-    if start_arg == "parcel":
-        await begin_create(message, state, TYPE_PARCEL)
-        return
-    if start_arg == "trip":
-        await begin_create(message, state, TYPE_TRIP)
-        return
-
-    if start_arg.startswith("post_"):
-        post_id_str = start_arg.replace("post_", "", 1)
-        if post_id_str.isdigit():
-            row = get_post(int(post_id_str))
-            if row and row["status"] == STATUS_ACTIVE:
-                await message.answer(
-                    "📤 Открыто объявление по ссылке:\n\n" + post_text(row),
-                    reply_markup=public_post_kb(row["id"], row["user_id"], row["post_type"])
-                )
-            else:
-                await message.answer("Объявление не найдено или уже неактивно.")
-        return
-
-    if start_arg.startswith("route_"):
-        try:
-            _, post_type, from_country, to_country = start_arg.split("_", 3)
-            rows = search_route_posts(post_type, from_country, to_country, limit=10)
-            if not rows:
-                await message.answer(f"По маршруту {from_country} → {to_country} пока нет активных объявлений.")
-            else:
-                await message.answer(
-                    f"Маршрут: <b>{from_country} → {to_country}</b>\n"
-                    f"Тип: {'✈️ Попутчики' if post_type == TYPE_TRIP else '📦 Посылки'}\n"
-                    f"Найдено: {len(rows)}"
-                )
-                for row in rows:
-                    await message.answer(
-                        post_text(row),
-                        reply_markup=public_post_kb(row["id"], row["user_id"], row["post_type"])
-                    )
-        except Exception:
-            await message.answer("Не удалось открыть маршрут.")
-        return
-
 
 @router.message(Command("help"))
 @router.message(F.text == "ℹ️ Помощь")
@@ -1507,7 +1317,7 @@ async def help_handler(message: Message):
         "/new_trip — взять посылку\n"
         "/new_parcel — отправить посылку\n"
         "/admin — админка\n\n"
-        "Важно: бот — информационная площадка для поиска. Мы не принимаем оплату и не несем ответственности за действия сторон- участников.",
+        "Важно: бот — информационная площадка для поиска. Мы не принимаем оплату и не несем ответственности за действия сторон-участников.",
         reply_markup=main_menu(message.from_user.id)
     )
 
@@ -1538,6 +1348,7 @@ async def begin_create(message: Message, state: FSMContext, post_type: str):
         reply_markup=countries_kb("from")
     )
 
+
 @router.message(Command("new_trip"))
 @router.message(F.text == "✈️ Взять посылку")
 async def add_trip(message: Message, state: FSMContext):
@@ -1548,6 +1359,7 @@ async def add_trip(message: Message, state: FSMContext):
 @router.message(F.text == "📦 Отправить посылку")
 async def add_parcel(message: Message, state: FSMContext):
     await begin_create(message, state, TYPE_PARCEL)
+
 
 @router.callback_query(F.data.startswith("from:"))
 async def choose_from_country(callback: CallbackQuery, state: FSMContext):
@@ -2037,6 +1849,7 @@ async def relay_message(message: Message, state: FSMContext):
     target_user_id = data["target_user_id"]
     post_id = data["post_id"]
     text = message.text.strip()
+
     try:
         await message.bot.send_message(
             target_user_id,
@@ -2047,14 +1860,34 @@ async def relay_message(message: Message, state: FSMContext):
             + "Чтобы ответить, напиши пользователю напрямую"
             + (f": @{message.from_user.username}" if message.from_user.username else " или попроси его оставить контакт.")
         )
+
         with closing(connect_db()) as conn, conn:
             conn.execute(
                 "INSERT INTO dialogs (post_id, owner_user_id, requester_user_id, created_at) VALUES (?, ?, ?, ?)",
                 (post_id, target_user_id, message.from_user.id, now_ts())
             )
-        await message.answer("Сообщение отправлено владельцу объявления.", reply_markup=main_menu(message.from_user.id))
+
+        ensure_deal(post_id, target_user_id, message.from_user.id)
+
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Сделка состоялась", callback_data=f"deal_ok:{post_id}"),
+                InlineKeyboardButton(text="❌ Не договорились", callback_data=f"deal_fail:{post_id}")
+            ],
+            [
+                InlineKeyboardButton(text="⭐ Оставить отзыв", callback_data=f"leave_review:{post_id}:{target_user_id}")
+            ]
+        ])
+
+        await message.answer(
+            "Сообщение отправлено владельцу объявления.\n\n"
+            "Когда договоритесь, отметьте результат сделки:",
+            reply_markup=kb
+        )
+
     except Exception:
         await message.answer("Не удалось отправить сообщение. Возможно, владелец еще не запускал бота.")
+
     await state.clear()
 
 
@@ -2147,11 +1980,11 @@ async def review_rating_step(message: Message, state: FSMContext):
 @router.message(ReviewFlow.text)
 async def review_finish(message: Message, state: FSMContext):
     data = await state.get_data()
+
     review_text = None if message.text.strip() == "-" else message.text.strip()[:500]
     reviewed_user_id = data["reviewed_user_id"]
     post_id = data["post_id"]
-    if post_id == 0:
-        post_id = None
+    rating = data["rating"]
 
     with closing(connect_db()) as conn, conn:
         try:
@@ -2162,38 +1995,25 @@ async def review_finish(message: Message, state: FSMContext):
                 message.from_user.id,
                 reviewed_user_id,
                 post_id,
-                data["rating"],
+                rating,
                 review_text,
                 now_ts()
             ))
         except sqlite3.IntegrityError:
-            await message.answer("Такой отзыв уже оставлен.", reply_markup=main_menu(message.from_user.id))
+            await message.answer(
+                "Такой отзыв уже оставлен.",
+                reply_markup=main_menu(message.from_user.id)
+            )
             await state.clear()
             return
 
-    await message.answer("Спасибо! Отзыв сохранен.", reply_markup=main_menu(message.from_user.id))
+    await message.answer(
+        "⭐ Спасибо! Отзыв сохранен.",
+        reply_markup=main_menu(message.from_user.id)
+    )
     await state.clear()
 
 
-@router.message(Command("admin"))
-@router.message(F.text == "👨‍💼 Админка")
-async def admin_menu(message: Message):
-    if not is_admin(message.from_user.id):
-        await message.answer("Админка доступна только администраторам.")
-        return
-    with closing(connect_db()) as conn:
-        pending = conn.execute("SELECT COUNT(*) AS c FROM posts WHERE status='pending'").fetchone()["c"]
-        complaints = conn.execute("SELECT COUNT(*) AS c FROM complaints").fetchone()["c"]
-    await message.answer(
-        f"Админка\n\nНа модерации: {pending}\nЖалоб: {complaints}\n\n"
-        "Команды:\n"
-        "/admin_pending\n"
-        "/admin_complaints\n"
-        "/admin_ban USER_ID\n"
-        "/admin_unban USER_ID\n"
-        "/admin_verify USER_ID\n"
-        "/admin_unverify USER_ID"
-    )
 @router.callback_query(F.data.startswith("deal_ok:"))
 async def deal_ok_handler(callback: CallbackQuery):
     post_id = int(callback.data.split(":")[1])
@@ -2285,6 +2105,33 @@ async def review_rating_callback(callback: CallbackQuery, state: FSMContext):
 
     await callback.message.answer("Напишите короткий отзыв или отправьте '-' если без текста.")
     await callback.answer()
+
+
+@router.callback_query(F.data == "noop")
+async def noop(callback: CallbackQuery):
+    await callback.answer()
+
+
+@router.message(Command("admin"))
+@router.message(F.text == "👨‍💼 Админка")
+async def admin_menu(message: Message):
+    if not is_admin(message.from_user.id):
+        await message.answer("Админка доступна только администраторам.")
+        return
+    with closing(connect_db()) as conn:
+        pending = conn.execute("SELECT COUNT(*) AS c FROM posts WHERE status='pending'").fetchone()["c"]
+        complaints = conn.execute("SELECT COUNT(*) AS c FROM complaints").fetchone()["c"]
+    await message.answer(
+        f"Админка\n\nНа модерации: {pending}\nЖалоб: {complaints}\n\n"
+        "Команды:\n"
+        "/admin_pending\n"
+        "/admin_complaints\n"
+        "/admin_ban USER_ID\n"
+        "/admin_unban USER_ID\n"
+        "/admin_verify USER_ID\n"
+        "/admin_unverify USER_ID"
+    )
+
 
 @router.message(Command("admin_pending"))
 async def admin_pending(message: Message):
@@ -2447,78 +2294,8 @@ async def admin_unverify(message: Message):
         conn.execute("UPDATE users SET is_verified=0 WHERE user_id=?", (user_id,))
     await message.answer(f"Статус проверенного у пользователя {user_id} снят.")
 
-@router.callback_query(F.data.startswith("deal_done:"))
-async def deal_done_handler(callback: CallbackQuery):
-    post_id = int(callback.data.split(":")[1])
-
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⭐ Отлично", callback_data=f"review_good:{post_id}")],
-        [InlineKeyboardButton(text="👍 Нормально", callback_data=f"review_ok:{post_id}")],
-        [InlineKeyboardButton(text="❌ Плохо", callback_data=f"review_bad:{post_id}")]
-    ])
-
-    await callback.message.answer(
-        "🎉 Сделка завершена!\n\nПожалуйста оцените взаимодействие:",
-        reply_markup=kb
-    )
-    await callback.answer()
-
-@router.message(ReviewFlow.text)
-async def review_finish(message: Message, state: FSMContext):
-    data = await state.get_data()
-
-    review_text = None if message.text.strip() == "-" else message.text.strip()[:500]
-    reviewed_user_id = data["reviewed_user_id"]
-    post_id = data["post_id"]
-    rating = data["rating"]
-
-    with closing(connect_db()) as conn, conn:
-        try:
-            conn.execute("""
-                INSERT INTO reviews (reviewer_user_id, reviewed_user_id, post_id, rating, text, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (
-                message.from_user.id,
-                reviewed_user_id,
-                post_id,
-                rating,
-                review_text,
-                now_ts()
-            ))
-        except sqlite3.IntegrityError:
-            await message.answer(
-                "Такой отзыв уже оставлен.",
-                reply_markup=main_menu(message.from_user.id)
-            )
-            await state.clear()
-            return
-
-    await message.answer(
-        "⭐ Спасибо! Отзыв сохранен.",
-        reply_markup=main_menu(message.from_user.id)
-    )
-    await state.clear()
-
-@router.callback_query(F.data.startswith("review_"))
-async def review_handler(callback: CallbackQuery):
-    review_type = callback.data.split(":")[0]
-
-    if review_type == "review_good":
-        text = "⭐ Спасибо! Отзыв: Отлично"
-    elif review_type == "review_ok":
-        text = "👍 Спасибо! Отзыв: Нормально"
-    else:
-        text = "⚠️ Спасибо! Отзыв: Плохо"
-
-
-@router.message()
-async def debug_all(message: Message):
-    await message.answer(f"DEBUG: {repr(message.text)}")
-
 
 async def main():
-    global dp, bot
-
     if not BOT_TOKEN:
         raise RuntimeError("Set BOT_TOKEN env var")
 

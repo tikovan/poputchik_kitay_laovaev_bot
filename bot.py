@@ -2143,10 +2143,6 @@ async def review_handler(callback: CallbackQuery):
     else:
         text = "⚠️ Спасибо! Отзыв: Плохо"
 
-await callback.message.answer(
-    text,
-    reply_markup=public_post_kb(post_id, owner_id, post_type)
-)    
 
 await callback.answer()
 

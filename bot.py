@@ -530,7 +530,48 @@ def popular_routes_kb(rows: List[sqlite3.Row]):
         ])
     return InlineKeyboardMarkup(inline_keyboard=buttons or [[InlineKeyboardButton(text="Пока пусто", callback_data="noop")]])
 
+def public_post_kb(post_id, owner_id, post_type):
 
+    rows = []
+
+    if post_type == TYPE_PARCEL:
+        rows.append([
+            InlineKeyboardButton(
+                text="✈️ Я могу взять эту посылку",
+                url=bot_link(f"trip_from_post_{post_id}")
+            )
+        ])
+    else:
+        rows.append([
+            InlineKeyboardButton(
+                text="📦 Хочу отправить этим маршрутом",
+                url=bot_link(f"parcel_from_post_{post_id}")
+            )
+        ])
+
+    rows.append([
+        InlineKeyboardButton(
+            text="✉️ Написать владельцу",
+            callback_data=f"contact:{post_id}:{owner_id}"
+        )
+    ])
+
+    rows.append([
+        InlineKeyboardButton(
+            text="⭐ Сделка завершена",
+            callback_data=f"deal_done:{post_id}"
+        )
+    ])
+
+    rows.append([
+        InlineKeyboardButton(
+            text="📤 Поделиться",
+            url=post_deeplink(post_id)
+        )
+    ])
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+    
 class CreatePost(StatesGroup):
     from_country = State()
     from_city = State()
@@ -2075,6 +2116,37 @@ async def admin_unverify(message: Message):
         conn.execute("UPDATE users SET is_verified=0 WHERE user_id=?", (user_id,))
     await message.answer(f"Статус проверенного у пользователя {user_id} снят.")
 
+@router.callback_query(F.data.startswith("deal_done:"))
+async def deal_done_handler(callback: CallbackQuery):
+    post_id = int(callback.data.split(":")[1])
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⭐ Отлично", callback_data=f"review_good:{post_id}")],
+        [InlineKeyboardButton(text="👍 Нормально", callback_data=f"review_ok:{post_id}")],
+        [InlineKeyboardButton(text="❌ Плохо", callback_data=f"review_bad:{post_id}")]
+    ])
+
+    await callback.message.answer(
+        "🎉 Сделка завершена!\n\nПожалуйста оцените взаимодействие:",
+        reply_markup=kb
+    )
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("review_"))
+async def review_handler(callback: CallbackQuery):
+    review_type = callback.data.split(":")[0]
+
+    if review_type == "review_good":
+        text = "⭐ Спасибо! Отзыв: Отлично"
+    elif review_type == "review_ok":
+        text = "👍 Спасибо! Отзыв: Нормально"
+    else:
+        text = "⚠️ Спасибо! Отзыв: Плохо"
+
+await callback.message.answer(
+    text,
+    reply_markup=public_post_kb(post_id, owner_id, post_type)
+)    await callback.answer()
 
 @router.callback_query(F.data == "noop")
 async def noop(callback: CallbackQuery):

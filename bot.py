@@ -1,9 +1,11 @@
 import asyncio
 import html
 import os
+import re
 import sqlite3
 import time
 from contextlib import closing
+from datetime import datetime
 from typing import Optional, List, Tuple
 
 from aiogram import Bot, Dispatcher, F, Router
@@ -38,7 +40,7 @@ BUMP_PRICE_TEXT = os.getenv(
 MAX_ACTIVE_POSTS_PER_USER = int(os.getenv("MAX_ACTIVE_POSTS_PER_USER", "10"))
 MIN_SECONDS_BETWEEN_ACTIONS = int(os.getenv("MIN_SECONDS_BETWEEN_ACTIONS", "3"))
 POST_TTL_DAYS = int(os.getenv("POST_TTL_DAYS", "14"))
-MATCH_NOTIFY_LIMIT = int(os.getenv("MATCH_NOTIFY_LIMIT", "5"))
+COINCIDENCE_NOTIFY_LIMIT = int(os.getenv("COINCIDENCE_NOTIFY_LIMIT", "5"))
 
 router = Router()
 
@@ -77,6 +79,62 @@ def format_age(ts: int) -> str:
         return f"{hrs} ч назад"
     days = diff // 86400
     return f"{days} дн назад"
+
+
+def normalize_text(value: Optional[str]) -> str:
+    return (value or "").strip().lower()
+
+
+def parse_weight_kg(value: Optional[str]) -> Optional[float]:
+    """
+    Из текста вроде:
+    - "до 3 кг"
+    - "3kg"
+    - "примерно 8.5"
+    пытается вытащить число.
+    """
+    if not value:
+        return None
+
+    text = value.lower().replace(",", ".")
+    found = re.findall(r"\d+(?:\.\d+)?", text)
+    if not found:
+        return None
+
+    try:
+        return float(found[0])
+    except ValueError:
+        return None
+
+
+def parse_date_loose(value: Optional[str]) -> Optional[datetime]:
+    """
+    Поддерживает:
+    - YYYY-MM-DD
+    - DD.MM.YYYY
+    - DD/MM/YYYY
+    - DD-MM-YYYY
+    Если не распознано — None.
+    """
+    if not value:
+        return None
+
+    text = value.strip()
+
+    fmts = [
+        "%Y-%m-%d",
+        "%d.%m.%Y",
+        "%d/%m/%Y",
+        "%d-%m-%Y",
+    ]
+
+    for fmt in fmts:
+        try:
+            return datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+
+    return None
 
 
 def bot_link(start_param: Optional[str] = None) -> str:
@@ -170,7 +228,7 @@ def init_db():
             UNIQUE(reviewer_user_id, reviewed_user_id, post_id)
         );
 
-        CREATE TABLE IF NOT EXISTS match_notifications (
+        CREATE TABLE IF NOT EXISTS coincidence_notifications (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             post_a_id INTEGER NOT NULL,
             post_b_id INTEGER NOT NULL,
@@ -277,6 +335,19 @@ def format_rating_line(user_id: int) -> Optional[str]:
     return f"{stars} {avg_rating:.1f} ({cnt} отзывов)"
 
 
+def format_coincidence_badges(score: int, notes: List[str]) -> str:
+    if score >= 75:
+        level = "✅ Сильное совпадение"
+    elif score >= 55:
+        level = "🟡 Хорошее совпадение"
+    else:
+        level = "⚠️ Возможное совпадение"
+
+    if notes:
+        return f"{level}\n" + "\n".join(f"• {html.escape(note)}" for note in notes)
+    return level
+
+
 def post_text(row, for_channel: bool = False) -> str:
     route = f"{html.escape(row['from_country'])}"
     if row["from_city"]:
@@ -358,7 +429,7 @@ def post_actions_kb(post_id: int, status: str):
         ],
         [
             InlineKeyboardButton(text="🔼 Поднять", callback_data=f"bump:{post_id}"),
-            InlineKeyboardButton(text="👀 Совпадения", callback_data=f"matches:{post_id}")
+            InlineKeyboardButton(text="👀 Совпадения", callback_data=f"coincidences:{post_id}")
         ],
         [
             InlineKeyboardButton(text="📤 Поделиться", url=post_deeplink(post_id))
@@ -605,6 +676,177 @@ def delete_subscription(user_id: int, sub_id: int) -> bool:
         return cur.rowcount > 0
 
 
+def coincidence_already_notified(post_a_id: int, post_b_id: int) -> bool:
+    a, b = sorted([post_a_id, post_b_id])
+    with closing(connect_db()) as conn:
+        row = conn.execute("""
+            SELECT id FROM coincidence_notifications
+            WHERE post_a_id=? AND post_b_id=?
+        """, (a, b)).fetchone()
+        return row is not None
+
+
+def mark_coincidence_notified(post_a_id: int, post_b_id: int):
+    a, b = sorted([post_a_id, post_b_id])
+    with closing(connect_db()) as conn, conn:
+        conn.execute("""
+            INSERT OR IGNORE INTO coincidence_notifications (post_a_id, post_b_id, created_at)
+            VALUES (?, ?, ?)
+        """, (a, b, now_ts()))
+
+
+def calculate_coincidence_score(source_row: sqlite3.Row, candidate_row: sqlite3.Row) -> Tuple[int, List[str]]:
+    """
+    source_row — текущее объявление
+    candidate_row — противоположный тип объявления
+    """
+    score = 40  # базовое совпадение по странам
+    notes: List[str] = []
+
+    source_from_city = normalize_text(source_row["from_city"])
+    candidate_from_city = normalize_text(candidate_row["from_city"])
+    source_to_city = normalize_text(source_row["to_city"])
+    candidate_to_city = normalize_text(candidate_row["to_city"])
+
+    # Город отправления
+    if source_from_city and candidate_from_city:
+        if source_from_city == candidate_from_city:
+            score += 15
+            notes.append("Совпадает город отправления")
+        else:
+            score -= 8
+            notes.append("Разные города отправления")
+    else:
+        score += 6
+        notes.append("Один из городов отправления не указан")
+
+    # Город назначения
+    if source_to_city and candidate_to_city:
+        if source_to_city == candidate_to_city:
+            score += 15
+            notes.append("Совпадает город назначения")
+        else:
+            score -= 8
+            notes.append("Разные города назначения")
+    else:
+        score += 6
+        notes.append("Один из городов назначения не указан")
+
+    # Дата
+    source_date = parse_date_loose(source_row["travel_date"])
+    candidate_date = parse_date_loose(candidate_row["travel_date"])
+    if source_date and candidate_date:
+        days_diff = abs((source_date - candidate_date).days)
+        if days_diff <= 2:
+            score += 18
+            notes.append("Даты очень близки")
+        elif days_diff <= 7:
+            score += 10
+            notes.append("Даты близки")
+        else:
+            score -= 6
+            notes.append("Даты заметно отличаются")
+    else:
+        score += 4
+        notes.append("Хотя бы одна дата указана неточно")
+
+    # Вес
+    source_weight = parse_weight_kg(source_row["weight_kg"])
+    candidate_weight = parse_weight_kg(candidate_row["weight_kg"])
+
+    # Нужно понять кто попутчик, кто посылка
+    trip_weight = None
+    parcel_weight = None
+    if source_row["post_type"] == TYPE_TRIP:
+        trip_weight = source_weight
+        parcel_weight = candidate_weight
+    else:
+        trip_weight = candidate_weight
+        parcel_weight = source_weight
+
+    if trip_weight is not None and parcel_weight is not None:
+        if trip_weight >= parcel_weight:
+            score += 18
+            notes.append("Вес подходит полностью")
+        else:
+            ratio = 0 if parcel_weight == 0 else trip_weight / parcel_weight
+            if ratio >= 0.5:
+                score += 10
+                notes.append(f"Вес подходит частично: можно взять около {trip_weight:g} кг из {parcel_weight:g} кг")
+            elif ratio > 0:
+                score += 4
+                notes.append(f"Вес подходит слабо: можно взять около {trip_weight:g} кг из {parcel_weight:g} кг")
+            else:
+                score -= 4
+                notes.append("По весу совпадение слабое")
+    else:
+        score += 4
+        notes.append("Вес указан неточно")
+
+    return score, notes
+
+
+def get_coincidences(
+    post_type: str,
+    from_country: str,
+    to_country: str,
+    exclude_user_id: Optional[int] = None,
+    source_row: Optional[sqlite3.Row] = None,
+    limit: int = 20
+) -> List[dict]:
+    target_type = TYPE_PARCEL if post_type == TYPE_TRIP else TYPE_TRIP
+
+    query = """
+        SELECT p.*, u.username, u.full_name
+        FROM posts p
+        LEFT JOIN users u ON u.user_id = p.user_id
+        WHERE p.post_type=?
+          AND p.status='active'
+          AND p.from_country=?
+          AND p.to_country=?
+          AND (p.expires_at IS NULL OR p.expires_at > ?)
+    """
+    params: List = [target_type, from_country, to_country, now_ts()]
+
+    if exclude_user_id is not None:
+        query += " AND p.user_id != ?"
+        params.append(exclude_user_id)
+
+    query += " ORDER BY COALESCE(p.bumped_at, p.created_at) DESC LIMIT 100"
+
+    with closing(connect_db()) as conn:
+        rows = conn.execute(query, params).fetchall()
+
+    results: List[dict] = []
+
+    for row in rows:
+        score = 45
+        notes: List[str] = ["Совпадает маршрут по странам"]
+
+        if source_row is not None:
+            score, notes = calculate_coincidence_score(source_row, row)
+
+        if score < 35:
+            continue
+
+        if score >= 75:
+            coincidence_type = "strong"
+        elif score >= 55:
+            coincidence_type = "good"
+        else:
+            coincidence_type = "possible"
+
+        results.append({
+            "row": row,
+            "score": score,
+            "notes": notes,
+            "type": coincidence_type
+        })
+
+    results.sort(key=lambda x: (x["score"], x["row"]["bumped_at"] or x["row"]["created_at"]), reverse=True)
+    return results[:limit]
+
+
 def publish_to_channel(bot: Bot, post_id: int):
     if not CHANNEL_USERNAME:
         return
@@ -644,87 +886,52 @@ async def remove_post_from_channel(bot: Bot, row):
         print(f"CHANNEL DELETE ERROR: {e}")
 
 
-def search_matches(post_type: str, from_country: str, to_country: str, exclude_user_id: Optional[int] = None):
-    target_type = TYPE_PARCEL if post_type == TYPE_TRIP else TYPE_TRIP
-    query = """
-        SELECT p.*, u.username, u.full_name
-        FROM posts p
-        LEFT JOIN users u ON u.user_id = p.user_id
-        WHERE p.post_type=?
-          AND p.status='active'
-          AND p.from_country=?
-          AND p.to_country=?
-          AND (p.expires_at IS NULL OR p.expires_at > ?)
-    """
-    params = [target_type, from_country, to_country, now_ts()]
-    if exclude_user_id is not None:
-        query += " AND p.user_id != ?"
-        params.append(exclude_user_id)
-    query += " ORDER BY COALESCE(p.bumped_at, p.created_at) DESC LIMIT 20"
-
-    with closing(connect_db()) as conn:
-        return conn.execute(query, params).fetchall()
-
-
-def match_already_notified(post_a_id: int, post_b_id: int) -> bool:
-    a, b = sorted([post_a_id, post_b_id])
-    with closing(connect_db()) as conn:
-        row = conn.execute("""
-            SELECT id FROM match_notifications
-            WHERE post_a_id=? AND post_b_id=?
-        """, (a, b)).fetchone()
-        return row is not None
-
-
-def mark_match_notified(post_a_id: int, post_b_id: int):
-    a, b = sorted([post_a_id, post_b_id])
-    with closing(connect_db()) as conn, conn:
-        conn.execute("""
-            INSERT OR IGNORE INTO match_notifications (post_a_id, post_b_id, created_at)
-            VALUES (?, ?, ?)
-        """, (a, b, now_ts()))
-
-
-async def notify_match_users(bot: Bot, new_post_id: int):
+async def notify_coincidence_users(bot: Bot, new_post_id: int):
     new_row = get_post(new_post_id)
     if not new_row or new_row["status"] != STATUS_ACTIVE:
         return
 
-    matches = search_matches(
-        new_row["post_type"],
-        new_row["from_country"],
-        new_row["to_country"],
-        exclude_user_id=new_row["user_id"]
+    coincidences = get_coincidences(
+        post_type=new_row["post_type"],
+        from_country=new_row["from_country"],
+        to_country=new_row["to_country"],
+        exclude_user_id=new_row["user_id"],
+        source_row=new_row,
+        limit=COINCIDENCE_NOTIFY_LIMIT
     )
 
-    if not matches:
+    if not coincidences:
         return
 
-    for match in matches[:MATCH_NOTIFY_LIMIT]:
-        if match_already_notified(new_row["id"], match["id"]):
+    for item in coincidences:
+        row = item["row"]
+        score = item["score"]
+        notes = item["notes"]
+
+        if coincidence_already_notified(new_row["id"], row["id"]):
             continue
+
+        intro = format_coincidence_badges(score, notes)
 
         try:
             await bot.send_message(
                 new_row["user_id"],
-                "🔔 Найдено совпадение по вашему объявлению!\n\n"
-                + post_text(match),
-                reply_markup=public_post_kb(match["id"], match["user_id"], match["post_type"])
+                f"🔔 Найдено новое совпадение!\n\n{intro}\n\n{post_text(row)}",
+                reply_markup=public_post_kb(row["id"], row["user_id"], row["post_type"])
             )
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"COINCIDENCE SEND A ERROR: {e}")
 
         try:
             await bot.send_message(
-                match["user_id"],
-                "🔔 Появилось новое совпадение по вашему маршруту!\n\n"
-                + post_text(new_row),
+                row["user_id"],
+                f"🔔 Найдено новое совпадение!\n\n{intro}\n\n{post_text(new_row)}",
                 reply_markup=public_post_kb(new_row["id"], new_row["user_id"], new_row["post_type"])
             )
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"COINCIDENCE SEND B ERROR: {e}")
 
-        mark_match_notified(new_row["id"], match["id"])
+        mark_coincidence_notified(new_row["id"], row["id"])
 
 
 async def notify_subscribers(bot: Bot, post_id: int):
@@ -744,15 +951,15 @@ async def notify_subscribers(bot: Bot, post_id: int):
         try:
             await bot.send_message(
                 sub["user_id"],
-                "🔔 По вашей подписке появился новый маршрут:\n\n"
+                "🔔 По вашей подписке появилось новое объявление:\n\n"
                 + post_text(row),
                 reply_markup=public_post_kb(row["id"], row["user_id"], row["post_type"])
             )
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"SUBSCRIBER SEND ERROR: {e}")
 
 
-async def run_global_match_scan(bot: Bot):
+async def run_global_coincidence_scan(bot: Bot):
     try:
         with closing(connect_db()) as conn:
             rows = conn.execute("""
@@ -766,40 +973,47 @@ async def run_global_match_scan(bot: Bot):
             """, (now_ts(),)).fetchall()
 
         for row in rows:
-            matches = search_matches(
-                row["post_type"],
-                row["from_country"],
-                row["to_country"],
-                exclude_user_id=row["user_id"]
+            coincidences = get_coincidences(
+                post_type=row["post_type"],
+                from_country=row["from_country"],
+                to_country=row["to_country"],
+                exclude_user_id=row["user_id"],
+                source_row=row,
+                limit=COINCIDENCE_NOTIFY_LIMIT
             )
 
-            for match in matches[:MATCH_NOTIFY_LIMIT]:
-                if match_already_notified(row["id"], match["id"]):
+            for item in coincidences:
+                target = item["row"]
+                score = item["score"]
+                notes = item["notes"]
+
+                if coincidence_already_notified(row["id"], target["id"]):
                     continue
+
+                intro = format_coincidence_badges(score, notes)
 
                 try:
                     await bot.send_message(
                         row["user_id"],
-                        "🔔 Найдено новое совпадение по вашему маршруту!\n\n"
-                        + post_text(match),
-                        reply_markup=public_post_kb(match["id"], match["user_id"], match["post_type"])
+                        f"🔔 Найдено новое совпадение!\n\n{intro}\n\n{post_text(target)}",
+                        reply_markup=public_post_kb(target["id"], target["user_id"], target["post_type"])
                     )
                 except Exception as e:
-                    print(f"GLOBAL MATCH SEND A ERROR: {e}")
+                    print(f"GLOBAL COINCIDENCE SEND A ERROR: {e}")
 
                 try:
                     await bot.send_message(
-                        match["user_id"],
-                        "🔔 Найдено новое совпадение по вашему маршруту!\n\n"
-                        + post_text(row),
+                        target["user_id"],
+                        f"🔔 Найдено новое совпадение!\n\n{intro}\n\n{post_text(row)}",
                         reply_markup=public_post_kb(row["id"], row["user_id"], row["post_type"])
                     )
                 except Exception as e:
-                    print(f"GLOBAL MATCH SEND B ERROR: {e}")
+                    print(f"GLOBAL COINCIDENCE SEND B ERROR: {e}")
 
-                mark_match_notified(row["id"], match["id"])
+                mark_coincidence_notified(row["id"], target["id"])
+
     except Exception as e:
-        print(f"GLOBAL MATCH SCAN ERROR: {e}")
+        print(f"GLOBAL COINCIDENCE SCAN ERROR: {e}")
 
 
 def owner_only(callback: CallbackQuery, post_id: int) -> Optional[sqlite3.Row]:
@@ -850,9 +1064,9 @@ async def expire_old_posts(bot: Bot):
         await asyncio.sleep(300)
 
 
-async def global_match_loop(bot: Bot):
+async def global_coincidence_loop(bot: Bot):
     while True:
-        await run_global_match_scan(bot)
+        await run_global_coincidence_scan(bot)
         await asyncio.sleep(300)
 
 
@@ -1003,7 +1217,7 @@ async def choose_to_country(callback: CallbackQuery, state: FSMContext):
 async def enter_to_city(message: Message, state: FSMContext):
     await state.update_data(to_city=None if message.text.strip() == "-" else message.text.strip()[:80])
     await state.set_state(CreatePost.travel_date)
-    await message.answer("Дата поездки/отправки. Например: 15 марта 2026. Если дата не точная — напиши как удобно.")
+    await message.answer("Дата поездки/отправки. Например: 2026-03-15 или 15.03.2026. Если дата не точная — напиши как удобно.")
 
 
 @router.message(CreatePost.travel_date)
@@ -1073,9 +1287,9 @@ async def finalize_post(message: Message, state: FSMContext, bot: Bot):
                 print(f"SAFE_PUBLISH ERROR: {e}")
 
             try:
-                await notify_match_users(bot, post_id)
+                await notify_coincidence_users(bot, post_id)
             except Exception as e:
-                print(f"NOTIFY_MATCH_USERS ERROR: {e}")
+                print(f"NOTIFY_COINCIDENCE_USERS ERROR: {e}")
 
             try:
                 await notify_subscribers(bot, post_id)
@@ -1178,7 +1392,7 @@ async def activate_post(callback: CallbackQuery, bot: Bot):
 
     if not ADMIN_IDS:
         await safe_publish(bot, post_id)
-        await notify_match_users(bot, post_id)
+        await notify_coincidence_users(bot, post_id)
         await notify_subscribers(bot, post_id)
 
     await callback.answer()
@@ -1243,38 +1457,78 @@ async def find_from(callback: CallbackQuery, state: FSMContext):
 async def find_to(callback: CallbackQuery, state: FSMContext):
     country = callback.data.split(":", 1)[1]
     data = await state.get_data()
-    post_type = TYPE_TRIP if data["looking_for"] == "trip" else TYPE_PARCEL
-    matches = search_matches(post_type, data["from_country"], country, exclude_user_id=callback.from_user.id)
+    source_post_type = TYPE_TRIP if data["looking_for"] == "trip" else TYPE_PARCEL
+
+    pseudo_source = {
+        "post_type": source_post_type,
+        "from_country": data["from_country"],
+        "to_country": country,
+        "from_city": None,
+        "to_city": None,
+        "travel_date": None,
+        "weight_kg": None,
+        "user_id": callback.from_user.id,
+    }
+
+    coincidences = get_coincidences(
+        post_type=source_post_type,
+        from_country=data["from_country"],
+        to_country=country,
+        exclude_user_id=callback.from_user.id,
+        source_row=pseudo_source,
+        limit=10
+    )
+
     await state.clear()
-    if not matches:
+
+    if not coincidences:
         await callback.message.answer("Совпадений пока нет.")
     else:
-        await callback.message.answer(f"Найдено совпадений: {len(matches)}")
-        for row in matches[:10]:
+        await callback.message.answer(f"Найдено совпадений: {len(coincidences)}")
+        for item in coincidences:
+            row = item["row"]
+            score = item["score"]
+            notes = item["notes"]
+            intro = format_coincidence_badges(score, notes)
             await callback.message.answer(
-                post_text(row),
+                f"{intro}\n\n{post_text(row)}",
                 reply_markup=public_post_kb(row["id"], row["user_id"], row["post_type"])
             )
+
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("matches:"))
-async def matches_for_post(callback: CallbackQuery):
+@router.callback_query(F.data.startswith("coincidences:"))
+async def coincidences_for_post(callback: CallbackQuery):
     post_id = int(callback.data.split(":")[1])
     row = owner_only(callback, post_id)
     if not row:
         await callback.answer("Нет доступа", show_alert=True)
         return
-    matches = search_matches(row["post_type"], row["from_country"], row["to_country"], exclude_user_id=callback.from_user.id)
-    if not matches:
+
+    coincidences = get_coincidences(
+        post_type=row["post_type"],
+        from_country=row["from_country"],
+        to_country=row["to_country"],
+        exclude_user_id=callback.from_user.id,
+        source_row=row,
+        limit=10
+    )
+
+    if not coincidences:
         await callback.message.answer("Совпадений пока нет.")
     else:
-        await callback.message.answer(f"Найдено совпадений: {len(matches)}")
-        for item in matches[:10]:
+        await callback.message.answer(f"Найдено совпадений: {len(coincidences)}")
+        for item in coincidences:
+            found_row = item["row"]
+            score = item["score"]
+            notes = item["notes"]
+            intro = format_coincidence_badges(score, notes)
             await callback.message.answer(
-                post_text(item),
-                reply_markup=public_post_kb(item["id"], item["user_id"], item["post_type"])
+                f"{intro}\n\n{post_text(found_row)}",
+                reply_markup=public_post_kb(found_row["id"], found_row["user_id"], found_row["post_type"])
             )
+
     await callback.answer()
 
 
@@ -1615,7 +1869,7 @@ async def admin_approve(callback: CallbackQuery, bot: Bot):
         except Exception:
             pass
     await safe_publish(bot, post_id)
-    await notify_match_users(bot, post_id)
+    await notify_coincidence_users(bot, post_id)
     await notify_subscribers(bot, post_id)
     await callback.answer("Одобрено")
 
@@ -1758,7 +2012,7 @@ async def main():
     dp.include_router(router)
 
     asyncio.create_task(expire_old_posts(bot))
-    asyncio.create_task(global_match_loop(bot))
+    asyncio.create_task(global_coincidence_loop(bot))
 
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)

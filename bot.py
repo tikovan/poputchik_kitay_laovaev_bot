@@ -11,7 +11,7 @@ from typing import Optional, List, Tuple
 from aiogram import Bot, Dispatcher, F, Router
 from dotenv import load_dotenv
 from aiogram.enums import ParseMode
-from aiogram.filters import Command, CommandStart
+from aiogram.filters import Command, CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -63,7 +63,7 @@ STATUS_ACTIVE = "active"
 STATUS_INACTIVE = "inactive"
 STATUS_REJECTED = "rejected"
 STATUS_EXPIRED = "expired"
-
+STATUS_DELETED = "deleted"
 
 def now_ts() -> int:
     return int(time.time())
@@ -583,6 +583,7 @@ def main_menu(user_id: Optional[int] = None):
         [KeyboardButton(text="🔔 Подписки"), KeyboardButton(text="📊 Статистика")],
         [KeyboardButton(text="💰 Поднять объявление"), KeyboardButton(text="⭐ Оставить отзыв")],
         [KeyboardButton(text="🆘 Жалоба"), KeyboardButton(text="ℹ️ Помощь")],
+        [KeyboardButton(text="❌ Отмена / Меню")]
     ]
     if user_id is not None and is_admin(user_id):
         keyboard.append([KeyboardButton(text="👨‍💼 Админка")])
@@ -1424,19 +1425,16 @@ async def start_handler(message: Message, state: FSMContext):
 
     await message.answer(text, reply_markup=main_menu(message.from_user.id))
     
-@router.message(Command("new_trip"))
-@router.message(F.text == "✈️ Взять посылку")
+@router.message(StateFilter("*"), Command("new_trip"))
+@router.message(StateFilter("*"), F.text == "✈️ Взять посылку")
 async def add_trip(message: Message, state: FSMContext):
     await state.clear()
     await begin_create(message, state, TYPE_TRIP)
-
-
+    
 @router.message(Command("new_parcel"))
 @router.message(F.text == "📦 Отправить посылку")
 async def add_parcel(message: Message, state: FSMContext):
-    await state.clear()
     await begin_create(message, state, TYPE_PARCEL)
-
 
 @router.callback_query(F.data.startswith("from:"))
 async def choose_from_country(callback: CallbackQuery, state: FSMContext):
@@ -1672,6 +1670,10 @@ async def bump_info(message: Message):
         reply_markup=main_menu(message.from_user.id)
     )
 
+@router.message(StateFilter("*"), F.text == "❌ Отмена / Меню")
+async def cancel_to_menu(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer("Возвращаю в меню.", reply_markup=main_menu(message.from_user.id))
 
 @router.message(Command("find"))
 @router.message(F.text == "🔎 Найти совпадения")

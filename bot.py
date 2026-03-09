@@ -637,7 +637,7 @@ def public_post_kb(post_id: int, owner_id: int, post_type: Optional[str] = None)
     avg_rating, reviews_count = user_rating_summary(owner_id)
 
     rows = [
-        [InlineKeyboardButton(text="✉️ Написать владельцу", callback_data=f"contact:{post_id}:{owner_id}")],
+        [InlineKeyboardButton(text="✉️ Написать пользователю", callback_data=f"contact:{post_id}:{owner_id}")],
         [InlineKeyboardButton(text="🤝 Предложить сделку", callback_data=f"offer_deal:{post_id}:{owner_id}")]
     ]
 

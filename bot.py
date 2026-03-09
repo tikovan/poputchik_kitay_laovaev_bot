@@ -1456,7 +1456,9 @@ def reserve_coincidence_notification(post_a_id: int, post_b_id: int) -> bool:
             VALUES (?, ?, ?)
         """, (a, b, now_ts()))
         return cur.rowcount > 0
-        def calculate_coincidence_score(source_row, candidate_row: sqlite3.Row) -> Tuple[int, List[str]]:
+
+
+def calculate_coincidence_score(source_row, candidate_row: sqlite3.Row) -> Tuple[int, List[str]]:
     score = 40
     notes: List[str] = []
 
@@ -1536,7 +1538,6 @@ def reserve_coincidence_notification(post_a_id: int, post_b_id: int) -> bool:
         notes.append("Вес указан неточно")
 
     return score, notes
-
 
 def get_coincidences(
     post_type: str,

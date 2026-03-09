@@ -1447,49 +1447,6 @@ async def start_handler(message: Message, state: FSMContext):
         text,
         reply_markup=main_menu(message.from_user.id)
     )
-@router.message(Command("help"))
-@router.message(F.text == "ℹ️ Помощь")
-async def help_handler(message: Message):
-    upsert_user(message)
-    await message.answer(
-        "Команды:\n"
-        "/start — старт\n"
-        "/help — помощь\n"
-        "/my — мои объявления\n"
-        "/find — поиск совпадений\n"
-        "/new_trip — взять посылку\n"
-        "/new_parcel — отправить посылку\n"
-        "/admin — админка\n\n"
-        "Важно: бот — информационная площадка для поиска. Мы не принимаем оплату и не несем ответственности за действия сторон-участников.",
-        reply_markup=main_menu(message.from_user.id)
-    )
-
-
-async def begin_create(message: Message, state: FSMContext, post_type: str):
-    upsert_user(message)
-
-    limit = anti_spam_check(message.from_user.id)
-    if limit:
-        await message.answer(limit)
-        return
-
-    if active_post_count(message.from_user.id) >= MAX_ACTIVE_POSTS_PER_USER:
-        await message.answer(
-            f"Лимит активных объявлений: {MAX_ACTIVE_POSTS_PER_USER}. "
-            "Сначала удалите или деактивируйте часть объявлений."
-        )
-        return
-
-    await state.clear()
-    await state.update_data(post_type=post_type)
-    await state.set_state(CreatePost.from_country)
-
-    title = "✈️ Оформляем заявку: взять посылку" if post_type == TYPE_TRIP else "📦 Оформляем заявку: отправить посылку"
-
-    await message.answer(
-        f"{title}\n\nВыбери страну отправления:",
-        reply_markup=countries_kb("from")
-    )
 
 
 @router.message(Command("new_trip"))

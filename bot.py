@@ -2080,7 +2080,7 @@ async def subscriptions_menu(message: Message):
     await message.answer("Подписки на маршруты:", reply_markup=subscription_actions_kb())
 
 
-@router.callback_query(F.data == "sub:new"))
+@router.callback_query(F.data == "sub:new")
 async def sub_new_start(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     kb = InlineKeyboardMarkup(inline_keyboard=[

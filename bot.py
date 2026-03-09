@@ -1241,7 +1241,7 @@ async def notify_coincidence_users(bot: Bot, new_post_id: int):
         notes = item["notes"]
 
         if not reserve_coincidence_notification(new_row["id"], row["id"]):
-    continue
+            continue
 
         intro = format_coincidence_badges(score, notes)
 

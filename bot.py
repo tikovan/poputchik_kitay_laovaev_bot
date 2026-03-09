@@ -1870,7 +1870,7 @@ async def delete_post(callback: CallbackQuery):
     await callback.message.answer(f"Объявление {post_id} удалено.")
     await callback.answer()
 
-    @router.callback_query(F.data.startswith("user_reviews:"))
+@router.callback_query(F.data.startswith("user_reviews:"))
 async def show_user_reviews(callback: CallbackQuery):
     user_id = int(callback.data.split(":")[1])
     reviews = get_user_reviews(user_id, limit=10)

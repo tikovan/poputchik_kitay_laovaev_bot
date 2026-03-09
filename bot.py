@@ -546,6 +546,27 @@ def post_text(row, for_channel: bool = False) -> str:
 
     return "\n".join(lines)
 
+def reviews_word(n: int) -> str:
+    n = abs(n) % 100
+    n1 = n % 10
+    if 11 <= n <= 19:
+        return "отзывов"
+    if n1 == 1:
+        return "отзыв"
+    if 2 <= n1 <= 4:
+        return "отзыва"
+    return "отзывов"
+
+def get_user_reviews(user_id: int, limit: int = 10):
+    with closing(connect_db()) as conn:
+        return conn.execute("""
+            SELECT r.rating, r.text, r.created_at, u.username, u.full_name
+            FROM reviews r
+            LEFT JOIN users u ON u.user_id = r.reviewer_user_id
+            WHERE r.reviewed_user_id=?
+            ORDER BY r.created_at DESC
+            LIMIT ?
+        """, (user_id, limit)).fetchall()
 
 # -------------------------
 # KEYBOARDS
@@ -613,18 +634,50 @@ def admin_post_actions_kb(post_id: int):
 
 
 def public_post_kb(post_id: int, owner_id: int, post_type: Optional[str] = None):
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="✉️ Написать владельцу", callback_data=f"contact:{post_id}:{owner_id}")],
-            [InlineKeyboardButton(text="🤝 Предложить сделку", callback_data=f"offer_deal:{post_id}:{owner_id}")],
-            [InlineKeyboardButton(text="⚠️ Пожаловаться", callback_data=f"complain:{post_id}")],
-            [InlineKeyboardButton(
-                text="📤 Поделиться",
-                url=f"https://t.me/share/url?url={post_deeplink(post_id)}"
-            )]
-        ]
-    )
+    avg_rating, reviews_count = user_rating_summary(owner_id)
 
+    rows = [
+        [InlineKeyboardButton(text="✉️ Написать владельцу", callback_data=f"contact:{post_id}:{owner_id}")],
+        [InlineKeyboardButton(text="🤝 Предложить сделку", callback_data=f"offer_deal:{post_id}:{owner_id}")]
+    ]
+
+    if reviews_count > 0:
+        if 11 <= reviews_count % 100 <= 19:
+            word = "отзывов"
+        else:
+            last = reviews_count % 10
+            if last == 1:
+                word = "отзыв"
+            elif 2 <= last <= 4:
+                word = "отзыва"
+            else:
+                word = "отзывов"
+
+        rows.append([
+            InlineKeyboardButton(
+                text=f"⭐ {reviews_count} {word}",
+                callback_data=f"user_reviews:{owner_id}"
+            )
+        ])
+
+    rows.append([InlineKeyboardButton(text="⚠️ Пожаловаться", callback_data=f"complain:{post_id}")])
+    rows.append([InlineKeyboardButton(
+        text="📤 Поделиться",
+        url=f"https://t.me/share/url?url={post_deeplink(post_id)}"
+    )])
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+def get_user_reviews(user_id: int, limit: int = 10):
+    with closing(connect_db()) as conn:
+        return conn.execute("""
+            SELECT r.rating, r.text, r.created_at, u.username, u.full_name
+            FROM reviews r
+            LEFT JOIN users u ON u.user_id = r.reviewer_user_id
+            WHERE r.reviewed_user_id=?
+            ORDER BY r.created_at DESC
+            LIMIT ?
+        """, (user_id, limit)).fetchall()
 
 def channel_post_kb(post_id: int, post_type: Optional[str] = None):
     return InlineKeyboardMarkup(
@@ -1817,6 +1870,38 @@ async def delete_post(callback: CallbackQuery):
     await callback.message.answer(f"Объявление {post_id} удалено.")
     await callback.answer()
 
+    @router.callback_query(F.data.startswith("user_reviews:"))
+async def show_user_reviews(callback: CallbackQuery):
+    user_id = int(callback.data.split(":")[1])
+    reviews = get_user_reviews(user_id, limit=10)
+
+    if not reviews:
+        await callback.message.answer("У пользователя пока нет отзывов.")
+        await callback.answer()
+        return
+
+    avg_rating, cnt = user_rating_summary(user_id)
+
+    lines = [
+        "⭐ <b>Отзывы о пользователе</b>",
+        f"Средний рейтинг: <b>{avg_rating:.1f}</b>",
+        f"Всего отзывов: <b>{cnt}</b>",
+        ""
+    ]
+
+    for r in reviews:
+        stars = "⭐" * int(r["rating"])
+        author = f"@{r['username']}" if r["username"] else (r["full_name"] or "Пользователь")
+        text = r["text"] or "Без текста"
+
+        lines.append(stars)
+        lines.append(html.escape(text))
+        lines.append(f"— {html.escape(author)}")
+        lines.append("")
+
+    result = "\n".join(lines)
+    await callback.message.answer(result[:4000])
+    await callback.answer()
 
 @router.callback_query(F.data.startswith("deactivate:"))
 async def deactivate_post(callback: CallbackQuery):

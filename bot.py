@@ -6,10 +6,9 @@ import sqlite3
 import time
 from contextlib import closing
 from datetime import datetime
-from typing import Optional, List, Tuple
+from typing import List, Optional, Tuple
 
 from aiogram import Bot, Dispatcher, F, Router
-from dotenv import load_dotenv
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.filters import Command, CommandStart, StateFilter
@@ -27,6 +26,7 @@ from aiogram.types import (
     Message,
     ReplyKeyboardMarkup,
 )
+from dotenv import load_dotenv
 
 load_dotenv()
 
@@ -65,6 +65,15 @@ STATUS_INACTIVE = "inactive"
 STATUS_REJECTED = "rejected"
 STATUS_EXPIRED = "expired"
 STATUS_DELETED = "deleted"
+
+DEAL_CONTACTED = "contacted"
+DEAL_OFFERED = "offered"
+DEAL_ACCEPTED = "accepted"
+DEAL_COMPLETED_BY_OWNER = "completed_by_owner"
+DEAL_COMPLETED_BY_REQUESTER = "completed_by_requester"
+DEAL_COMPLETED = "completed"
+DEAL_FAILED = "failed"
+DEAL_CANCELLED = "cancelled"
 
 
 def now_ts() -> int:
@@ -145,6 +154,12 @@ def connect_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def ensure_column(conn: sqlite3.Connection, table: str, column: str, ddl: str):
+    cols = [r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+    if column not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
 
 
 def init_db():
@@ -231,9 +246,24 @@ def init_db():
             post_id INTEGER NOT NULL,
             owner_user_id INTEGER NOT NULL,
             requester_user_id INTEGER NOT NULL,
+            initiator_user_id INTEGER,
+            status TEXT NOT NULL DEFAULT 'contacted',
+            owner_confirmed INTEGER DEFAULT 0,
+            requester_confirmed INTEGER DEFAULT 0,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            completed_at INTEGER
+        );
+
+        CREATE TABLE IF NOT EXISTS bump_orders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            post_id INTEGER NOT NULL,
+            amount INTEGER NOT NULL,
+            currency TEXT NOT NULL DEFAULT 'RUB',
             status TEXT NOT NULL DEFAULT 'pending',
             created_at INTEGER NOT NULL,
-            completed_at INTEGER
+            paid_at INTEGER
         );
 
         CREATE INDEX IF NOT EXISTS idx_posts_search
@@ -255,17 +285,21 @@ def init_db():
         ON deals(requester_user_id, status, created_at);
         """)
 
-        existing_users = [r["name"] for r in conn.execute("PRAGMA table_info(users)").fetchall()]
-        if "is_verified" not in existing_users:
-            conn.execute("ALTER TABLE users ADD COLUMN is_verified INTEGER DEFAULT 0")
-        if "is_banned" not in existing_users:
-            conn.execute("ALTER TABLE users ADD COLUMN is_banned INTEGER DEFAULT 0")
-        if "last_action_at" not in existing_users:
-            conn.execute("ALTER TABLE users ADD COLUMN last_action_at INTEGER DEFAULT 0")
+        ensure_column(conn, "users", "is_verified", "is_verified INTEGER DEFAULT 0")
+        ensure_column(conn, "users", "is_banned", "is_banned INTEGER DEFAULT 0")
+        ensure_column(conn, "users", "last_action_at", "last_action_at INTEGER DEFAULT 0")
+        ensure_column(conn, "posts", "expires_at", "expires_at INTEGER")
+        ensure_column(conn, "deals", "initiator_user_id", "initiator_user_id INTEGER")
+        ensure_column(conn, "deals", "owner_confirmed", "owner_confirmed INTEGER DEFAULT 0")
+        ensure_column(conn, "deals", "requester_confirmed", "requester_confirmed INTEGER DEFAULT 0")
+        ensure_column(conn, "deals", "updated_at", "updated_at INTEGER DEFAULT 0")
 
-        existing_posts = [r["name"] for r in conn.execute("PRAGMA table_info(posts)").fetchall()]
-        if "expires_at" not in existing_posts:
-            conn.execute("ALTER TABLE posts ADD COLUMN expires_at INTEGER")
+        conn.execute("UPDATE deals SET updated_at = created_at WHERE updated_at IS NULL OR updated_at = 0")
+        conn.execute("""
+            UPDATE deals
+            SET status='contacted'
+            WHERE status='pending'
+        """)
 
 
 def upsert_user(message_or_callback):
@@ -431,6 +465,33 @@ def form_text(post_type: str, step: int, prompt: str, total_steps: int = 8) -> s
     return form_header(post_type, step, total_steps) + prompt
 
 
+def get_username_by_user_id(user_id: int) -> Optional[str]:
+    with closing(connect_db()) as conn:
+        row = conn.execute("SELECT username FROM users WHERE user_id=?", (user_id,)).fetchone()
+        if row and row["username"]:
+            return row["username"]
+        return None
+
+
+def format_user_ref(user_id: int) -> str:
+    username = get_username_by_user_id(user_id)
+    return f"@{html.escape(username)}" if username else f"USER_ID {user_id}"
+
+
+def format_deal_status(status: str) -> str:
+    mapping = {
+        DEAL_CONTACTED: "контакт начат",
+        DEAL_OFFERED: "предложена",
+        DEAL_ACCEPTED: "принята",
+        DEAL_COMPLETED_BY_OWNER: "подтвердил владелец",
+        DEAL_COMPLETED_BY_REQUESTER: "подтвердил откликнувшийся",
+        DEAL_COMPLETED: "завершена",
+        DEAL_FAILED: "не договорились",
+        DEAL_CANCELLED: "отменена",
+    }
+    return mapping.get(status, status)
+
+
 def post_text(row, for_channel: bool = False) -> str:
     route = f"{html.escape(row['from_country'])}"
     if row["from_city"]:
@@ -519,7 +580,7 @@ def search_posts_inline(query: str, limit: int = 10) -> List[sqlite3.Row]:
         """, (now_ts(), limit)).fetchall()
 
 
-def ensure_deal(post_id: int, owner_user_id: int, requester_user_id: int) -> int:
+def ensure_deal(post_id: int, owner_user_id: int, requester_user_id: int, initiator_user_id: int) -> int:
     with closing(connect_db()) as conn, conn:
         row = conn.execute("""
             SELECT id
@@ -533,35 +594,44 @@ def ensure_deal(post_id: int, owner_user_id: int, requester_user_id: int) -> int
             return int(row["id"])
 
         cur = conn.execute("""
-            INSERT INTO deals (post_id, owner_user_id, requester_user_id, status, created_at)
-            VALUES (?, ?, ?, 'pending', ?)
-        """, (post_id, owner_user_id, requester_user_id, now_ts()))
-
+            INSERT INTO deals (
+                post_id,
+                owner_user_id,
+                requester_user_id,
+                initiator_user_id,
+                status,
+                owner_confirmed,
+                requester_confirmed,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, 0, 0, ?, ?)
+        """, (
+            post_id,
+            owner_user_id,
+            requester_user_id,
+            initiator_user_id,
+            DEAL_CONTACTED,
+            now_ts(),
+            now_ts(),
+        ))
         return int(cur.lastrowid)
 
 
-def mark_deal_completed(post_id: int, user_id: int) -> bool:
-    with closing(connect_db()) as conn, conn:
-        row = conn.execute("""
-            SELECT id
+def get_deal(deal_id: int) -> Optional[sqlite3.Row]:
+    with closing(connect_db()) as conn:
+        return conn.execute("SELECT * FROM deals WHERE id=?", (deal_id,)).fetchone()
+
+
+def list_user_deals(user_id: int) -> List[sqlite3.Row]:
+    with closing(connect_db()) as conn:
+        return conn.execute("""
+            SELECT *
             FROM deals
-            WHERE post_id=?
-              AND (owner_user_id=? OR requester_user_id=?)
-              AND status='pending'
-            ORDER BY id DESC
-            LIMIT 1
-        """, (post_id, user_id, user_id)).fetchone()
-
-        if not row:
-            return False
-
-        conn.execute("""
-            UPDATE deals
-            SET status='completed', completed_at=?
-            WHERE id=?
-        """, (now_ts(), row["id"]))
-
-        return True
+            WHERE owner_user_id=? OR requester_user_id=?
+            ORDER BY updated_at DESC, created_at DESC
+            LIMIT 30
+        """, (user_id, user_id)).fetchall()
 
 
 def mark_deal_failed(post_id: int, user_id: int) -> bool:
@@ -571,20 +641,23 @@ def mark_deal_failed(post_id: int, user_id: int) -> bool:
             FROM deals
             WHERE post_id=?
               AND (owner_user_id=? OR requester_user_id=?)
-              AND status='pending'
+              AND status IN (?, ?, ?, ?, ?)
             ORDER BY id DESC
             LIMIT 1
-        """, (post_id, user_id, user_id)).fetchone()
+        """, (
+            post_id, user_id, user_id,
+            DEAL_CONTACTED, DEAL_OFFERED, DEAL_ACCEPTED,
+            DEAL_COMPLETED_BY_OWNER, DEAL_COMPLETED_BY_REQUESTER
+        )).fetchone()
 
         if not row:
             return False
 
         conn.execute("""
             UPDATE deals
-            SET status='failed'
+            SET status=?, updated_at=?
             WHERE id=?
-        """, (row["id"],))
-
+        """, (DEAL_FAILED, now_ts(), row["id"]))
         return True
 
 
@@ -592,9 +665,9 @@ def main_menu(user_id: Optional[int] = None):
     keyboard = [
         [KeyboardButton(text="✈️ Взять посылку"), KeyboardButton(text="📦 Отправить посылку")],
         [KeyboardButton(text="🔎 Найти совпадения"), KeyboardButton(text="📋 Мои объявления")],
-        [KeyboardButton(text="🔥 Популярные маршруты"), KeyboardButton(text="🆕 Новые объявления")],
-        [KeyboardButton(text="🔔 Подписки"), KeyboardButton(text="📊 Статистика")],
-        [KeyboardButton(text="💰 Поднять объявление"), KeyboardButton(text="⭐ Оставить отзыв")],
+        [KeyboardButton(text="🤝 Мои сделки"), KeyboardButton(text="🔥 Популярные маршруты")],
+        [KeyboardButton(text="🆕 Новые объявления"), KeyboardButton(text="🔔 Подписки")],
+        [KeyboardButton(text="📊 Статистика"), KeyboardButton(text="💰 Поднять объявление")],
         [KeyboardButton(text="🆘 Жалоба"), KeyboardButton(text="ℹ️ Помощь")],
     ]
     if user_id is not None and is_admin(user_id):
@@ -618,9 +691,17 @@ def countries_kb(prefix: str):
 def my_posts_kb(posts: List[sqlite3.Row]):
     rows = []
     for p in posts:
-        label = f"{p['id']} • {('✈️' if p['post_type'] == 'trip' else '📦')} • {p['from_country']}→{p['to_country']} • {p['status']}"
+        label = f"{p['id']} • {('✈️' if p['post_type'] == TYPE_TRIP else '📦')} • {p['from_country']}→{p['to_country']} • {p['status']}"
         rows.append([InlineKeyboardButton(text=label[:64], callback_data=f"mypost:{p['id']}")])
     return InlineKeyboardMarkup(inline_keyboard=rows or [[InlineKeyboardButton(text="Нет объявлений", callback_data="noop")]])
+
+
+def deal_list_kb(deals: List[sqlite3.Row]):
+    rows = []
+    for d in deals:
+        label = f"{d['id']} • post {d['post_id']} • {format_deal_status(d['status'])}"
+        rows.append([InlineKeyboardButton(text=label[:64], callback_data=f"mydeal:{d['id']}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows or [[InlineKeyboardButton(text="Нет сделок", callback_data="noop")]])
 
 
 def post_actions_kb(post_id: int, status: str):
@@ -659,11 +740,7 @@ def public_post_kb(post_id: int, owner_id: int, post_type: Optional[str] = None)
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="✉️ Написать владельцу", callback_data=f"contact:{post_id}:{owner_id}")],
-            [
-                InlineKeyboardButton(text="✅ Сделка состоялась", callback_data=f"deal_ok:{post_id}"),
-                InlineKeyboardButton(text="❌ Не договорились", callback_data=f"deal_fail:{post_id}")
-            ],
-            [InlineKeyboardButton(text="⭐ Оставить отзыв", callback_data=f"leave_review:{post_id}:{owner_id}")],
+            [InlineKeyboardButton(text="🤝 Предложить сделку", callback_data=f"offer_deal:{post_id}:{owner_id}")],
             [InlineKeyboardButton(text="⚠️ Пожаловаться", callback_data=f"complain:{post_id}")],
             [InlineKeyboardButton(
                 text="📤 Поделиться",
@@ -679,6 +756,10 @@ def channel_post_kb(post_id: int, post_type: Optional[str] = None):
             [InlineKeyboardButton(
                 text="✉️ Связаться с владельцем",
                 url=bot_link(f"contact_{post_id}")
+            )],
+            [InlineKeyboardButton(
+                text="🤝 Открыть объявление",
+                url=post_deeplink(post_id)
             )],
             [InlineKeyboardButton(
                 text="📤 Поделиться",
@@ -706,6 +787,27 @@ def popular_routes_kb(rows: List[sqlite3.Row]):
             )
         ])
     return InlineKeyboardMarkup(inline_keyboard=buttons or [[InlineKeyboardButton(text="Пока пусто", callback_data="noop")]])
+
+
+def deal_open_kb(deal: sqlite3.Row, user_id: int) -> InlineKeyboardMarkup:
+    rows = []
+
+    if deal["status"] == DEAL_ACCEPTED:
+        rows.append([InlineKeyboardButton(text="✅ Подтвердить завершение", callback_data=f"deal_confirm:{deal['id']}")])
+
+    if deal["status"] in (DEAL_COMPLETED_BY_OWNER, DEAL_COMPLETED_BY_REQUESTER):
+        rows.append([InlineKeyboardButton(text="✅ Подтвердить завершение", callback_data=f"deal_confirm:{deal['id']}")])
+
+    if deal["status"] == DEAL_COMPLETED:
+        rows.append([InlineKeyboardButton(text="⭐ Оставить отзыв", callback_data=f"deal_review:{deal['id']}")])
+
+    if deal["status"] in (DEAL_CONTACTED, DEAL_OFFERED, DEAL_ACCEPTED, DEAL_COMPLETED_BY_OWNER, DEAL_COMPLETED_BY_REQUESTER):
+        rows.append([InlineKeyboardButton(text="❌ Не договорились", callback_data=f"deal_fail_direct:{deal['id']}")])
+
+    if not rows:
+        rows = [[InlineKeyboardButton(text="Ок", callback_data="noop")]]
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 class CreatePost(StatesGroup):
@@ -910,14 +1012,6 @@ def list_route_subscriptions(user_id: int) -> List[sqlite3.Row]:
             ORDER BY created_at DESC
             LIMIT 20
         """, (user_id,)).fetchall()
-
-
-def subscription_list_kb(subs: List[sqlite3.Row]):
-    rows = []
-    for s in subs:
-        label = f"{s['id']} • {('✈️' if s['post_type'] == 'trip' else '📦')} • {s['from_country']}→{s['to_country']}"
-        rows.append([InlineKeyboardButton(text=label[:64], callback_data=f"subdel:{s['id']}")])
-    return InlineKeyboardMarkup(inline_keyboard=rows or [[InlineKeyboardButton(text="Нет подписок", callback_data="noop")]])
 
 
 def delete_subscription(user_id: int, sub_id: int) -> bool:
@@ -1405,10 +1499,18 @@ async def start_handler(message: Message, state: FSMContext):
                     )
                     return
 
+                deal_id = ensure_deal(
+                    post_id=row["id"],
+                    owner_user_id=row["user_id"],
+                    requester_user_id=message.from_user.id,
+                    initiator_user_id=message.from_user.id
+                )
+
                 await state.set_state(ContactFlow.message_text)
                 await state.update_data(
                     post_id=row["id"],
-                    target_user_id=row["user_id"]
+                    target_user_id=row["user_id"],
+                    deal_id=deal_id
                 )
 
                 await message.answer(
@@ -1665,14 +1767,39 @@ async def my_posts(message: Message):
     await message.answer("Твои объявления:", reply_markup=my_posts_kb(posts))
 
 
-@router.callback_query(F.data.startswith("mypost:"))
-async def open_my_post(callback: CallbackQuery):
-    post_id = int(callback.data.split(":")[1])
-    row = get_post(post_id)
-    if not row or row["user_id"] != callback.from_user.id:
-        await callback.answer("Объявление не найдено", show_alert=True)
+@router.message(F.text == "🤝 Мои сделки")
+async def my_deals_handler(message: Message):
+    upsert_user(message)
+    deals = list_user_deals(message.from_user.id)
+    if not deals:
+        await message.answer("У вас пока нет сделок.", reply_markup=main_menu(message.from_user.id))
         return
-    await callback.message.answer(post_text(row), reply_markup=post_actions_kb(post_id, row["status"]))
+    await message.answer("Ваши сделки:", reply_markup=deal_list_kb(deals))
+
+
+@router.callback_query(F.data.startswith("mydeal:"))
+async def open_my_deal(callback: CallbackQuery):
+    deal_id = int(callback.data.split(":")[1])
+    deal = get_deal(deal_id)
+
+    if not deal or (deal["owner_user_id"] != callback.from_user.id and deal["requester_user_id"] != callback.from_user.id):
+        await callback.answer("Сделка не найдена", show_alert=True)
+        return
+
+    role = "владелец объявления" if callback.from_user.id == deal["owner_user_id"] else "откликнувшийся"
+    other_user_id = deal["requester_user_id"] if callback.from_user.id == deal["owner_user_id"] else deal["owner_user_id"]
+
+    text = (
+        f"🤝 <b>Сделка #{deal['id']}</b>\n\n"
+        f"Объявление ID: <b>{deal['post_id']}</b>\n"
+        f"Статус: <b>{format_deal_status(deal['status'])}</b>\n"
+        f"Ваша роль: <b>{role}</b>\n"
+        f"Вторая сторона: <b>{format_user_ref(other_user_id)}</b>\n"
+        f"Подтверждение владельца: <b>{'Да' if deal['owner_confirmed'] else 'Нет'}</b>\n"
+        f"Подтверждение откликнувшегося: <b>{'Да' if deal['requester_confirmed'] else 'Нет'}</b>"
+    )
+
+    await callback.message.answer(text, reply_markup=deal_open_kb(deal, callback.from_user.id))
     await callback.answer()
 
 
@@ -1994,7 +2121,14 @@ async def sub_list(callback: CallbackQuery):
     if not subs:
         await callback.message.answer("У вас пока нет подписок.")
     else:
-        await callback.message.answer("Ваши подписки. Нажмите на нужную, чтобы удалить:", reply_markup=subscription_list_kb(subs))
+        rows = []
+        for s in subs:
+            label = f"{s['id']} • {('✈️' if s['post_type'] == 'trip' else '📦')} • {s['from_country']}→{s['to_country']}"
+            rows.append([InlineKeyboardButton(text=label[:64], callback_data=f"subdel:{s['id']}")])
+        await callback.message.answer(
+            "Ваши подписки. Нажмите на нужную, чтобы удалить:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=rows)
+        )
     await callback.answer()
 
 
@@ -2011,8 +2145,16 @@ async def contact_owner(callback: CallbackQuery, state: FSMContext):
     if int(owner_id) == callback.from_user.id:
         await callback.answer("Это ваше объявление", show_alert=True)
         return
+
+    deal_id = ensure_deal(
+        post_id=int(post_id),
+        owner_user_id=int(owner_id),
+        requester_user_id=callback.from_user.id,
+        initiator_user_id=callback.from_user.id
+    )
+
     await state.set_state(ContactFlow.message_text)
-    await state.update_data(post_id=int(post_id), target_user_id=int(owner_id))
+    await state.update_data(post_id=int(post_id), target_user_id=int(owner_id), deal_id=deal_id)
     await callback.message.answer("Напиши сообщение владельцу объявления. Я перешлю его через бота.")
     await callback.answer()
 
@@ -2022,6 +2164,7 @@ async def relay_message(message: Message, state: FSMContext):
     data = await state.get_data()
     target_user_id = data["target_user_id"]
     post_id = data["post_id"]
+    deal_id = data.get("deal_id")
     text = (message.text or "").strip()
 
     if not text:
@@ -2037,8 +2180,7 @@ async def relay_message(message: Message, state: FSMContext):
             target_user_id,
             f"Новое сообщение по объявлению ID {post_id}:\n\n"
             f"От: {from_name}{username_part}\n\n{safe_text}\n\n"
-            + "Чтобы ответить, напиши пользователю напрямую"
-            + (f": @{html.escape(message.from_user.username)}" if message.from_user.username else " или попроси его оставить контакт.")
+            "Чтобы ответить, напиши пользователю напрямую или дождись предложения сделки."
         )
 
         with closing(connect_db()) as conn, conn:
@@ -2047,21 +2189,21 @@ async def relay_message(message: Message, state: FSMContext):
                 (post_id, target_user_id, message.from_user.id, now_ts())
             )
 
-        ensure_deal(post_id, target_user_id, message.from_user.id)
+            if deal_id:
+                conn.execute("""
+                    UPDATE deals
+                    SET status=?, updated_at=?
+                    WHERE id=? AND status NOT IN (?, ?, ?)
+                """, (DEAL_CONTACTED, now_ts(), deal_id, DEAL_COMPLETED, DEAL_FAILED, DEAL_CANCELLED))
 
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [
-                InlineKeyboardButton(text="✅ Сделка состоялась", callback_data=f"deal_ok:{post_id}"),
-                InlineKeyboardButton(text="❌ Не договорились", callback_data=f"deal_fail:{post_id}")
-            ],
-            [
-                InlineKeyboardButton(text="⭐ Оставить отзыв", callback_data=f"leave_review:{post_id}:{target_user_id}")
-            ]
+            [InlineKeyboardButton(text="🤝 Предложить сделку", callback_data=f"offer_deal:{post_id}:{target_user_id}")],
+            [InlineKeyboardButton(text="❌ Не договорились", callback_data=f"deal_fail_post:{post_id}")]
         ])
 
         await message.answer(
             "Сообщение отправлено владельцу объявления.\n\n"
-            "Когда договоритесь, отметьте результат сделки:",
+            "Следующий шаг — предложить сделку:",
             reply_markup=kb
         )
 
@@ -2069,6 +2211,306 @@ async def relay_message(message: Message, state: FSMContext):
         await message.answer("Не удалось отправить сообщение. Возможно, владелец еще не запускал бота.")
 
     await state.clear()
+
+
+@router.callback_query(F.data.startswith("offer_deal:"))
+async def offer_deal_handler(callback: CallbackQuery):
+    _, post_id_str, owner_id_str = callback.data.split(":")
+    post_id = int(post_id_str)
+    owner_id = int(owner_id_str)
+    requester_id = callback.from_user.id
+
+    if owner_id == requester_id:
+        await callback.answer("Это ваше объявление", show_alert=True)
+        return
+
+    row = get_post(post_id)
+    if not row or row["status"] != STATUS_ACTIVE:
+        await callback.answer("Объявление не найдено или неактивно", show_alert=True)
+        return
+
+    deal_id = ensure_deal(
+        post_id=post_id,
+        owner_user_id=owner_id,
+        requester_user_id=requester_id,
+        initiator_user_id=requester_id
+    )
+
+    with closing(connect_db()) as conn, conn:
+        conn.execute("""
+            UPDATE deals
+            SET status=?, updated_at=?
+            WHERE id=?
+        """, (DEAL_OFFERED, now_ts(), deal_id))
+
+    try:
+        await callback.bot.send_message(
+            owner_id,
+            f"🤝 Вам предложили сделку по объявлению ID {post_id}.\n\n"
+            f"Пользователь: {html.escape(callback.from_user.full_name or 'Пользователь')}"
+            + (f" (@{html.escape(callback.from_user.username)})" if callback.from_user.username else ""),
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="✅ Принять сделку", callback_data=f"deal_accept:{deal_id}"),
+                    InlineKeyboardButton(text="❌ Отклонить", callback_data=f"deal_reject:{deal_id}")
+                ]
+            ])
+        )
+    except Exception:
+        pass
+
+    await callback.message.answer("Предложение сделки отправлено владельцу.")
+    await callback.answer("Готово")
+
+
+@router.callback_query(F.data.startswith("deal_accept:"))
+async def deal_accept_handler(callback: CallbackQuery):
+    deal_id = int(callback.data.split(":")[1])
+    deal = get_deal(deal_id)
+
+    if not deal or deal["owner_user_id"] != callback.from_user.id:
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    with closing(connect_db()) as conn, conn:
+        conn.execute("""
+            UPDATE deals
+            SET status=?, updated_at=?
+            WHERE id=?
+        """, (DEAL_ACCEPTED, now_ts(), deal_id))
+
+    try:
+        await callback.bot.send_message(
+            deal["requester_user_id"],
+            f"✅ Ваша сделка по объявлению ID {deal['post_id']} принята.\n"
+            "Откройте раздел '🤝 Мои сделки' для дальнейших действий."
+        )
+    except Exception:
+        pass
+
+    await callback.message.answer("Сделка принята.")
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("deal_reject:"))
+async def deal_reject_handler(callback: CallbackQuery):
+    deal_id = int(callback.data.split(":")[1])
+    deal = get_deal(deal_id)
+
+    if not deal or deal["owner_user_id"] != callback.from_user.id:
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    with closing(connect_db()) as conn, conn:
+        conn.execute("""
+            UPDATE deals
+            SET status=?, updated_at=?
+            WHERE id=?
+        """, (DEAL_FAILED, now_ts(), deal_id))
+
+    try:
+        await callback.bot.send_message(
+            deal["requester_user_id"],
+            f"❌ Ваша сделка по объявлению ID {deal['post_id']} отклонена."
+        )
+    except Exception:
+        pass
+
+    await callback.message.answer("Сделка отклонена.")
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("deal_confirm:"))
+async def deal_confirm_handler(callback: CallbackQuery):
+    deal_id = int(callback.data.split(":")[1])
+    deal = get_deal(deal_id)
+
+    if not deal:
+        await callback.answer("Сделка не найдена", show_alert=True)
+        return
+
+    if deal["status"] not in (DEAL_ACCEPTED, DEAL_COMPLETED_BY_OWNER, DEAL_COMPLETED_BY_REQUESTER):
+        await callback.answer("Эту сделку нельзя подтвердить", show_alert=True)
+        return
+
+    with closing(connect_db()) as conn, conn:
+        if callback.from_user.id == deal["owner_user_id"]:
+            conn.execute("""
+                UPDATE deals
+                SET owner_confirmed=1, updated_at=?
+                WHERE id=?
+            """, (now_ts(), deal_id))
+        elif callback.from_user.id == deal["requester_user_id"]:
+            conn.execute("""
+                UPDATE deals
+                SET requester_confirmed=1, updated_at=?
+                WHERE id=?
+            """, (now_ts(), deal_id))
+        else:
+            await callback.answer("Нет доступа", show_alert=True)
+            return
+
+        refreshed = conn.execute("SELECT * FROM deals WHERE id=?", (deal_id,)).fetchone()
+
+        if refreshed["owner_confirmed"] and refreshed["requester_confirmed"]:
+            conn.execute("""
+                UPDATE deals
+                SET status=?, completed_at=?, updated_at=?
+                WHERE id=?
+            """, (DEAL_COMPLETED, now_ts(), now_ts(), deal_id))
+            final_status = DEAL_COMPLETED
+        elif refreshed["owner_confirmed"]:
+            conn.execute("""
+                UPDATE deals
+                SET status=?, updated_at=?
+                WHERE id=?
+            """, (DEAL_COMPLETED_BY_OWNER, now_ts(), deal_id))
+            final_status = DEAL_COMPLETED_BY_OWNER
+        else:
+            conn.execute("""
+                UPDATE deals
+                SET status=?, updated_at=?
+                WHERE id=?
+            """, (DEAL_COMPLETED_BY_REQUESTER, now_ts(), deal_id))
+            final_status = DEAL_COMPLETED_BY_REQUESTER
+
+    if final_status == DEAL_COMPLETED:
+        for uid in [deal["owner_user_id"], deal["requester_user_id"]]:
+            try:
+                await callback.bot.send_message(
+                    uid,
+                    f"✅ Сделка #{deal_id} завершена. Теперь вы можете оставить отзыв.",
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="⭐ Оставить отзыв", callback_data=f"deal_review:{deal_id}")]
+                    ])
+                )
+            except Exception:
+                pass
+
+        await callback.message.answer("Сделка полностью завершена.")
+    else:
+        await callback.message.answer("Ваше подтверждение сохранено. Ждем подтверждение второй стороны.")
+
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("deal_review:"))
+async def deal_review_handler(callback: CallbackQuery, state: FSMContext):
+    deal_id = int(callback.data.split(":")[1])
+    deal = get_deal(deal_id)
+
+    if not deal:
+        await callback.answer("Сделка не найдена", show_alert=True)
+        return
+
+    if deal["status"] != DEAL_COMPLETED:
+        await callback.answer("Отзыв можно оставить только после завершенной сделки", show_alert=True)
+        return
+
+    if callback.from_user.id == deal["owner_user_id"]:
+        reviewed_user_id = deal["requester_user_id"]
+    elif callback.from_user.id == deal["requester_user_id"]:
+        reviewed_user_id = deal["owner_user_id"]
+    else:
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    await state.clear()
+    await state.update_data(
+        reviewed_user_id=reviewed_user_id,
+        post_id=deal["post_id"],
+        deal_id=deal_id
+    )
+    await state.set_state(ReviewFlow.rating)
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="1", callback_data="review_rating:1"),
+            InlineKeyboardButton(text="2", callback_data="review_rating:2"),
+            InlineKeyboardButton(text="3", callback_data="review_rating:3")
+        ],
+        [
+            InlineKeyboardButton(text="4", callback_data="review_rating:4"),
+            InlineKeyboardButton(text="5", callback_data="review_rating:5")
+        ]
+    ])
+
+    await callback.message.answer("Поставьте оценку пользователю от 1 до 5:", reply_markup=kb)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("review_rating:"))
+async def review_rating_callback(callback: CallbackQuery, state: FSMContext):
+    rating = int(callback.data.split(":")[1])
+    await state.update_data(rating=rating)
+    await state.set_state(ReviewFlow.text)
+    await callback.message.answer("Напишите короткий отзыв или отправьте '-' если без текста.")
+    await callback.answer()
+
+
+@router.message(ReviewFlow.text)
+async def review_finish(message: Message, state: FSMContext):
+    data = await state.get_data()
+
+    review_text = None if message.text.strip() == "-" else message.text.strip()[:500]
+    reviewed_user_id = data["reviewed_user_id"]
+    post_id = data["post_id"]
+    rating = data["rating"]
+
+    with closing(connect_db()) as conn, conn:
+        try:
+            conn.execute("""
+                INSERT INTO reviews (reviewer_user_id, reviewed_user_id, post_id, rating, text, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (
+                message.from_user.id,
+                reviewed_user_id,
+                post_id,
+                rating,
+                review_text,
+                now_ts()
+            ))
+        except sqlite3.IntegrityError:
+            await message.answer(
+                "Такой отзыв уже оставлен.",
+                reply_markup=main_menu(message.from_user.id)
+            )
+            await state.clear()
+            return
+
+    await message.answer("⭐ Спасибо! Отзыв сохранен.", reply_markup=main_menu(message.from_user.id))
+    await state.clear()
+
+
+@router.callback_query(F.data.startswith("deal_fail_post:"))
+async def deal_fail_post_handler(callback: CallbackQuery):
+    post_id = int(callback.data.split(":")[1])
+    ok = mark_deal_failed(post_id, callback.from_user.id)
+    if ok:
+        await callback.message.answer("❌ Сделка отмечена как несостоявшаяся.")
+    else:
+        await callback.message.answer("Не удалось найти активную сделку для этого объявления.")
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("deal_fail_direct:"))
+async def deal_fail_direct_handler(callback: CallbackQuery):
+    deal_id = int(callback.data.split(":")[1])
+    deal = get_deal(deal_id)
+
+    if not deal or (deal["owner_user_id"] != callback.from_user.id and deal["requester_user_id"] != callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    with closing(connect_db()) as conn, conn:
+        conn.execute("""
+            UPDATE deals
+            SET status=?, updated_at=?
+            WHERE id=?
+        """, (DEAL_FAILED, now_ts(), deal_id))
+
+    await callback.message.answer("❌ Сделка отмечена как несостоявшаяся.")
+    await callback.answer()
 
 
 @router.message(F.text == "🆘 Жалоба")
@@ -2151,173 +2593,6 @@ async def complaint_reason(message: Message, state: FSMContext, bot: Bot):
             pass
 
     await state.clear()
-
-
-@router.message(F.text == "⭐ Оставить отзыв")
-async def review_start(message: Message, state: FSMContext):
-    await state.clear()
-    await state.set_state(ReviewFlow.reviewed_user_id)
-    await message.answer("Введите USER_ID пользователя, которому хотите оставить отзыв.")
-
-
-@router.message(ReviewFlow.reviewed_user_id)
-async def review_user_step(message: Message, state: FSMContext):
-    if not message.text.isdigit():
-        await message.answer("Нужен числовой USER_ID.")
-        return
-    await state.update_data(reviewed_user_id=int(message.text))
-    await state.set_state(ReviewFlow.post_id)
-    await message.answer("Введите ID объявления, по которому был контакт. Если нет — напишите 0.")
-
-
-@router.message(ReviewFlow.post_id)
-async def review_post_step(message: Message, state: FSMContext):
-    if not message.text.isdigit():
-        await message.answer("Нужен числовой ID объявления.")
-        return
-    await state.update_data(post_id=int(message.text))
-    await state.set_state(ReviewFlow.rating)
-    await message.answer("Поставьте оценку от 1 до 5.")
-
-
-@router.message(ReviewFlow.rating)
-async def review_rating_step(message: Message, state: FSMContext):
-    if not message.text.isdigit() or int(message.text) not in [1, 2, 3, 4, 5]:
-        await message.answer("Введите число от 1 до 5.")
-        return
-    await state.update_data(rating=int(message.text))
-    await state.set_state(ReviewFlow.text)
-    await message.answer("Напишите короткий отзыв или '-' если без текста.")
-
-
-@router.message(ReviewFlow.text)
-async def review_finish(message: Message, state: FSMContext):
-    data = await state.get_data()
-
-    review_text = None if message.text.strip() == "-" else message.text.strip()[:500]
-    reviewed_user_id = data["reviewed_user_id"]
-    post_id = data["post_id"]
-    rating = data["rating"]
-
-    with closing(connect_db()) as conn, conn:
-        try:
-            conn.execute("""
-                INSERT INTO reviews (reviewer_user_id, reviewed_user_id, post_id, rating, text, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (
-                message.from_user.id,
-                reviewed_user_id,
-                post_id,
-                rating,
-                review_text,
-                now_ts()
-            ))
-        except sqlite3.IntegrityError:
-            await message.answer(
-                "Такой отзыв уже оставлен.",
-                reply_markup=main_menu(message.from_user.id)
-            )
-            await state.clear()
-            return
-
-    await message.answer(
-        "⭐ Спасибо! Отзыв сохранен.",
-        reply_markup=main_menu(message.from_user.id)
-    )
-    await state.clear()
-
-
-@router.callback_query(F.data.startswith("deal_ok:"))
-async def deal_ok_handler(callback: CallbackQuery):
-    post_id = int(callback.data.split(":")[1])
-
-    ok = mark_deal_completed(post_id, callback.from_user.id)
-
-    if not ok:
-        await callback.message.answer("Не удалось найти активную сделку для этого объявления.")
-        await callback.answer()
-        return
-
-    row = get_post(post_id)
-    owner_id = row["user_id"] if row else 0
-
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⭐ Оставить отзыв", callback_data=f"leave_review:{post_id}:{owner_id}")],
-        [InlineKeyboardButton(text="Позже", callback_data="noop")]
-    ])
-
-    await callback.message.answer(
-        "✅ Сделка отмечена как успешная.\n\nХотите сразу оставить отзыв?",
-        reply_markup=kb
-    )
-    await callback.answer()
-
-
-@router.callback_query(F.data.startswith("deal_fail:"))
-async def deal_fail_handler(callback: CallbackQuery):
-    post_id = int(callback.data.split(":")[1])
-
-    ok = mark_deal_failed(post_id, callback.from_user.id)
-
-    if ok:
-        await callback.message.answer("❌ Сделка отмечена как несостоявшаяся.")
-    else:
-        await callback.message.answer("Не удалось найти активную сделку для этого объявления.")
-
-    await callback.answer()
-
-
-@router.callback_query(F.data.startswith("leave_review:"))
-async def leave_review_handler(callback: CallbackQuery, state: FSMContext):
-    _, post_id_str, owner_id_str = callback.data.split(":")
-    post_id = int(post_id_str)
-    owner_id = int(owner_id_str)
-
-    row = get_post(post_id)
-    if not row:
-        await callback.message.answer("Объявление не найдено.")
-        await callback.answer()
-        return
-
-    reviewed_user_id = owner_id
-
-    if reviewed_user_id == callback.from_user.id:
-        await callback.message.answer("Нельзя оставить отзыв самому себе.")
-        await callback.answer()
-        return
-
-    await state.clear()
-    await state.update_data(reviewed_user_id=reviewed_user_id, post_id=post_id)
-    await state.set_state(ReviewFlow.rating)
-
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="1", callback_data="review_rating:1"),
-            InlineKeyboardButton(text="2", callback_data="review_rating:2"),
-            InlineKeyboardButton(text="3", callback_data="review_rating:3")
-        ],
-        [
-            InlineKeyboardButton(text="4", callback_data="review_rating:4"),
-            InlineKeyboardButton(text="5", callback_data="review_rating:5")
-        ]
-    ])
-
-    await callback.message.answer(
-        "Поставьте оценку пользователю от 1 до 5:",
-        reply_markup=kb
-    )
-    await callback.answer()
-
-
-@router.callback_query(F.data.startswith("review_rating:"))
-async def review_rating_callback(callback: CallbackQuery, state: FSMContext):
-    rating = int(callback.data.split(":")[1])
-
-    await state.update_data(rating=rating)
-    await state.set_state(ReviewFlow.text)
-
-    await callback.message.answer("Напишите короткий отзыв или отправьте '-' если без текста.")
-    await callback.answer()
 
 
 @router.callback_query(F.data == "noop")
@@ -2514,6 +2789,7 @@ async def help_handler(message: Message):
         "📦 <b>Отправить посылку</b> — если вам нужно что-то передать.\n"
         "🔎 <b>Найти совпадения</b> — быстрый поиск подходящих объявлений.\n"
         "📋 <b>Мои объявления</b> — управление своими объявлениями.\n"
+        "🤝 <b>Мои сделки</b> — ваши активные и завершенные сделки.\n"
         "🔔 <b>Подписки</b> — уведомления по нужным маршрутам.\n"
         "🆘 <b>Жалоба</b> — пожаловаться на объявление."
     )

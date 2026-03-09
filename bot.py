@@ -146,10 +146,6 @@ def post_deeplink(post_id: int) -> str:
     return bot_link(f"post_{post_id}")
 
 
-def route_deeplink(post_type: str, from_country: str, to_country: str) -> str:
-    return bot_link(f"route_{post_type}_{from_country}_{to_country}")
-
-
 def connect_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -254,35 +250,6 @@ def init_db():
             updated_at INTEGER NOT NULL,
             completed_at INTEGER
         );
-
-        CREATE TABLE IF NOT EXISTS bump_orders (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            post_id INTEGER NOT NULL,
-            amount INTEGER NOT NULL,
-            currency TEXT NOT NULL DEFAULT 'RUB',
-            status TEXT NOT NULL DEFAULT 'pending',
-            created_at INTEGER NOT NULL,
-            paid_at INTEGER
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_posts_search
-        ON posts(post_type, status, from_country, to_country, created_at);
-
-        CREATE INDEX IF NOT EXISTS idx_posts_user
-        ON posts(user_id, status, created_at);
-
-        CREATE INDEX IF NOT EXISTS idx_subscriptions_search
-        ON route_subscriptions(post_type, from_country, to_country);
-
-        CREATE INDEX IF NOT EXISTS idx_reviews_user
-        ON reviews(reviewed_user_id, created_at);
-
-        CREATE INDEX IF NOT EXISTS idx_deals_owner
-        ON deals(owner_user_id, status, created_at);
-
-        CREATE INDEX IF NOT EXISTS idx_deals_requester
-        ON deals(requester_user_id, status, created_at);
         """)
 
         ensure_column(conn, "users", "is_verified", "is_verified INTEGER DEFAULT 0")
@@ -327,10 +294,7 @@ def is_admin(user_id: int) -> bool:
 
 def is_user_banned(user_id: int) -> bool:
     with closing(connect_db()) as conn:
-        row = conn.execute(
-            "SELECT is_banned FROM users WHERE user_id=?",
-            (user_id,)
-        ).fetchone()
+        row = conn.execute("SELECT is_banned FROM users WHERE user_id=?", (user_id,)).fetchone()
         return bool(row and row["is_banned"])
 
 
@@ -387,14 +351,9 @@ def user_rating_summary(user_id: int) -> Tuple[float, int]:
 
 def user_service_days(user_id: int) -> int:
     with closing(connect_db()) as conn:
-        row = conn.execute(
-            "SELECT created_at FROM users WHERE user_id=?",
-            (user_id,)
-        ).fetchone()
-
+        row = conn.execute("SELECT created_at FROM users WHERE user_id=?", (user_id,)).fetchone()
         if not row or not row["created_at"]:
             return 0
-
         return max(0, (now_ts() - int(row["created_at"])) // 86400)
 
 
@@ -464,9 +423,7 @@ def form_text(post_type: str, step: int, prompt: str, total_steps: int = 8) -> s
 def get_username_by_user_id(user_id: int) -> Optional[str]:
     with closing(connect_db()) as conn:
         row = conn.execute("SELECT username FROM users WHERE user_id=?", (user_id,)).fetchone()
-        if row and row["username"]:
-            return row["username"]
-        return None
+        return row["username"] if row and row["username"] else None
 
 
 def format_user_ref(user_id: int) -> str:
@@ -543,319 +500,553 @@ def post_text(row, for_channel: bool = False) -> str:
     return "\n".join(lines)
 
 
-def search_posts_inline(query: str, limit: int = 10) -> List[sqlite3.Row]:
-    q = f"%{query.strip().lower()}%"
-    with closing(connect_db()) as conn:
-        if query.strip():
-            return conn.execute("""
-                SELECT p.*, u.username, u.full_name
-                FROM posts p
-                LEFT JOIN users u ON u.user_id = p.user_id
-                WHERE p.status='active'
-                  AND (p.expires_at IS NULL OR p.expires_at > ?)
-                  AND (
-                        lower(p.from_country) LIKE ?
-                     OR lower(COALESCE(p.from_city, '')) LIKE ?
-                     OR lower(p.to_country) LIKE ?
-                     OR lower(COALESCE(p.to_city, '')) LIKE ?
-                     OR lower(COALESCE(p.description, '')) LIKE ?
-                     OR lower(COALESCE(p.travel_date, '')) LIKE ?
-                  )
-                ORDER BY COALESCE(p.bumped_at, p.created_at) DESC
-                LIMIT ?
-            """, (now_ts(), q, q, q, q, q, q, limit)).fetchall()
+def create_post_record(data: dict, user_id: int) -> int:
+    ts = now_ts()
+    expires_at = ts + days_to_seconds(POST_TTL_DAYS)
+    with closing(connect_db()) as conn, conn:
+        cur = conn.execute("""
+            INSERT INTO posts (
+                user_id, post_type, from_country, from_city, to_country, to_city,
+                travel_date, weight_kg, description, contact_note, status,
+                is_anonymous_contact, created_at, updated_at, bumped_at, expires_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            user_id,
+            data["post_type"],
+            data["from_country"],
+            data.get("from_city"),
+            data["to_country"],
+            data.get("to_city"),
+            data.get("travel_date"),
+            data.get("weight_kg"),
+            data["description"],
+            data.get("contact_note"),
+            STATUS_PENDING if ADMIN_IDS else STATUS_ACTIVE,
+            1,
+            ts,
+            ts,
+            ts,
+            expires_at
+        ))
+        return int(cur.lastrowid)
 
+
+def get_post(post_id: int) -> Optional[sqlite3.Row]:
+    with closing(connect_db()) as conn:
+        return conn.execute("""
+            SELECT p.*, u.username, u.full_name
+            FROM posts p
+            LEFT JOIN users u ON u.user_id = p.user_id
+            WHERE p.id=?
+        """, (post_id,)).fetchone()
+
+
+def get_recent_posts(limit: int = 10) -> List[sqlite3.Row]:
+    with closing(connect_db()) as conn:
         return conn.execute("""
             SELECT p.*, u.username, u.full_name
             FROM posts p
             LEFT JOIN users u ON u.user_id = p.user_id
             WHERE p.status='active'
               AND (p.expires_at IS NULL OR p.expires_at > ?)
-            ORDER BY COALESCE(p.bumped_at, p.created_at) DESC
+            ORDER BY p.created_at DESC
             LIMIT ?
         """, (now_ts(), limit)).fetchall()
 
 
-def ensure_deal(post_id: int, owner_user_id: int, requester_user_id: int, initiator_user_id: int) -> int:
-    with closing(connect_db()) as conn, conn:
-        row = conn.execute("""
-            SELECT id
-            FROM deals
-            WHERE post_id=? AND owner_user_id=? AND requester_user_id=?
-            ORDER BY id DESC
-            LIMIT 1
-        """, (post_id, owner_user_id, requester_user_id)).fetchone()
-
-        if row:
-            return int(row["id"])
-
-        cur = conn.execute("""
-            INSERT INTO deals (
-                post_id,
-                owner_user_id,
-                requester_user_id,
-                initiator_user_id,
-                status,
-                owner_confirmed,
-                requester_confirmed,
-                created_at,
-                updated_at
-            )
-            VALUES (?, ?, ?, ?, ?, 0, 0, ?, ?)
-        """, (
-            post_id,
-            owner_user_id,
-            requester_user_id,
-            initiator_user_id,
-            DEAL_CONTACTED,
-            now_ts(),
-            now_ts(),
-        ))
-        return int(cur.lastrowid)
-
-
-def get_deal(deal_id: int) -> Optional[sqlite3.Row]:
-    with closing(connect_db()) as conn:
-        return conn.execute("SELECT * FROM deals WHERE id=?", (deal_id,)).fetchone()
-
-
-def list_user_deals(user_id: int) -> List[sqlite3.Row]:
+def get_popular_routes(limit: int = 10) -> List[sqlite3.Row]:
     with closing(connect_db()) as conn:
         return conn.execute("""
-            SELECT *
-            FROM deals
-            WHERE owner_user_id=? OR requester_user_id=?
-            ORDER BY updated_at DESC, created_at DESC
-            LIMIT 30
-        """, (user_id, user_id)).fetchall()
+            SELECT from_country, to_country, COUNT(*) AS cnt
+            FROM posts
+            WHERE status='active'
+              AND (expires_at IS NULL OR expires_at > ?)
+            GROUP BY from_country, to_country
+            ORDER BY cnt DESC, MAX(COALESCE(bumped_at, created_at)) DESC
+            LIMIT ?
+        """, (now_ts(), limit)).fetchall()
 
 
-def mark_deal_failed(post_id: int, user_id: int) -> bool:
-    with closing(connect_db()) as conn, conn:
-        row = conn.execute("""
-            SELECT id
-            FROM deals
-            WHERE post_id=?
-              AND (owner_user_id=? OR requester_user_id=?)
-              AND status IN (?, ?, ?, ?, ?)
-            ORDER BY id DESC
+def search_route_posts(post_type: str, from_country: str, to_country: str, limit: int = 10) -> List[sqlite3.Row]:
+    with closing(connect_db()) as conn:
+        return conn.execute("""
+            SELECT p.*, u.username, u.full_name
+            FROM posts p
+            LEFT JOIN users u ON u.user_id = p.user_id
+            WHERE p.post_type=?
+              AND p.from_country=?
+              AND p.to_country=?
+              AND p.status='active'
+              AND (p.expires_at IS NULL OR p.expires_at > ?)
+            ORDER BY COALESCE(p.bumped_at, p.created_at) DESC
+            LIMIT ?
+        """, (post_type, from_country, to_country, now_ts(), limit)).fetchall()
+
+
+def search_route_posts_all(from_country: str, to_country: str, limit: int = 20) -> List[sqlite3.Row]:
+    with closing(connect_db()) as conn:
+        return conn.execute("""
+            SELECT p.*, u.username, u.full_name
+            FROM posts p
+            LEFT JOIN users u ON u.user_id = p.user_id
+            WHERE p.from_country=?
+              AND p.to_country=?
+              AND p.status='active'
+              AND (p.expires_at IS NULL OR p.expires_at > ?)
+            ORDER BY COALESCE(p.bumped_at, p.created_at) DESC
+            LIMIT ?
+        """, (from_country, to_country, now_ts(), limit)).fetchall()
+
+
+def service_stats() -> sqlite3.Row:
+    with closing(connect_db()) as conn:
+        return conn.execute("""
+            SELECT
+                (SELECT COUNT(*) FROM users) AS users_count,
+                (SELECT COUNT(*) FROM posts WHERE status='active' AND (expires_at IS NULL OR expires_at > ?)) AS active_posts,
+                (SELECT COUNT(*) FROM posts WHERE status='active' AND post_type='trip' AND (expires_at IS NULL OR expires_at > ?)) AS active_trips,
+                (SELECT COUNT(*) FROM posts WHERE status='active' AND post_type='parcel' AND (expires_at IS NULL OR expires_at > ?)) AS active_parcels
+        """, (now_ts(), now_ts(), now_ts())).fetchone()
+
+
+def top_route() -> Optional[sqlite3.Row]:
+    with closing(connect_db()) as conn:
+        return conn.execute("""
+            SELECT from_country, to_country, COUNT(*) AS cnt
+            FROM posts
+            WHERE status='active'
+              AND (expires_at IS NULL OR expires_at > ?)
+            GROUP BY from_country, to_country
+            ORDER BY cnt DESC
             LIMIT 1
-        """, (
-            post_id, user_id, user_id,
-            DEAL_CONTACTED, DEAL_OFFERED, DEAL_ACCEPTED,
-            DEAL_COMPLETED_BY_OWNER, DEAL_COMPLETED_BY_REQUESTER
-        )).fetchone()
+        """, (now_ts(),)).fetchone()
 
-        if not row:
-            return False
 
+def add_route_subscription(user_id: int, post_type: str, from_country: str, to_country: str):
+    with closing(connect_db()) as conn, conn:
+        exists = conn.execute("""
+            SELECT id FROM route_subscriptions
+            WHERE user_id=? AND post_type=? AND from_country=? AND to_country=?
+            LIMIT 1
+        """, (user_id, post_type, from_country, to_country)).fetchone()
+        if exists:
+            return
         conn.execute("""
-            UPDATE deals
-            SET status=?, updated_at=?
-            WHERE id=?
-        """, (DEAL_FAILED, now_ts(), row["id"]))
-        return True
+            INSERT INTO route_subscriptions (user_id, post_type, from_country, to_country, created_at)
+            VALUES (?, ?, ?, ?, ?)
+        """, (user_id, post_type, from_country, to_country, now_ts()))
 
 
-def my_posts_kb(posts: List[sqlite3.Row]):
-    rows = []
-    for p in posts:
-        label = f"{p['id']} • {('✈️' if p['post_type'] == TYPE_TRIP else '📦')} • {p['from_country']}→{p['to_country']} • {p['status']}"
-        rows.append([InlineKeyboardButton(text=label[:64], callback_data=f"mypost:{p['id']}")])
-    return InlineKeyboardMarkup(inline_keyboard=rows or [[InlineKeyboardButton(text="Нет объявлений", callback_data="noop")]])
+def list_route_subscriptions(user_id: int) -> List[sqlite3.Row]:
+    with closing(connect_db()) as conn:
+        return conn.execute("""
+            SELECT * FROM route_subscriptions
+            WHERE user_id=?
+            ORDER BY created_at DESC
+            LIMIT 20
+        """, (user_id,)).fetchall()
 
 
-def deal_list_kb(deals: List[sqlite3.Row]):
-    rows = []
-    for d in deals:
-        label = f"{d['id']} • post {d['post_id']} • {format_deal_status(d['status'])}"
-        rows.append([InlineKeyboardButton(text=label[:64], callback_data=f"mydeal:{d['id']}")])
-    return InlineKeyboardMarkup(inline_keyboard=rows or [[InlineKeyboardButton(text="Нет сделок", callback_data="noop")]])
+def delete_subscription(user_id: int, sub_id: int) -> bool:
+    with closing(connect_db()) as conn, conn:
+        cur = conn.execute("DELETE FROM route_subscriptions WHERE id=? AND user_id=?", (sub_id, user_id))
+        return cur.rowcount > 0
 
 
-def post_actions_kb(post_id: int, status: str):
-    share_url = f"https://t.me/share/url?url={post_deeplink(post_id)}"
-    rows = [
-        [
-            InlineKeyboardButton(text="🗑 Удалить", callback_data=f"delete:{post_id}"),
-            InlineKeyboardButton(text="⏸ Деактивировать", callback_data=f"deactivate:{post_id}")
-        ],
-        [
-            InlineKeyboardButton(text="🔼 Поднять", callback_data=f"bump:{post_id}"),
-            InlineKeyboardButton(text="👀 Совпадения", callback_data=f"coincidences:{post_id}")
-        ],
-        [
-            InlineKeyboardButton(text="📤 Поделиться", url=share_url)
-        ]
-    ]
-    if status != STATUS_ACTIVE:
-        rows.append([InlineKeyboardButton(text="▶️ Активировать", callback_data=f"activate:{post_id}")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+def coincidence_already_notified(post_a_id: int, post_b_id: int) -> bool:
+    a, b = sorted([post_a_id, post_b_id])
+    with closing(connect_db()) as conn:
+        row = conn.execute("""
+            SELECT id FROM coincidence_notifications
+            WHERE post_a_id=? AND post_b_id=?
+        """, (a, b)).fetchone()
+        return row is not None
 
 
-def admin_post_actions_kb(post_id: int):
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="✅ Одобрить", callback_data=f"adminapprove:{post_id}"),
-            InlineKeyboardButton(text="❌ Отклонить", callback_data=f"adminreject:{post_id}")
-        ],
-        [
-            InlineKeyboardButton(text="🚫 Бан user", callback_data=f"adminbanpost:{post_id}")
-        ]
-    ])
+def mark_coincidence_notified(post_a_id: int, post_b_id: int):
+    a, b = sorted([post_a_id, post_b_id])
+    with closing(connect_db()) as conn, conn:
+        conn.execute("""
+            INSERT OR IGNORE INTO coincidence_notifications (post_a_id, post_b_id, created_at)
+            VALUES (?, ?, ?)
+        """, (a, b, now_ts()))
 
 
-def public_post_kb(post_id: int, owner_id: int, post_type: Optional[str] = None):
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="✉️ Написать владельцу", callback_data=f"contact:{post_id}:{owner_id}")],
-            [InlineKeyboardButton(text="🤝 Предложить сделку", callback_data=f"offer_deal:{post_id}:{owner_id}")],
-            [InlineKeyboardButton(text="⚠️ Пожаловаться", callback_data=f"complain:{post_id}")],
-            [InlineKeyboardButton(
-                text="📤 Поделиться",
-                url=f"https://t.me/share/url?url={post_deeplink(post_id)}"
-            )]
-        ]
-    )
+def calculate_coincidence_score(source_row, candidate_row: sqlite3.Row) -> Tuple[int, List[str]]:
+    score = 40
+    notes: List[str] = []
+
+    source_from_city = normalize_text(source_row["from_city"])
+    candidate_from_city = normalize_text(candidate_row["from_city"])
+    source_to_city = normalize_text(source_row["to_city"])
+    candidate_to_city = normalize_text(candidate_row["to_city"])
+
+    if source_from_city and candidate_from_city:
+        if source_from_city == candidate_from_city:
+            score += 15
+            notes.append("Совпадает город отправления")
+        else:
+            score -= 8
+            notes.append("Разные города отправления")
+    else:
+        score += 6
+        notes.append("Один из городов отправления не указан")
+
+    if source_to_city and candidate_to_city:
+        if source_to_city == candidate_to_city:
+            score += 15
+            notes.append("Совпадает город назначения")
+        else:
+            score -= 8
+            notes.append("Разные города назначения")
+    else:
+        score += 6
+        notes.append("Один из городов назначения не указан")
+
+    source_date = parse_date_loose(source_row["travel_date"])
+    candidate_date = parse_date_loose(candidate_row["travel_date"])
+    if source_date and candidate_date:
+        days_diff = abs((source_date - candidate_date).days)
+        if days_diff <= 2:
+            score += 18
+            notes.append("Даты очень близки")
+        elif days_diff <= 7:
+            score += 10
+            notes.append("Даты близки")
+        else:
+            score -= 6
+            notes.append("Даты заметно отличаются")
+    else:
+        score += 4
+        notes.append("Хотя бы одна дата указана неточно")
+
+    source_weight = parse_weight_kg(source_row["weight_kg"])
+    candidate_weight = parse_weight_kg(candidate_row["weight_kg"])
+
+    trip_weight = None
+    parcel_weight = None
+    if source_row["post_type"] == TYPE_TRIP:
+        trip_weight = source_weight
+        parcel_weight = candidate_weight
+    else:
+        trip_weight = candidate_weight
+        parcel_weight = source_weight
+
+    if trip_weight is not None and parcel_weight is not None:
+        if trip_weight >= parcel_weight:
+            score += 18
+            notes.append("Вес подходит полностью")
+        else:
+            ratio = 0 if parcel_weight == 0 else trip_weight / parcel_weight
+            if ratio >= 0.5:
+                score += 10
+                notes.append(f"Вес подходит частично: можно взять около {trip_weight:g} кг из {parcel_weight:g} кг")
+            elif ratio > 0:
+                score += 4
+                notes.append(f"Вес подходит слабо: можно взять около {trip_weight:g} кг из {parcel_weight:g} кг")
+            else:
+                score -= 4
+                notes.append("По весу совпадение слабое")
+    else:
+        score += 4
+        notes.append("Вес указан неточно")
+
+    return score, notes
 
 
-def channel_post_kb(post_id: int, post_type: Optional[str] = None):
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(
-                text="✉️ Связаться с владельцем",
-                url=bot_link(f"contact_{post_id}")
-            )],
-            [InlineKeyboardButton(
-                text="🤝 Открыть объявление",
-                url=post_deeplink(post_id)
-            )],
-            [InlineKeyboardButton(
-                text="📤 Поделиться",
-                url=f"https://t.me/share/url?url={post_deeplink(post_id)}"
-            )]
-        ]
-    )
+def get_coincidences(
+    post_type: str,
+    from_country: str,
+    to_country: str,
+    exclude_user_id: Optional[int] = None,
+    source_row=None,
+    limit: int = 20
+) -> List[dict]:
+    target_type = TYPE_PARCEL if post_type == TYPE_TRIP else TYPE_TRIP
 
+    query = """
+        SELECT p.*, u.username, u.full_name
+        FROM posts p
+        LEFT JOIN users u ON u.user_id = p.user_id
+        WHERE p.post_type=?
+          AND p.status='active'
+          AND p.from_country=?
+          AND p.to_country=?
+          AND (p.expires_at IS NULL OR p.expires_at > ?)
+    """
+    params: List = [target_type, from_country, to_country, now_ts()]
 
-def subscription_actions_kb():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔔 Подписаться на маршрут", callback_data="sub:new")],
-        [InlineKeyboardButton(text="📋 Мои подписки", callback_data="sub:list")]
-    ])
+    if exclude_user_id is not None:
+        query += " AND p.user_id != ?"
+        params.append(exclude_user_id)
 
+    query += " ORDER BY COALESCE(p.bumped_at, p.created_at) DESC LIMIT 100"
 
-def popular_routes_kb(rows: List[sqlite3.Row]):
-    buttons = []
+    with closing(connect_db()) as conn:
+        rows = conn.execute(query, params).fetchall()
+
+    results: List[dict] = []
     for row in rows:
-        label = f"{row['from_country']} → {row['to_country']} ({row['cnt']})"
-        buttons.append([
-            InlineKeyboardButton(
-                text=label[:64],
-                callback_data=f"popular:{row['from_country']}:{row['to_country']}"
+        score = 45
+        notes: List[str] = ["Совпадает маршрут по странам"]
+
+        if source_row is not None:
+            score, notes = calculate_coincidence_score(source_row, row)
+
+        if score < 35:
+            continue
+
+        coincidence_type = "strong" if score >= 75 else "good" if score >= 55 else "possible"
+        results.append({
+            "row": row,
+            "score": score,
+            "notes": notes,
+            "type": coincidence_type
+        })
+
+    results.sort(key=lambda x: (x["score"], x["row"]["bumped_at"] or x["row"]["created_at"]), reverse=True)
+    return results[:limit]
+
+
+def publish_to_channel(bot: Bot, post_id: int):
+    if not CHANNEL_USERNAME:
+        return
+    row = get_post(post_id)
+    if not row or row["status"] != STATUS_ACTIVE:
+        return
+
+    async def _send():
+        msg = await bot.send_message(
+            CHANNEL_USERNAME,
+            post_text(row, for_channel=True),
+            reply_markup=channel_post_kb(post_id, row["post_type"])
+        )
+        with closing(connect_db()) as conn, conn:
+            conn.execute("UPDATE posts SET channel_message_id=? WHERE id=?", (msg.message_id, post_id))
+    return _send()
+
+
+async def safe_publish(bot: Bot, post_id: int):
+    try:
+        coro = publish_to_channel(bot, post_id)
+        if coro:
+            await coro
+    except Exception as e:
+        print(f"CHANNEL PUBLISH ERROR: {e}")
+
+
+async def remove_post_from_channel(bot: Bot, row):
+    if not CHANNEL_USERNAME or not row:
+        return
+    channel_message_id = row["channel_message_id"] if "channel_message_id" in row.keys() else None
+    if not channel_message_id:
+        return
+    try:
+        await bot.delete_message(CHANNEL_USERNAME, channel_message_id)
+    except Exception as e:
+        print(f"CHANNEL DELETE ERROR: {e}")
+
+
+async def notify_coincidence_users(bot: Bot, new_post_id: int):
+    new_row = get_post(new_post_id)
+    if not new_row or new_row["status"] != STATUS_ACTIVE:
+        return
+
+    coincidences = get_coincidences(
+        post_type=new_row["post_type"],
+        from_country=new_row["from_country"],
+        to_country=new_row["to_country"],
+        exclude_user_id=new_row["user_id"],
+        source_row=new_row,
+        limit=COINCIDENCE_NOTIFY_LIMIT
+    )
+
+    if not coincidences:
+        return
+
+    for item in coincidences:
+        row = item["row"]
+        score = item["score"]
+        notes = item["notes"]
+
+        if coincidence_already_notified(new_row["id"], row["id"]):
+            continue
+
+        intro = format_coincidence_badges(score, notes)
+
+        try:
+            await bot.send_message(
+                new_row["user_id"],
+                f"🔔 Найдено новое совпадение!\n\n{intro}\n\n{post_text(row)}",
+                reply_markup=public_post_kb(row["id"], row["user_id"], row["post_type"])
             )
-        ])
-    return InlineKeyboardMarkup(
-        inline_keyboard=buttons or [[InlineKeyboardButton(text="Пока пусто", callback_data="noop")]]
-    )
+        except Exception as e:
+            print(f"COINCIDENCE SEND A ERROR: {e}")
+
+        try:
+            await bot.send_message(
+                row["user_id"],
+                f"🔔 Найдено новое совпадение!\n\n{intro}\n\n{post_text(new_row)}",
+                reply_markup=public_post_kb(new_row["id"], new_row["user_id"], new_row["post_type"])
+            )
+        except Exception as e:
+            print(f"COINCIDENCE SEND B ERROR: {e}")
+
+        mark_coincidence_notified(new_row["id"], row["id"])
 
 
-def deal_open_kb(deal: sqlite3.Row, user_id: int) -> InlineKeyboardMarkup:
-    rows = []
-
-    if deal["status"] == DEAL_ACCEPTED:
-        rows.append([InlineKeyboardButton(text="✅ Подтвердить завершение", callback_data=f"deal_confirm:{deal['id']}")])
-
-    if deal["status"] in (DEAL_COMPLETED_BY_OWNER, DEAL_COMPLETED_BY_REQUESTER):
-        rows.append([InlineKeyboardButton(text="✅ Подтвердить завершение", callback_data=f"deal_confirm:{deal['id']}")])
-
-    if deal["status"] == DEAL_COMPLETED:
-        rows.append([InlineKeyboardButton(text="⭐ Оставить отзыв", callback_data=f"deal_review:{deal['id']}")])
-
-    if deal["status"] in (DEAL_CONTACTED, DEAL_OFFERED, DEAL_ACCEPTED, DEAL_COMPLETED_BY_OWNER, DEAL_COMPLETED_BY_REQUESTER):
-        rows.append([InlineKeyboardButton(text="❌ Не договорились", callback_data=f"deal_fail_direct:{deal['id']}")])
-
-    if not rows:
-        rows = [[InlineKeyboardButton(text="Ок", callback_data="noop")]]
-
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-class CreatePost(StatesGroup):
-    from_country = State()
-    from_city = State()
-    to_country = State()
-    to_city = State()
-    travel_date = State()
-    weight = State()
-    description = State()
-    contact_note = State()
-
-
-class FindFlow(StatesGroup):
-    looking_for = State()
-    from_country = State()
-    to_country = State()
-
-
-class ComplaintFlow(StatesGroup):
-    post_id = State()
-    reason = State()
-
-
-class ContactFlow(StatesGroup):
-    message_text = State()
-
-
-class SubscriptionFlow(StatesGroup):
-    looking_for = State()
-    from_country = State()
-    to_country = State()
-
-
-class ReviewFlow(StatesGroup):
-    reviewed_user_id = State()
-    post_id = State()
-    rating = State()
-    text = State()
-
-
-async def begin_create(message: Message, state: FSMContext, post_type: str):
-    upsert_user(message)
-
-    if is_user_banned(message.from_user.id):
-        await message.answer(
-            "⛔ Ваш аккаунт ограничен. Если это ошибка — свяжитесь с администратором.",
-            reply_markup=main_menu(message.from_user.id)
-        )
+async def notify_subscribers(bot: Bot, post_id: int):
+    row = get_post(post_id)
+    if not row or row["status"] != STATUS_ACTIVE:
         return
 
-    spam_error = anti_spam_check(message.from_user.id)
-    if spam_error:
-        await message.answer(spam_error, reply_markup=main_menu(message.from_user.id))
-        return
+    with closing(connect_db()) as conn:
+        subscribers = conn.execute("""
+            SELECT * FROM route_subscriptions
+            WHERE post_type=? AND from_country=? AND to_country=? AND user_id != ?
+            ORDER BY created_at DESC
+            LIMIT 50
+        """, (row["post_type"], row["from_country"], row["to_country"], row["user_id"])).fetchall()
 
-    if active_post_count(message.from_user.id) >= MAX_ACTIVE_POSTS_PER_USER:
-        await message.answer(
-            f"У вас уже слишком много объявлений. Лимит: {MAX_ACTIVE_POSTS_PER_USER}. "
-            "Удалите или деактивируйте старые объявления.",
-            reply_markup=main_menu(message.from_user.id)
-        )
-        return
+    for sub in subscribers:
+        try:
+            await bot.send_message(
+                sub["user_id"],
+                "🔔 По вашей подписке появилось новое объявление:\n\n" + post_text(row),
+                reply_markup=public_post_kb(row["id"], row["user_id"], row["post_type"])
+            )
+        except Exception as e:
+            print(f"SUBSCRIBER SEND ERROR: {e}")
 
-    await state.clear()
-    await state.update_data(post_type=post_type)
-    await state.set_state(CreatePost.from_country)
 
-    await message.answer(
-        form_text(post_type, 1, "Введите страну отправления"),
-        reply_markup=countries_kb("from")
-    )
+async def run_global_coincidence_scan(bot: Bot):
+    try:
+        with closing(connect_db()) as conn:
+            rows = conn.execute("""
+                SELECT p.*, u.username, u.full_name
+                FROM posts p
+                LEFT JOIN users u ON u.user_id = p.user_id
+                WHERE p.status='active'
+                  AND (p.expires_at IS NULL OR p.expires_at > ?)
+                ORDER BY COALESCE(p.bumped_at, p.created_at) DESC
+                LIMIT 300
+            """, (now_ts(),)).fetchall()
+
+        for row in rows:
+            coincidences = get_coincidences(
+                post_type=row["post_type"],
+                from_country=row["from_country"],
+                to_country=row["to_country"],
+                exclude_user_id=row["user_id"],
+                source_row=row,
+                limit=COINCIDENCE_NOTIFY_LIMIT
+            )
+
+            for item in coincidences:
+                target = item["row"]
+                score = item["score"]
+                notes = item["notes"]
+
+                if coincidence_already_notified(row["id"], target["id"]):
+                    continue
+
+                intro = format_coincidence_badges(score, notes)
+
+                try:
+                    await bot.send_message(
+                        row["user_id"],
+                        f"🔔 Найдено новое совпадение!\n\n{intro}\n\n{post_text(target)}",
+                        reply_markup=public_post_kb(target["id"], target["user_id"], target["post_type"])
+                    )
+                except Exception as e:
+                    print(f"GLOBAL COINCIDENCE SEND A ERROR: {e}")
+
+                try:
+                    await bot.send_message(
+                        target["user_id"],
+                        f"🔔 Найдено новое совпадение!\n\n{intro}\n\n{post_text(row)}",
+                        reply_markup=public_post_kb(row["id"], row["user_id"], row["post_type"])
+                    )
+                except Exception as e:
+                    print(f"GLOBAL COINCIDENCE SEND B ERROR: {e}")
+
+                mark_coincidence_notified(row["id"], target["id"])
+
+    except Exception as e:
+        print(f"GLOBAL COINCIDENCE SCAN ERROR: {e}")
+
+
+def owner_only(callback: CallbackQuery, post_id: int) -> Optional[sqlite3.Row]:
+    row = get_post(post_id)
+    if not row or row["user_id"] != callback.from_user.id:
+        return None
+    return row
+
+
+async def expire_old_posts(bot: Bot):
+    while True:
+        try:
+            with closing(connect_db()) as conn:
+                rows = conn.execute("""
+                    SELECT p.*, u.username, u.full_name
+                    FROM posts p
+                    LEFT JOIN users u ON u.user_id = p.user_id
+                    WHERE p.status IN ('active','inactive')
+                      AND p.expires_at IS NOT NULL
+                      AND p.expires_at <= ?
+                    LIMIT 50
+                """, (now_ts(),)).fetchall()
+
+            if rows:
+                for row in rows:
+                    await remove_post_from_channel(bot, row)
+
+                with closing(connect_db()) as conn, conn:
+                    for row in rows:
+                        conn.execute(
+                            "UPDATE posts SET status=?, updated_at=? WHERE id=?",
+                            (STATUS_EXPIRED, now_ts(), row["id"])
+                        )
+
+                for row in rows:
+                    try:
+                        await bot.send_message(
+                            row["user_id"],
+                            f"⌛ Ваше объявление ID {row['id']} истекло и скрыто.\n"
+                            "Откройте 'Мои объявления', чтобы активировать его снова.",
+                            reply_markup=main_menu(row["user_id"])
+                        )
+                    except Exception as e:
+                        print(f"EXPIRE USER NOTIFY ERROR: {e}")
+        except Exception as e:
+            print(f"EXPIRE LOOP ERROR: {e}")
+
+        await asyncio.sleep(300)
+
+
+async def global_coincidence_loop(bot: Bot):
+    while True:
+        await run_global_coincidence_scan(bot)
+        await asyncio.sleep(300)
+
+
+def main_menu(user_id: Optional[int] = None):
+    keyboard = [
+        [KeyboardButton(text="✈️ Взять посылку"), KeyboardButton(text="📦 Отправить посылку")],
+        [KeyboardButton(text="🔎 Найти совпадения"), KeyboardButton(text="📋 Мои объявления")],
+        [KeyboardButton(text="🤝 Мои сделки"), KeyboardButton(text="🔥 Популярные маршруты")],
+        [KeyboardButton(text="🆕 Новые объявления"), KeyboardButton(text="🔔 Подписки")],
+        [KeyboardButton(text="📊 Статистика"), KeyboardButton(text="💰 Поднять объявление")],
+        [KeyboardButton(text="🆘 Жалоба"), KeyboardButton(text="ℹ️ Помощь")],
+    ]
+    if user_id is not None and is_admin(user_id):
+        keyboard.append([KeyboardButton(text="👨‍💼 Админка")])
+    return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 
 
 @router.message(Command("my"))
 @router.message(F.text == "📋 Мои объявления")
-async def my_posts(message: Message):
+async def my_posts_handler(message: Message):
     upsert_user(message)
     with closing(connect_db()) as conn:
         posts = conn.execute("""
@@ -880,58 +1071,61 @@ async def my_deals_handler(message: Message):
     await message.answer("Ваши сделки:", reply_markup=deal_list_kb(deals))
 
 
-@router.callback_query(F.data.startswith("mydeal:"))
-async def open_my_deal(callback: CallbackQuery):
-    await callback.answer()
+@router.inline_query()
+async def inline_search_handler(inline_query: InlineQuery):
+    query = (inline_query.query or "").strip()
+    rows = search_posts_inline(query, limit=10)
+    results = []
 
-    try:
-        deal_id = int(callback.data.split(":")[1])
-        deal = get_deal(deal_id)
+    for row in rows:
+        title = f"{'✈️' if row['post_type'] == TYPE_TRIP else '📦'} {row['from_country']} → {row['to_country']}"
+        if row["from_city"] or row["to_city"]:
+            from_part = row["from_city"] or row["from_country"]
+            to_part = row["to_city"] or row["to_country"]
+            title = f"{'✈️' if row['post_type'] == TYPE_TRIP else '📦'} {from_part} → {to_part}"
 
-        if not deal or (deal["owner_user_id"] != callback.from_user.id and deal["requester_user_id"] != callback.from_user.id):
-            await callback.message.answer("Сделка не найдена.")
-            return
+        description_parts = []
+        if row["travel_date"]:
+            description_parts.append(f"Дата: {row['travel_date']}")
+        if row["weight_kg"]:
+            description_parts.append(f"Вес: {row['weight_kg']}")
+        if row["description"]:
+            description_parts.append(row["description"][:80])
 
-        role = "владелец объявления" if callback.from_user.id == deal["owner_user_id"] else "откликнувшийся"
-        other_user_id = deal["requester_user_id"] if callback.from_user.id == deal["owner_user_id"] else deal["owner_user_id"]
+        description = " | ".join(description_parts)[:200] or "Открыть объявление"
+        text = f"{post_text(row)}\n\n🤖 Открыть в боте: {post_deeplink(row['id'])}"
 
-        text = (
-            f"🤝 <b>Сделка #{deal['id']}</b>\n\n"
-            f"Объявление ID: <b>{deal['post_id']}</b>\n"
-            f"Статус: <b>{format_deal_status(deal['status'])}</b>\n"
-            f"Ваша роль: <b>{role}</b>\n"
-            f"Вторая сторона: <b>{format_user_ref(other_user_id)}</b>\n"
-            f"Подтверждение владельца: <b>{'Да' if deal['owner_confirmed'] else 'Нет'}</b>\n"
-            f"Подтверждение откликнувшегося: <b>{'Да' if deal['requester_confirmed'] else 'Нет'}</b>"
+        results.append(
+            InlineQueryResultArticle(
+                id=str(row["id"]),
+                title=title[:256],
+                description=description,
+                input_message_content=InputTextMessageContent(
+                    message_text=text,
+                    parse_mode=ParseMode.HTML,
+                    disable_web_page_preview=True,
+                ),
+                reply_markup=public_post_kb(row["id"], row["user_id"], row["post_type"]),
+            )
         )
 
-        await callback.message.answer(text, reply_markup=deal_open_kb(deal, callback.from_user.id))
+    if not results:
+        results = [
+            InlineQueryResultArticle(
+                id="no_results",
+                title="Ничего не найдено",
+                description="Попробуйте: Китай Киев, Shenzhen Moscow, посылка, попутчик",
+                input_message_content=InputTextMessageContent(
+                    message_text=(
+                        "Ничего не найдено.\n\n"
+                        f"Открой бота и создай объявление: {bot_link()}"
+                    ),
+                    disable_web_page_preview=True,
+                ),
+            )
+        ]
 
-    except Exception as e:
-        print(f"OPEN_MY_DEAL ERROR: {e}")
-        await callback.message.answer("Не удалось открыть сделку.")
-
-
-@router.callback_query(F.data.startswith("mypost:"))
-async def open_my_post(callback: CallbackQuery):
-    await callback.answer()
-
-    try:
-        post_id = int(callback.data.split(":")[1])
-        row = get_post(post_id)
-
-        if not row or row["user_id"] != callback.from_user.id:
-            await callback.message.answer("Объявление не найдено.")
-            return
-
-        await callback.message.answer(
-            post_text(row),
-            reply_markup=post_actions_kb(post_id, row["status"])
-        )
-
-    except Exception as e:
-        print(f"OPEN_MY_POST ERROR: {e}")
-        await callback.message.answer("Не удалось открыть объявление.")
+    await inline_query.answer(results, cache_time=1, is_personal=True)
 
 
 @router.message(CommandStart())
@@ -960,16 +1154,11 @@ async def start_handler(message: Message, state: FSMContext):
 
     if start_arg.startswith("contact_"):
         post_id_str = start_arg.replace("contact_", "", 1)
-
         if post_id_str.isdigit():
             row = get_post(int(post_id_str))
-
             if row and row["status"] == STATUS_ACTIVE:
                 if row["user_id"] == message.from_user.id:
-                    await message.answer(
-                        "Это ваше объявление.",
-                        reply_markup=main_menu(message.from_user.id)
-                    )
+                    await message.answer("Это ваше объявление.", reply_markup=main_menu(message.from_user.id))
                     return
 
                 deal_id = ensure_deal(
@@ -980,11 +1169,7 @@ async def start_handler(message: Message, state: FSMContext):
                 )
 
                 await state.set_state(ContactFlow.message_text)
-                await state.update_data(
-                    post_id=row["id"],
-                    target_user_id=row["user_id"],
-                    deal_id=deal_id
-                )
+                await state.update_data(post_id=row["id"], target_user_id=row["user_id"], deal_id=deal_id)
 
                 await message.answer(
                     "✉️ Вы открыли связь с владельцем объявления:\n\n"
@@ -1008,27 +1193,6 @@ async def start_handler(message: Message, state: FSMContext):
                 await message.answer("Объявление не найдено или уже неактивно.")
         return
 
-    if start_arg.startswith("route_"):
-        try:
-            _, post_type, from_country, to_country = start_arg.split("_", 3)
-            rows = search_route_posts(post_type, from_country, to_country, limit=10)
-            if not rows:
-                await message.answer(f"По маршруту {from_country} → {to_country} пока нет активных объявлений.")
-            else:
-                await message.answer(
-                    f"Маршрут: <b>{from_country} → {to_country}</b>\n"
-                    f"Тип: {'✈️ Попутчики' if post_type == TYPE_TRIP else '📦 Посылки'}\n"
-                    f"Найдено: {len(rows)}"
-                )
-                for row in rows:
-                    await message.answer(
-                        post_text(row),
-                        reply_markup=public_post_kb(row["id"], row["user_id"], row["post_type"])
-                    )
-        except Exception:
-            await message.answer("Не удалось открыть маршрут.")
-        return
-
     text = (
         "👋 <b>Привет.</b>\n\n"
         "Это <b>Попутчик Китай</b> — бот для передачи посылок через попутчиков.\n\n"
@@ -1037,7 +1201,6 @@ async def start_handler(message: Message, state: FSMContext):
         "t.me/china_poputchik\n\n"
         "Я сам буду искать попутчиков для тебя.\n"
         "Я сам буду уведомлять тебя о совпадениях.\n\n"
-        "Что же необходимо от тебя?\n\n"
         "<b>Нажми на нужную кнопку в меню и заполни заявку.</b>\n\n"
         "⬇️ <b>Выберите действие в меню ниже</b>"
     )
@@ -1167,10 +1330,7 @@ async def finalize_post(message: Message, state: FSMContext, bot: Bot):
         upsert_user(message)
 
         if is_user_banned(message.from_user.id):
-            await message.answer(
-                "⛔ Ваш аккаунт ограничен.",
-                reply_markup=main_menu(message.from_user.id)
-            )
+            await message.answer("⛔ Ваш аккаунт ограничен.", reply_markup=main_menu(message.from_user.id))
             await state.clear()
             return
 
@@ -1195,10 +1355,7 @@ async def finalize_post(message: Message, state: FSMContext, bot: Bot):
             reply_markup=main_menu(message.from_user.id)
         )
 
-        await message.answer(
-            post_text(row),
-            reply_markup=post_actions_kb(post_id, row["status"])
-        )
+        await message.answer(post_text(row), reply_markup=post_actions_kb(post_id, row["status"]))
 
         if ADMIN_IDS and row["status"] == STATUS_PENDING:
             for admin_id in ADMIN_IDS:
@@ -1221,6 +1378,28 @@ async def finalize_post(message: Message, state: FSMContext, bot: Bot):
             f"Произошла ошибка при сохранении объявления: {html.escape(str(e))}",
             reply_markup=main_menu(message.from_user.id)
         )
+
+
+@router.callback_query(F.data.startswith("mypost:"))
+async def open_my_post(callback: CallbackQuery):
+    await callback.answer()
+    try:
+        post_id = int(callback.data.split(":")[1])
+        row = get_post(post_id)
+
+        if not row or row["user_id"] != callback.from_user.id:
+            await callback.message.answer("Объявление не найдено.")
+            return
+
+        text = post_text(row)
+        if len(text) > 4000:
+            text = text[:3900] + "\n\n..."
+
+        await callback.message.answer(text, reply_markup=post_actions_kb(post_id, row["status"]))
+
+    except Exception as e:
+        print(f"OPEN_MY_POST ERROR: {e}")
+        await callback.message.answer("Не удалось открыть объявление.")
 
 
 @router.callback_query(F.data.startswith("delete:"))
@@ -1439,7 +1618,6 @@ async def popular_routes_handler(message: Message):
 @router.callback_query(F.data.startswith("popular:"))
 async def popular_route_open(callback: CallbackQuery):
     await callback.answer()
-
     try:
         _, from_country, to_country = callback.data.split(":", 2)
         rows = search_route_posts_all(from_country, to_country, limit=20)
@@ -1452,17 +1630,23 @@ async def popular_route_open(callback: CallbackQuery):
         parcels = sum(1 for r in rows if r["post_type"] == TYPE_PARCEL)
 
         await callback.message.answer(
-            f"Маршрут: <b>{from_country} → {to_country}</b>\n"
+            f"Маршрут: <b>{html.escape(from_country)} → {html.escape(to_country)}</b>\n"
             f"Найдено: <b>{len(rows)}</b>\n"
             f"✈️ Попутчиков: <b>{trips}</b>\n"
             f"📦 Посылок: <b>{parcels}</b>"
         )
 
         for row in rows:
-            await callback.message.answer(
-                post_text(row),
-                reply_markup=public_post_kb(row["id"], row["user_id"], row["post_type"])
-            )
+            try:
+                text = post_text(row)
+                if len(text) > 4000:
+                    text = text[:3900] + "\n\n..."
+                await callback.message.answer(
+                    text,
+                    reply_markup=public_post_kb(row["id"], row["user_id"], row["post_type"])
+                )
+            except Exception as inner_e:
+                print(f"POPULAR_ROUTE_SEND_ROW ERROR: {inner_e}")
 
     except Exception as e:
         print(f"POPULAR_ROUTE_OPEN ERROR: {e}")
@@ -1753,6 +1937,37 @@ async def deal_reject_handler(callback: CallbackQuery):
     await callback.answer()
 
 
+@router.callback_query(F.data.startswith("mydeal:"))
+async def open_my_deal(callback: CallbackQuery):
+    await callback.answer()
+    try:
+        deal_id = int(callback.data.split(":")[1])
+        deal = get_deal(deal_id)
+
+        if not deal or (deal["owner_user_id"] != callback.from_user.id and deal["requester_user_id"] != callback.from_user.id):
+            await callback.message.answer("Сделка не найдена.")
+            return
+
+        role = "владелец объявления" if callback.from_user.id == deal["owner_user_id"] else "откликнувшийся"
+        other_user_id = deal["requester_user_id"] if callback.from_user.id == deal["owner_user_id"] else deal["owner_user_id"]
+
+        text = (
+            f"🤝 <b>Сделка #{deal['id']}</b>\n\n"
+            f"Объявление ID: <b>{deal['post_id']}</b>\n"
+            f"Статус: <b>{format_deal_status(deal['status'])}</b>\n"
+            f"Ваша роль: <b>{role}</b>\n"
+            f"Вторая сторона: <b>{format_user_ref(other_user_id)}</b>\n"
+            f"Подтверждение владельца: <b>{'Да' if deal['owner_confirmed'] else 'Нет'}</b>\n"
+            f"Подтверждение откликнувшегося: <b>{'Да' if deal['requester_confirmed'] else 'Нет'}</b>"
+        )
+
+        await callback.message.answer(text, reply_markup=deal_open_kb(deal, callback.from_user.id))
+
+    except Exception as e:
+        print(f"OPEN_MY_DEAL ERROR: {e}")
+        await callback.message.answer("Не удалось открыть сделку.")
+
+
 @router.callback_query(F.data.startswith("deal_confirm:"))
 async def deal_confirm_handler(callback: CallbackQuery):
     deal_id = int(callback.data.split(":")[1])
@@ -1904,10 +2119,7 @@ async def review_finish(message: Message, state: FSMContext):
                 now_ts()
             ))
         except sqlite3.IntegrityError:
-            await message.answer(
-                "Такой отзыв уже оставлен.",
-                reply_markup=main_menu(message.from_user.id)
-            )
+            await message.answer("Такой отзыв уже оставлен.", reply_markup=main_menu(message.from_user.id))
             await state.clear()
             return
 
@@ -2035,7 +2247,7 @@ async def noop(callback: CallbackQuery):
 
 @router.message(Command("admin"))
 @router.message(F.text == "👨‍💼 Админка")
-async def admin_menu(message: Message):
+async def admin_menu_handler(message: Message):
     if not is_admin(message.from_user.id):
         await message.answer("Админка доступна только администраторам.")
         return
@@ -2061,7 +2273,8 @@ async def admin_pending(message: Message):
     with closing(connect_db()) as conn:
         rows = conn.execute("""
             SELECT p.*, u.username, u.full_name
-            FROM posts p LEFT JOIN users u ON u.user_id = p.user_id
+            FROM posts p
+            LEFT JOIN users u ON u.user_id = p.user_id
             WHERE p.status='pending'
             ORDER BY p.created_at ASC
             LIMIT 20

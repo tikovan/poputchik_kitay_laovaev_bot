@@ -36,6 +36,7 @@ DB_PATH = os.getenv("DB_PATH", "/data/bot.db")
 db_dir = os.path.dirname(DB_PATH)
 if db_dir:
     os.makedirs(db_dir, exist_ok=True)
+
 CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME", "")
 BOT_USERNAME = os.getenv("BOT_USERNAME", "Poputchik_china_bot").lstrip("@")
 ADMIN_IDS = {int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip().isdigit()}
@@ -64,6 +65,7 @@ STATUS_INACTIVE = "inactive"
 STATUS_REJECTED = "rejected"
 STATUS_EXPIRED = "expired"
 STATUS_DELETED = "deleted"
+
 
 def now_ts() -> int:
     return int(time.time())
@@ -157,12 +159,6 @@ def init_db():
             is_banned INTEGER DEFAULT 0,
             is_verified INTEGER DEFAULT 0
         );
-        
-CREATE TABLE IF NOT EXISTS banned_users (
-    user_id INTEGER PRIMARY KEY,
-    reason TEXT,
-    banned_at INTEGER NOT NULL
-);
 
         CREATE TABLE IF NOT EXISTS posts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -262,6 +258,10 @@ CREATE TABLE IF NOT EXISTS banned_users (
         existing_users = [r["name"] for r in conn.execute("PRAGMA table_info(users)").fetchall()]
         if "is_verified" not in existing_users:
             conn.execute("ALTER TABLE users ADD COLUMN is_verified INTEGER DEFAULT 0")
+        if "is_banned" not in existing_users:
+            conn.execute("ALTER TABLE users ADD COLUMN is_banned INTEGER DEFAULT 0")
+        if "last_action_at" not in existing_users:
+            conn.execute("ALTER TABLE users ADD COLUMN last_action_at INTEGER DEFAULT 0")
 
         existing_posts = [r["name"] for r in conn.execute("PRAGMA table_info(posts)").fetchall()]
         if "expires_at" not in existing_posts:
@@ -271,6 +271,12 @@ CREATE TABLE IF NOT EXISTS banned_users (
 def upsert_user(message_or_callback):
     user = message_or_callback.from_user
     with closing(connect_db()) as conn, conn:
+        existing = conn.execute(
+            "SELECT created_at FROM users WHERE user_id=?",
+            (user.id,)
+        ).fetchone()
+        created_at = int(existing["created_at"]) if existing and existing["created_at"] else now_ts()
+
         conn.execute("""
             INSERT INTO users (user_id, username, full_name, created_at)
             VALUES (?, ?, ?, ?)
@@ -281,34 +287,34 @@ def upsert_user(message_or_callback):
             user.id,
             user.username,
             (user.full_name or "")[:200],
-            now_ts()
+            created_at
         ))
 
 
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
 
+
 def is_user_banned(user_id: int) -> bool:
     with closing(connect_db()) as conn:
         row = conn.execute(
-            "SELECT 1 FROM banned_users WHERE user_id=?",
+            "SELECT is_banned FROM users WHERE user_id=?",
             (user_id,)
         ).fetchone()
-        return bool(row)
+        return bool(row and row["is_banned"])
 
 
 def ban_user(user_id: int, reason: str = "too_many_complaints"):
     with closing(connect_db()) as conn, conn:
         conn.execute(
-            "INSERT OR REPLACE INTO banned_users (user_id, reason, banned_at) VALUES (?, ?, ?)",
-            (user_id, reason, now_ts())
+            "UPDATE users SET is_banned=1 WHERE user_id=?",
+            (user_id,)
+        )
+        conn.execute(
+            "UPDATE posts SET status=?, updated_at=? WHERE user_id=? AND status IN ('active','pending','inactive')",
+            (STATUS_INACTIVE, now_ts(), user_id)
         )
 
-        # скрываем объявления пользователя
-        conn.execute(
-            "UPDATE posts SET status=? WHERE user_id=? AND status=?",
-            (STATUS_DELETED, user_id, STATUS_ACTIVE)
-        )
 
 def anti_spam_check(user_id: int) -> Optional[str]:
     with closing(connect_db()) as conn, conn:
@@ -351,6 +357,7 @@ def user_rating_summary(user_id: int) -> Tuple[float, int]:
         cnt = int(row["cnt"] or 0)
         return avg_rating, cnt
 
+
 def user_service_days(user_id: int) -> int:
     with closing(connect_db()) as conn:
         row = conn.execute(
@@ -386,6 +393,7 @@ def user_completed_deals_count(user_id: int) -> int:
         """, (user_id, user_id)).fetchone()
 
         return int(row["cnt"] or 0)
+
 
 def is_user_verified(user_id: int) -> bool:
     with closing(connect_db()) as conn:
@@ -427,11 +435,7 @@ def post_text(row, for_channel: bool = False) -> str:
 
     verified_badge = " ✅ Проверенный" if is_user_verified(owner_user_id) else ""
     rating_line = format_rating_line(owner_user_id)
-
-    # количество успешных передач
     completed_deals = user_completed_deals_count(owner_user_id)
-
-    # сколько пользователь в сервисе
     service_text = user_service_text(owner_user_id)
 
     lines = [
@@ -450,7 +454,6 @@ def post_text(row, for_channel: bool = False) -> str:
     if row["contact_note"]:
         lines.append(f"<b>Контакт:</b> {html.escape(row['contact_note'])}")
 
-    # блок доверия пользователя
     lines.append("")
     lines.append("<b>👤 Профиль пользователя</b>")
 
@@ -473,6 +476,8 @@ def post_text(row, for_channel: bool = False) -> str:
             lines.append(f"<b>Telegram:</b> @{html.escape(owner)}")
 
     return "\n".join(lines)
+
+
 def search_posts_inline(query: str, limit: int = 10) -> List[sqlite3.Row]:
     q = f"%{query.strip().lower()}%"
     with closing(connect_db()) as conn:
@@ -659,6 +664,7 @@ def public_post_kb(post_id: int, owner_id: int, post_type: Optional[str] = None)
         ]
     )
 
+
 def channel_post_kb(post_id: int, post_type: Optional[str] = None):
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -672,6 +678,7 @@ def channel_post_kb(post_id: int, post_type: Optional[str] = None):
             )]
         ]
     )
+
 
 def subscription_actions_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -730,6 +737,41 @@ class ReviewFlow(StatesGroup):
     post_id = State()
     rating = State()
     text = State()
+
+
+async def begin_create(message: Message, state: FSMContext, post_type: str):
+    upsert_user(message)
+
+    if is_user_banned(message.from_user.id):
+        await message.answer(
+            "⛔ Ваш аккаунт ограничен. Если это ошибка — свяжитесь с администратором.",
+            reply_markup=main_menu(message.from_user.id)
+        )
+        return
+
+    spam_error = anti_spam_check(message.from_user.id)
+    if spam_error:
+        await message.answer(spam_error, reply_markup=main_menu(message.from_user.id))
+        return
+
+    if active_post_count(message.from_user.id) >= MAX_ACTIVE_POSTS_PER_USER:
+        await message.answer(
+            f"У вас уже слишком много объявлений. Лимит: {MAX_ACTIVE_POSTS_PER_USER}. "
+            "Удалите или деактивируйте старые объявления.",
+            reply_markup=main_menu(message.from_user.id)
+        )
+        return
+
+    await state.clear()
+    await state.update_data(post_type=post_type)
+    await state.set_state(CreatePost.from_country)
+
+    title = "✈️ Создание объявления попутчика" if post_type == TYPE_TRIP else "📦 Создание объявления посылки"
+
+    await message.answer(
+        f"{title}\n\nВыберите страну отправления:",
+        reply_markup=countries_kb("from")
+    )
 
 
 def create_post_record(data: dict, user_id: int) -> int:
@@ -841,6 +883,13 @@ def top_route() -> Optional[sqlite3.Row]:
 
 def add_route_subscription(user_id: int, post_type: str, from_country: str, to_country: str):
     with closing(connect_db()) as conn, conn:
+        exists = conn.execute("""
+            SELECT id FROM route_subscriptions
+            WHERE user_id=? AND post_type=? AND from_country=? AND to_country=?
+            LIMIT 1
+        """, (user_id, post_type, from_country, to_country)).fetchone()
+        if exists:
+            return
         conn.execute("""
             INSERT INTO route_subscriptions (user_id, post_type, from_country, to_country, created_at)
             VALUES (?, ?, ?, ?, ?)
@@ -890,7 +939,7 @@ def mark_coincidence_notified(post_a_id: int, post_b_id: int):
         """, (a, b, now_ts()))
 
 
-def calculate_coincidence_score(source_row: sqlite3.Row, candidate_row: sqlite3.Row) -> Tuple[int, List[str]]:
+def calculate_coincidence_score(source_row, candidate_row: sqlite3.Row) -> Tuple[int, List[str]]:
     score = 40
     notes: List[str] = []
 
@@ -977,7 +1026,7 @@ def get_coincidences(
     from_country: str,
     to_country: str,
     exclude_user_id: Optional[int] = None,
-    source_row: Optional[sqlite3.Row] = None,
+    source_row=None,
     limit: int = 20
 ) -> List[dict]:
     target_type = TYPE_PARCEL if post_type == TYPE_TRIP else TYPE_TRIP
@@ -1321,13 +1370,7 @@ async def start_handler(message: Message, state: FSMContext):
     upsert_user(message)
     await state.clear()
 
-    with closing(connect_db()) as conn:
-        row_user = conn.execute(
-            "SELECT is_banned FROM users WHERE user_id=?",
-            (message.from_user.id,)
-        ).fetchone()
-
-    if row_user and row_user["is_banned"]:
+    if is_user_banned(message.from_user.id):
         await message.answer(
             "⛔ Ваш аккаунт ограничен из-за жалоб пользователей.\n"
             "Если это ошибка — свяжитесь с администратором."
@@ -1424,17 +1467,21 @@ async def start_handler(message: Message, state: FSMContext):
     )
 
     await message.answer(text, reply_markup=main_menu(message.from_user.id))
-    
+
+
 @router.message(StateFilter("*"), Command("new_trip"))
 @router.message(StateFilter("*"), F.text == "✈️ Взять посылку")
 async def add_trip(message: Message, state: FSMContext):
     await state.clear()
     await begin_create(message, state, TYPE_TRIP)
-    
-@router.message(Command("new_parcel"))
-@router.message(F.text == "📦 Отправить посылку")
+
+
+@router.message(StateFilter("*"), Command("new_parcel"))
+@router.message(StateFilter("*"), F.text == "📦 Отправить посылку")
 async def add_parcel(message: Message, state: FSMContext):
+    await state.clear()
     await begin_create(message, state, TYPE_PARCEL)
+
 
 @router.callback_query(F.data.startswith("from:"))
 async def choose_from_country(callback: CallbackQuery, state: FSMContext):
@@ -1485,7 +1532,11 @@ async def enter_weight(message: Message, state: FSMContext):
 
 @router.message(CreatePost.description)
 async def enter_description(message: Message, state: FSMContext):
-    await state.update_data(description=message.text.strip()[:1000])
+    desc = (message.text or "").strip()
+    if len(desc) < 3:
+        await message.answer("Описание слишком короткое. Напиши подробнее.")
+        return
+    await state.update_data(description=desc[:1000])
     await state.set_state(CreatePost.contact_note)
     await message.answer("Доп. контакт или примечание. Например: WeChat ID / только текст / без звонков. Если не надо — напиши '-'")
 
@@ -1493,6 +1544,16 @@ async def enter_description(message: Message, state: FSMContext):
 @router.message(CreatePost.contact_note)
 async def finalize_post(message: Message, state: FSMContext, bot: Bot):
     try:
+        upsert_user(message)
+
+        if is_user_banned(message.from_user.id):
+            await message.answer(
+                "⛔ Ваш аккаунт ограничен.",
+                reply_markup=main_menu(message.from_user.id)
+            )
+            await state.clear()
+            return
+
         data = await state.get_data()
         data["contact_note"] = None if message.text.strip() == "-" else message.text.strip()[:200]
 
@@ -1548,7 +1609,7 @@ async def finalize_post(message: Message, state: FSMContext, bot: Bot):
     except Exception as e:
         print(f"FINALIZE_POST ERROR: {e}")
         await message.answer(
-            f"Произошла ошибка при сохранении объявления: {e}",
+            f"Произошла ошибка при сохранении объявления: {html.escape(str(e))}",
             reply_markup=main_menu(message.from_user.id)
         )
 
@@ -1626,6 +1687,10 @@ async def activate_post(callback: CallbackQuery, bot: Bot):
         await callback.answer("Нет доступа", show_alert=True)
         return
 
+    if is_user_banned(callback.from_user.id):
+        await callback.answer("Ваш аккаунт ограничен", show_alert=True)
+        return
+
     new_status = STATUS_PENDING if ADMIN_IDS else STATUS_ACTIVE
     expires_at = now_ts() + days_to_seconds(POST_TTL_DAYS)
 
@@ -1670,10 +1735,12 @@ async def bump_info(message: Message):
         reply_markup=main_menu(message.from_user.id)
     )
 
+
 @router.message(StateFilter("*"), F.text == "❌ Отмена / Меню")
 async def cancel_to_menu(message: Message, state: FSMContext):
     await state.clear()
     await message.answer("Возвращаю в меню.", reply_markup=main_menu(message.from_user.id))
+
 
 @router.message(Command("find"))
 @router.message(F.text == "🔎 Найти совпадения")
@@ -1927,17 +1994,23 @@ async def relay_message(message: Message, state: FSMContext):
     data = await state.get_data()
     target_user_id = data["target_user_id"]
     post_id = data["post_id"]
-    text = message.text.strip()
+    text = (message.text or "").strip()
+
+    if not text:
+        await message.answer("Сообщение не должно быть пустым.")
+        return
 
     try:
+        from_name = html.escape(message.from_user.full_name or "Пользователь")
+        username_part = f" (@{html.escape(message.from_user.username)})" if message.from_user.username else ""
+        safe_text = html.escape(text)
+
         await message.bot.send_message(
             target_user_id,
             f"Новое сообщение по объявлению ID {post_id}:\n\n"
-            f"От: {message.from_user.full_name}"
-            + (f" (@{message.from_user.username})" if message.from_user.username else "")
-            + f"\n\n{text}\n\n"
+            f"От: {from_name}{username_part}\n\n{safe_text}\n\n"
             + "Чтобы ответить, напиши пользователю напрямую"
-            + (f": @{message.from_user.username}" if message.from_user.username else " или попроси его оставить контакт.")
+            + (f": @{html.escape(message.from_user.username)}" if message.from_user.username else " или попроси его оставить контакт.")
         )
 
         with closing(connect_db()) as conn, conn:
@@ -2015,7 +2088,6 @@ async def complaint_reason(message: Message, state: FSMContext, bot: Bot):
             (post_id, message.from_user.id, message.text.strip()[:1000], now_ts())
         )
 
-        # считаем количество жалоб на владельца объявления
         complaints_count = conn.execute("""
             SELECT COUNT(*) AS cnt
             FROM complaints c
@@ -2023,33 +2095,23 @@ async def complaint_reason(message: Message, state: FSMContext, bot: Bot):
             WHERE p.user_id = ?
         """, (owner_user_id,)).fetchone()["cnt"]
 
-        # если 3 или больше — баним пользователя и скрываем его объявления
-        if complaints_count >= 3:
-            conn.execute(
-                "UPDATE users SET is_banned=1 WHERE user_id=?",
-                (owner_user_id,)
-            )
-            conn.execute(
-                "UPDATE posts SET status=?, updated_at=? WHERE user_id=? AND status IN ('active','pending','inactive')",
-                (STATUS_INACTIVE, now_ts(), owner_user_id)
-            )
+    if complaints_count >= 3:
+        ban_user(owner_user_id)
 
     await message.answer("Жалоба отправлена.", reply_markup=main_menu(message.from_user.id))
 
-    # уведомление админам
     for admin_id in ADMIN_IDS:
         try:
             await bot.send_message(
                 admin_id,
                 f"Новая жалоба на объявление {post_id}:\n\n"
-                f"Причина: {message.text.strip()}\n\n"
+                f"Причина: {html.escape(message.text.strip())}\n\n"
                 f"Всего жалоб на пользователя: {complaints_count}\n\n"
                 + post_text(row)
             )
         except Exception:
             pass
 
-    # уведомление пользователя о бане
     if complaints_count >= 3:
         try:
             await bot.send_message(
@@ -2061,6 +2123,7 @@ async def complaint_reason(message: Message, state: FSMContext, bot: Bot):
             pass
 
     await state.clear()
+
 
 @router.message(F.text == "⭐ Оставить отзыв")
 async def review_start(message: Message, state: FSMContext):
@@ -2323,9 +2386,9 @@ async def admin_ban_post_owner(callback: CallbackQuery, bot: Bot):
     if not row:
         await callback.answer("Не найдено", show_alert=True)
         return
-    with closing(connect_db()) as conn, conn:
-        conn.execute("UPDATE users SET is_banned=1 WHERE user_id=?", (row["user_id"],))
-        conn.execute("UPDATE posts SET status='inactive' WHERE user_id=?", (row["user_id"],))
+
+    ban_user(row["user_id"])
+
     try:
         await bot.send_message(row["user_id"], "Ваш аккаунт был ограничен администратором.")
     except Exception:
@@ -2356,7 +2419,7 @@ async def admin_complaints(message: Message):
             f"От пользователя: {row['from_user_id']}\n"
             f"Владелец объявления: {row['post_owner_id']}\n"
             f"Маршрут: {row['from_country']} → {row['to_country']}\n"
-            f"Причина: {row['reason']}"
+            f"Причина: {html.escape(row['reason'])}"
         )
 
 
@@ -2369,9 +2432,7 @@ async def admin_ban(message: Message):
         await message.answer("Использование: /admin_ban USER_ID")
         return
     user_id = int(parts[1])
-    with closing(connect_db()) as conn, conn:
-        conn.execute("UPDATE users SET is_banned=1 WHERE user_id=?", (user_id,))
-        conn.execute("UPDATE posts SET status='inactive' WHERE user_id=?", (user_id,))
+    ban_user(user_id)
     await message.answer(f"Пользователь {user_id} забанен.")
 
 
@@ -2415,6 +2476,21 @@ async def admin_unverify(message: Message):
     with closing(connect_db()) as conn, conn:
         conn.execute("UPDATE users SET is_verified=0 WHERE user_id=?", (user_id,))
     await message.answer(f"Статус проверенного у пользователя {user_id} снят.")
+
+
+@router.message(F.text == "ℹ️ Помощь")
+async def help_handler(message: Message):
+    text = (
+        "<b>Помощь</b>\n\n"
+        "✈️ <b>Взять посылку</b> — если вы летите и можете что-то передать.\n"
+        "📦 <b>Отправить посылку</b> — если вам нужно что-то передать.\n"
+        "🔎 <b>Найти совпадения</b> — быстрый поиск подходящих объявлений.\n"
+        "📋 <b>Мои объявления</b> — управление своими объявлениями.\n"
+        "🔔 <b>Подписки</b> — уведомления по нужным маршрутам.\n"
+        "🆘 <b>Жалоба</b> — пожаловаться на объявление.\n\n"
+        "Если что-то зависло, нажмите <b>❌ Отмена / Меню</b>."
+    )
+    await message.answer(text, reply_markup=main_menu(message.from_user.id))
 
 
 async def main():

@@ -2435,6 +2435,12 @@ async def deal_confirm_handler(callback: CallbackQuery):
             """, (DEAL_COMPLETED_BY_REQUESTER, now_ts(), deal_id))
             final_status = DEAL_COMPLETED_BY_REQUESTER
 
+    other_user_id = (
+        deal["requester_user_id"]
+        if callback.from_user.id == deal["owner_user_id"]
+        else deal["owner_user_id"]
+    )
+
     if final_status == DEAL_COMPLETED:
         for uid in [deal["owner_user_id"], deal["requester_user_id"]]:
             try:
@@ -2445,32 +2451,25 @@ async def deal_confirm_handler(callback: CallbackQuery):
                         [InlineKeyboardButton(text="⭐ Оставить отзыв", callback_data=f"deal_review:{deal_id}")]
                     ])
                 )
-                other_user_id = (
-    deal["requester_user_id"]
-    if callback.from_user.id == deal["owner_user_id"]
-    else deal["owner_user_id"]
-)
-
-if final_status != DEAL_COMPLETED:
-    try:
-        await callback.bot.send_message(
-            other_user_id,
-            f"📌 Вторая сторона подтвердила завершение сделки по объявлению ID {deal['post_id']}.\n\n"
-            "Чтобы окончательно закрыть сделку, откройте МЕНЮ → '🤝 Мои сделки' "
-            "и подтвердите завершение со своей стороны."
-        )
-    except Exception as e:
-        print(f"DEAL CONFIRM NOTIFY ERROR: {e}")
-        
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"DEAL COMPLETE SEND ERROR: {e}")
 
         await callback.message.answer("Сделка полностью завершена.")
+
     else:
+        try:
+            await callback.bot.send_message(
+                other_user_id,
+                f"📌 Вторая сторона подтвердила завершение сделки по объявлению ID {deal['post_id']}.\n\n"
+                "Чтобы окончательно закрыть сделку, откройте МЕНЮ → '🤝 Мои сделки' "
+                "и подтвердите завершение со своей стороны."
+            )
+        except Exception as e:
+            print(f"DEAL CONFIRM NOTIFY ERROR: {e}")
+
         await callback.message.answer("Ваше подтверждение сохранено. Ждем подтверждение второй стороны.")
 
     await callback.answer()
-
 
 @router.callback_query(F.data.startswith("deal_review:"))
 async def deal_review_handler(callback: CallbackQuery, state: FSMContext):

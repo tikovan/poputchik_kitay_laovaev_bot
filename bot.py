@@ -1900,9 +1900,10 @@ async def show_user_reviews(callback: CallbackQuery):
         lines.append("")
 
     result = "\n".join(lines)
+
     await callback.message.answer(result[:4000])
     await callback.answer()
-
+    
 @router.callback_query(F.data.startswith("deactivate:"))
 async def deactivate_post(callback: CallbackQuery):
     post_id = int(callback.data.split(":")[1])

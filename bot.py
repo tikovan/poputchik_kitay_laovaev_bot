@@ -918,7 +918,9 @@ def post_text(row, for_channel: bool = False) -> str:
             lines.append(f"<b>Telegram:</b> @{html.escape(owner)}")
 
     return "\n".join(lines)
-    def chunk_buttons(items: List[tuple], prefix: str, per_row: int = 2):
+
+
+def chunk_buttons(items: List[tuple], prefix: str, per_row: int = 2):
     rows = []
     row = []
     for label, value in items:

@@ -10,23 +10,23 @@ from typing import Optional, List, Tuple
 
 from aiogram import Bot, Dispatcher, F, Router
 from dotenv import load_dotenv
+from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.filters import Command, CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
-    Message,
     CallbackQuery,
-    InlineKeyboardMarkup,
     InlineKeyboardButton,
-    ReplyKeyboardMarkup,
-    KeyboardButton,
+    InlineKeyboardMarkup,
     InlineQuery,
     InlineQueryResultArticle,
     InputTextMessageContent,
+    KeyboardButton,
+    Message,
+    ReplyKeyboardMarkup,
 )
-from aiogram.client.default import DefaultBotProperties
 
 load_dotenv()
 
@@ -304,12 +304,9 @@ def is_user_banned(user_id: int) -> bool:
         return bool(row and row["is_banned"])
 
 
-def ban_user(user_id: int, reason: str = "too_many_complaints"):
+def ban_user(user_id: int):
     with closing(connect_db()) as conn, conn:
-        conn.execute(
-            "UPDATE users SET is_banned=1 WHERE user_id=?",
-            (user_id,)
-        )
+        conn.execute("UPDATE users SET is_banned=1 WHERE user_id=?", (user_id,))
         conn.execute(
             "UPDATE posts SET status=?, updated_at=? WHERE user_id=? AND status IN ('active','pending','inactive')",
             (STATUS_INACTIVE, now_ts(), user_id)
@@ -373,7 +370,6 @@ def user_service_days(user_id: int) -> int:
 
 def user_service_text(user_id: int) -> str:
     days = user_service_days(user_id)
-
     if days < 30:
         return f"{days} дн"
     if days < 365:
@@ -391,7 +387,6 @@ def user_completed_deals_count(user_id: int) -> int:
             WHERE status='completed'
               AND (owner_user_id=? OR requester_user_id=?)
         """, (user_id, user_id)).fetchone()
-
         return int(row["cnt"] or 0)
 
 
@@ -422,6 +417,20 @@ def format_coincidence_badges(score: int, notes: List[str]) -> str:
     return level
 
 
+def form_header(post_type: str, step: int, total_steps: int = 8) -> str:
+    title = "📦 Отправить посылку" if post_type == TYPE_PARCEL else "✈️ Взять посылку"
+    return (
+        f"{title}\n\n"
+        f"━━━━━━━━━━━━━━\n"
+        f"Шаг {step} / {total_steps}\n"
+        f"━━━━━━━━━━━━━━\n\n"
+    )
+
+
+def form_text(post_type: str, step: int, prompt: str, total_steps: int = 8) -> str:
+    return form_header(post_type, step, total_steps) + prompt
+
+
 def post_text(row, for_channel: bool = False) -> str:
     route = f"{html.escape(row['from_country'])}"
     if row["from_city"]:
@@ -432,7 +441,6 @@ def post_text(row, for_channel: bool = False) -> str:
         route += f", {html.escape(row['to_city'])}"
 
     owner_user_id = row["user_id"]
-
     verified_badge = " ✅ Проверенный" if is_user_verified(owner_user_id) else ""
     rating_line = format_rating_line(owner_user_id)
     completed_deals = user_completed_deals_count(owner_user_id)
@@ -616,6 +624,7 @@ def my_posts_kb(posts: List[sqlite3.Row]):
 
 
 def post_actions_kb(post_id: int, status: str):
+    share_url = f"https://t.me/share/url?url={post_deeplink(post_id)}"
     rows = [
         [
             InlineKeyboardButton(text="🗑 Удалить", callback_data=f"delete:{post_id}"),
@@ -626,7 +635,7 @@ def post_actions_kb(post_id: int, status: str):
             InlineKeyboardButton(text="👀 Совпадения", callback_data=f"coincidences:{post_id}")
         ],
         [
-            InlineKeyboardButton(text="📤 Поделиться", url=post_deeplink(post_id))
+            InlineKeyboardButton(text="📤 Поделиться", url=share_url)
         ]
     ]
     if status != STATUS_ACTIVE:
@@ -765,10 +774,8 @@ async def begin_create(message: Message, state: FSMContext, post_type: str):
     await state.update_data(post_type=post_type)
     await state.set_state(CreatePost.from_country)
 
-    title = "✈️ Создание объявления попутчика" if post_type == TYPE_TRIP else "📦 Создание объявления посылки"
-
     await message.answer(
-        f"{title}\n\nВыберите страну отправления:",
+        form_text(post_type, 1, "Введите страну отправления"),
         reply_markup=countries_kb("from")
     )
 
@@ -1325,11 +1332,7 @@ async def inline_search_handler(inline_query: InlineQuery):
             description_parts.append(row["description"][:80])
 
         description = " | ".join(description_parts)[:200] or "Открыть объявление"
-
-        text = (
-            f"{post_text(row)}\n\n"
-            f"🤖 Открыть в боте: {post_deeplink(row['id'])}"
-        )
+        text = f"{post_text(row)}\n\n🤖 Открыть в боте: {post_deeplink(row['id'])}"
 
         results.append(
             InlineQueryResultArticle(
@@ -1460,8 +1463,7 @@ async def start_handler(message: Message, state: FSMContext):
         "Я сам буду искать попутчиков для тебя.\n"
         "Я сам буду уведомлять тебя о совпадениях.\n\n"
         "Что же необходимо от тебя?\n\n"
-        "<b>Нажми на кнопку МЕНЮ и тщательно заполни заявку.</b>\n\n"
-        "🤖 <b>P.S. Если у тебя что-то не получается — перезапусти бот, снова нажав на кнопку НАЧАТЬ.</b>\n\n"
+        "<b>Нажми на нужную кнопку в меню и заполни заявку.</b>\n\n"
         "⬇️ <b>Выберите действие в меню ниже</b>"
     )
 
@@ -1486,58 +1488,102 @@ async def add_parcel(message: Message, state: FSMContext):
 async def choose_from_country(callback: CallbackQuery, state: FSMContext):
     upsert_user(callback)
     country = callback.data.split(":", 1)[1]
+    data = await state.get_data()
+    post_type = data.get("post_type", TYPE_PARCEL)
+
     await state.update_data(from_country=country)
     await state.set_state(CreatePost.from_city)
-    await callback.message.answer(f"Город отправления в стране {country}.\nЕсли неважно — напиши '-'")
+
+    await callback.message.answer(
+        form_text(post_type, 2, f"Введите город отправления в стране {country}\nЕсли неважно — напишите -")
+    )
     await callback.answer()
 
 
 @router.message(CreatePost.from_city)
 async def enter_from_city(message: Message, state: FSMContext):
+    data = await state.get_data()
+    post_type = data.get("post_type", TYPE_PARCEL)
+
     await state.update_data(from_city=None if message.text.strip() == "-" else message.text.strip()[:80])
     await state.set_state(CreatePost.to_country)
-    await message.answer("Выбери страну назначения:", reply_markup=countries_kb("to"))
+
+    await message.answer(
+        form_text(post_type, 3, "Введите страну назначения"),
+        reply_markup=countries_kb("to")
+    )
 
 
 @router.callback_query(F.data.startswith("to:"))
 async def choose_to_country(callback: CallbackQuery, state: FSMContext):
     country = callback.data.split(":", 1)[1]
+    data = await state.get_data()
+    post_type = data.get("post_type", TYPE_PARCEL)
+
     await state.update_data(to_country=country)
     await state.set_state(CreatePost.to_city)
-    await callback.message.answer(f"Город назначения в стране {country}.\nЕсли неважно — напиши '-'")
+
+    await callback.message.answer(
+        form_text(post_type, 4, f"Введите город назначения в стране {country}\nЕсли неважно — напишите -")
+    )
     await callback.answer()
 
 
 @router.message(CreatePost.to_city)
 async def enter_to_city(message: Message, state: FSMContext):
+    data = await state.get_data()
+    post_type = data.get("post_type", TYPE_PARCEL)
+
     await state.update_data(to_city=None if message.text.strip() == "-" else message.text.strip()[:80])
     await state.set_state(CreatePost.travel_date)
-    await message.answer("Дата поездки/отправки. Например: 15.03.2026. Если дата не точная — напиши как удобно.")
+
+    await message.answer(
+        form_text(post_type, 5, "Введите дату поездки / отправки\nНапример: 15.03.2026\nЕсли дата не точная — напишите как удобно")
+    )
 
 
 @router.message(CreatePost.travel_date)
 async def enter_date(message: Message, state: FSMContext):
+    data = await state.get_data()
+    post_type = data.get("post_type", TYPE_PARCEL)
+
     await state.update_data(travel_date=message.text.strip()[:100])
     await state.set_state(CreatePost.weight)
-    await message.answer("Вес или объем. Например: до 3 кг. Если неизвестно — напиши '-'")
+
+    await message.answer(
+        form_text(post_type, 6, "Введите вес или объем\nНапример: до 3 кг\nЕсли неизвестно — напишите -")
+    )
 
 
 @router.message(CreatePost.weight)
 async def enter_weight(message: Message, state: FSMContext):
+    data = await state.get_data()
+    post_type = data.get("post_type", TYPE_PARCEL)
+
     await state.update_data(weight_kg=None if message.text.strip() == "-" else message.text.strip()[:50])
     await state.set_state(CreatePost.description)
-    await message.answer("Опиши объявление подробно: что нужно передать / сколько места есть / условия.")
+
+    await message.answer(
+        form_text(post_type, 7, "Опишите объявление подробно\nЧто нужно передать / сколько места есть / условия")
+    )
 
 
 @router.message(CreatePost.description)
 async def enter_description(message: Message, state: FSMContext):
     desc = (message.text or "").strip()
     if len(desc) < 3:
-        await message.answer("Описание слишком короткое. Напиши подробнее.")
+        await message.answer("Описание слишком короткое. Напишите подробнее.")
         return
+
+    data = await state.get_data()
+    post_type = data.get("post_type", TYPE_PARCEL)
+
     await state.update_data(description=desc[:1000])
     await state.set_state(CreatePost.contact_note)
-    await message.answer("Доп. контакт или примечание. Например: WeChat ID / только текст / без звонков. Если не надо — напиши '-'")
+
+    await message.answer(
+        form_text(post_type, 8, "Введите дополнительный контакт или примечание\nНапример: WeChat ID / только текст / без звонков\nЕсли не нужно — напишите -")
+    )
 
 
 @router.message(CreatePost.contact_note)
@@ -1590,20 +1636,9 @@ async def finalize_post(message: Message, state: FSMContext, bot: Bot):
                 except Exception as e:
                     print(f"ADMIN NOTIFY ERROR: {e}")
         else:
-            try:
-                await safe_publish(bot, post_id)
-            except Exception as e:
-                print(f"SAFE_PUBLISH ERROR: {e}")
-
-            try:
-                await notify_coincidence_users(bot, post_id)
-            except Exception as e:
-                print(f"NOTIFY_COINCIDENCE_USERS ERROR: {e}")
-
-            try:
-                await notify_subscribers(bot, post_id)
-            except Exception as e:
-                print(f"NOTIFY_SUBSCRIBERS ERROR: {e}")
+            await safe_publish(bot, post_id)
+            await notify_coincidence_users(bot, post_id)
+            await notify_subscribers(bot, post_id)
 
     except Exception as e:
         print(f"FINALIZE_POST ERROR: {e}")
@@ -1733,7 +1768,8 @@ async def bump_info(message: Message):
         BUMP_PRICE_TEXT + "\n\nОткрой 'Мои объявления' и нажми 'Поднять' у нужного объявления.",
         reply_markup=main_menu(message.from_user.id)
     )
-    
+
+
 @router.message(Command("find"))
 @router.message(F.text == "🔎 Найти совпадения")
 async def find_start(message: Message, state: FSMContext):
@@ -2479,8 +2515,7 @@ async def help_handler(message: Message):
         "🔎 <b>Найти совпадения</b> — быстрый поиск подходящих объявлений.\n"
         "📋 <b>Мои объявления</b> — управление своими объявлениями.\n"
         "🔔 <b>Подписки</b> — уведомления по нужным маршрутам.\n"
-        "🆘 <b>Жалоба</b> — пожаловаться на объявление.\n\n"
-        "Если что-то зависло, нажмите <b>❌ Отмена / Меню</b>."
+        "🆘 <b>Жалоба</b> — пожаловаться на объявление."
     )
     await message.answer(text, reply_markup=main_menu(message.from_user.id))
 

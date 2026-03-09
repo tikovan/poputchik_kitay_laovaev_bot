@@ -5,7 +5,7 @@ import re
 import sqlite3
 import time
 from contextlib import closing
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Optional, Tuple
 
 from aiogram import Bot, Dispatcher, F, Router
@@ -83,6 +83,7 @@ SKIP_VALUE = "-"
 COUNTRY_OPTIONS = [
     ("🇨🇳 Китай", "Китай"),
     ("🇷🇺 Россия", "Россия"),
+    ("🇺🇸 США", "США"),
     ("🇰🇿 Казахстан", "Казахстан"),
     ("🇺🇿 Узбекистан", "Узбекистан"),
     ("🇰🇬 Кыргызстан", "Кыргызстан"),
@@ -95,7 +96,6 @@ COUNTRY_OPTIONS = [
     ("🇲🇩 Молдова", "Молдова"),
     ("🇻🇳 Вьетнам", "Вьетнам"),
     ("🇹🇭 Таиланд", "Таиланд"),
-    ("🇦🇪 ОАЭ", "ОАЭ"),
 ]
 
 COUNTRY_CITIES_RU = {
@@ -103,35 +103,38 @@ COUNTRY_CITIES_RU = {
         "Шэньчжэнь", "Гуанчжоу", "Шанхай", "Пекин", "Ханчжоу",
         "Иу", "Гонконг", "Дунгуань", "Фошань", "Чжухай",
         "Сямынь", "Чэнду", "Чунцин", "Сучжоу", "Циндао",
-        "Тяньцзинь", "Нинбо"
+        "Тяньцзинь", "Нинбо", "Ухань", "Нанкин", "Сиань"
     ],
     "Россия": [
         "Москва", "Санкт-Петербург", "Новосибирск", "Екатеринбург",
-        "Казань", "Владивосток", "Хабаровск", "Иркутск"
+        "Казань", "Нижний Новгород", "Челябинск", "Самара",
+        "Омск", "Ростов-на-Дону", "Уфа", "Красноярск",
+        "Владивосток", "Хабаровск", "Иркутск"
     ],
-    "Казахстан": ["Алматы", "Астана", "Шымкент"],
-    "Узбекистан": ["Ташкент", "Самарканд"],
-    "Кыргызстан": ["Бишкек", "Ош"],
-    "Таджикистан": ["Душанбе", "Худжанд"],
-    "Азербайджан": ["Баку"],
-    "Армения": ["Ереван"],
-    "Грузия": ["Тбилиси", "Батуми"],
-    "Беларусь": ["Минск"],
-    "Украина": ["Киев", "Львов", "Одесса"],
-    "Молдова": ["Кишинёв"],
-    "Вьетнам": ["Хошимин", "Ханой", "Дананг"],
-    "Таиланд": ["Бангкок", "Паттайя", "Пхукет"],
-    "ОАЭ": ["Дубай", "Абу-Даби"],
+    "США": [
+        "Нью-Йорк", "Лос-Анджелес", "Чикаго", "Майами",
+        "Хьюстон", "Сан-Франциско", "Лас-Вегас", "Орландо"
+    ],
+    "Казахстан": ["Алматы", "Астана", "Шымкент", "Караганда", "Актобе"],
+    "Узбекистан": ["Ташкент", "Самарканд", "Бухара", "Наманган", "Андижан"],
+    "Кыргызстан": ["Бишкек", "Ош", "Джалал-Абад", "Каракол"],
+    "Таджикистан": ["Душанбе", "Худжанд", "Бохтар", "Куляб"],
+    "Азербайджан": ["Баку", "Гянджа", "Сумгаит", "Ленкорань"],
+    "Армения": ["Ереван", "Гюмри", "Ванадзор", "Абовян"],
+    "Грузия": ["Тбилиси", "Батуми", "Кутаиси", "Рустави"],
+    "Беларусь": ["Минск", "Гомель", "Гродно", "Брест", "Витебск"],
+    "Украина": [
+        "Киев", "Харьков", "Одесса", "Днепр", "Львов",
+        "Запорожье", "Винница", "Ивано-Франковск"
+    ],
+    "Молдова": ["Кишинёв", "Бельцы", "Тирасполь", "Кагул"],
+    "Вьетнам": ["Хошимин", "Ханой", "Дананг", "Хайфон", "Нячанг"],
+    "Таиланд": ["Бангкок", "Паттайя", "Пхукет", "Чиангмай", "Самуи"],
 }
 
 POPULAR_WEIGHTS = [
     "0.5 кг", "1 кг", "2 кг", "3 кг",
     "5 кг", "10 кг", "20 кг", "Более 20 кг"
-]
-
-POPULAR_DATES = [
-    "Сегодня", "Завтра", "Через 2-3 дня",
-    "В течение недели", "В течение месяца"
 ]
 
 COUNTRY_ALIASES = {
@@ -141,6 +144,11 @@ COUNTRY_ALIASES = {
     "россия": "Россия",
     "russia": "Россия",
     "рф": "Россия",
+    "сша": "США",
+    "usa": "США",
+    "united states": "США",
+    "america": "США",
+    "америка": "США",
     "казахстан": "Казахстан",
     "kazakhstan": "Казахстан",
     "узбекистан": "Узбекистан",
@@ -166,15 +174,12 @@ COUNTRY_ALIASES = {
     "vietnam": "Вьетнам",
     "таиланд": "Таиланд",
     "thailand": "Таиланд",
-    "оаэ": "ОАЭ",
-    "uae": "ОАЭ",
-    "дубай": "ОАЭ",
 }
 
 CITY_ALIASES = {
     "шэньчжэнь": "Шэньчжэнь",
     "шеньчжень": "Шэньчжэнь",
-    "шенжень": "Шэньчжэнь",
+    "shen zhen": "Шэньчжэнь",
     "shenzhen": "Шэньчжэнь",
     "гуанчжоу": "Гуанчжоу",
     "guangzhou": "Гуанчжоу",
@@ -215,6 +220,26 @@ CITY_ALIASES = {
     "питер": "Санкт-Петербург",
     "spb": "Санкт-Петербург",
     "saint petersburg": "Санкт-Петербург",
+    "нью-йорк": "Нью-Йорк",
+    "нью йорк": "Нью-Йорк",
+    "new york": "Нью-Йорк",
+    "лос-анджелес": "Лос-Анджелес",
+    "лос анджелес": "Лос-Анджелес",
+    "los angeles": "Лос-Анджелес",
+    "чикаго": "Чикаго",
+    "chicago": "Чикаго",
+    "майами": "Майами",
+    "miami": "Майами",
+    "хьюстон": "Хьюстон",
+    "houston": "Хьюстон",
+    "сан-франциско": "Сан-Франциско",
+    "сан франциско": "Сан-Франциско",
+    "san francisco": "Сан-Франциско",
+    "лас-вегас": "Лас-Вегас",
+    "лас вегас": "Лас-Вегас",
+    "las vegas": "Лас-Вегас",
+    "орландо": "Орландо",
+    "orlando": "Орландо",
     "алматы": "Алматы",
     "almaty": "Алматы",
     "астана": "Астана",
@@ -223,12 +248,28 @@ CITY_ALIASES = {
     "tashkent": "Ташкент",
     "бишкек": "Бишкек",
     "bishkek": "Бишкек",
-    "дубай": "Дубай",
-    "dubai": "Дубай",
-    "абу-даби": "Абу-Даби",
-    "абу даби": "Абу-Даби",
-    "abu dhabi": "Абу-Даби",
+    "киев": "Киев",
+    "kyiv": "Киев",
+    "одесса": "Одесса",
+    "odesa": "Одесса",
+    "львов": "Львов",
+    "lviv": "Львов",
+    "запорожье": "Запорожье",
+    "zaporizhzhia": "Запорожье",
 }
+
+STEP_ORDER = [
+    "from_country",
+    "from_city",
+    "to_country",
+    "to_city",
+    "travel_date",
+    "weight",
+    "description",
+    "contact_note",
+]
+
+STEP_NUMBERS = {name: i + 1 for i, name in enumerate(STEP_ORDER)}
 
 
 # -------------------------
@@ -310,6 +351,43 @@ def parse_date_loose(value: Optional[str]) -> Optional[datetime]:
             continue
 
     return None
+
+
+def format_date_ru(dt: datetime) -> str:
+    return dt.strftime("%d.%m.%Y")
+
+
+def make_date_range_text(days: int) -> str:
+    start = datetime.now()
+    end = start + timedelta(days=days)
+    return f"{format_date_ru(start)} - {format_date_ru(end)}"
+
+
+def extract_travel_end_datetime(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+
+    text = value.strip()
+
+    exact_dt = parse_date_loose(text)
+    if exact_dt:
+        return datetime(exact_dt.year, exact_dt.month, exact_dt.day, 23, 59, 59)
+
+    m = re.match(r"^\s*(\d{2}\.\d{2}\.\d{4})\s*[-–—]\s*(\d{2}\.\d{2}\.\d{4})\s*$", text)
+    if m:
+        end_dt = parse_date_loose(m.group(2))
+        if end_dt:
+            return datetime(end_dt.year, end_dt.month, end_dt.day, 23, 59, 59)
+
+    return None
+
+
+def calculate_post_expires_at(created_ts: int, travel_date_text: Optional[str], post_ttl_days: int = 14) -> int:
+    ttl_expire = created_ts + days_to_seconds(post_ttl_days)
+    end_dt = extract_travel_end_datetime(travel_date_text)
+    if not end_dt:
+        return ttl_expire
+    return min(ttl_expire, int(end_dt.timestamp()))
 
 
 def bot_link(start_param: Optional[str] = None) -> str:
@@ -758,18 +836,30 @@ def chunk_buttons(items: List[tuple], prefix: str, per_row: int = 2):
     return rows
 
 
+def with_back(rows: List[List[InlineKeyboardButton]], include_back: bool = True):
+    if include_back:
+        rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="create_back")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def back_only_kb():
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="create_back")]]
+    )
+
+
 def countries_kb(prefix: str):
     rows = chunk_buttons(COUNTRY_OPTIONS, prefix, per_row=2)
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def countries_select_kb(prefix: str):
+def countries_select_kb(prefix: str, include_back: bool = False):
     rows = chunk_buttons(COUNTRY_OPTIONS, prefix, per_row=2)
     rows.append([InlineKeyboardButton(text=MANUAL_COUNTRY, callback_data=f"{prefix}:__manual__")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+    return with_back(rows, include_back=include_back)
 
 
-def cities_select_kb(prefix: str, country: str):
+def cities_select_kb(prefix: str, country: str, include_back: bool = True):
     cities = COUNTRY_CITIES_RU.get(country, [])
     rows = []
     row = []
@@ -783,7 +873,7 @@ def cities_select_kb(prefix: str, country: str):
 
     rows.append([InlineKeyboardButton(text=MANUAL_CITY, callback_data=f"{prefix}:__manual__")])
     rows.append([InlineKeyboardButton(text="Не важно", callback_data=f"{prefix}:__skip__")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+    return with_back(rows, include_back=include_back)
 
 
 def weight_select_kb():
@@ -791,13 +881,16 @@ def weight_select_kb():
     rows = chunk_buttons(items, "weightpick", per_row=2)
     rows.append([InlineKeyboardButton(text=MANUAL_WEIGHT, callback_data="weightpick:__manual__")])
     rows.append([InlineKeyboardButton(text="Не знаю", callback_data="weightpick:__skip__")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+    return with_back(rows, include_back=True)
 
 
 def date_select_kb():
-    items = [(d, d) for d in POPULAR_DATES]
-    rows = chunk_buttons(items, "datepick", per_row=2)
-    rows.append([InlineKeyboardButton(text=MANUAL_DATE, callback_data="datepick:__manual__")])
+    rows = [
+        [InlineKeyboardButton(text="В течение недели", callback_data="datepick:week")],
+        [InlineKeyboardButton(text="В течение месяца", callback_data="datepick:month")],
+        [InlineKeyboardButton(text="Указать точную дату", callback_data="datepick:manual")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="create_back")],
+    ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -1003,6 +1096,127 @@ class ReviewFlow(StatesGroup):
 
 
 # -------------------------
+# CREATE FLOW HELPERS
+# -------------------------
+
+async def render_create_step(target_step: str, target_message: Message, state: FSMContext):
+    data = await state.get_data()
+    post_type = data.get("post_type", TYPE_PARCEL)
+
+    if target_step == "from_country":
+        await state.set_state(CreatePost.from_country)
+        await target_message.answer(
+            form_text(post_type, STEP_NUMBERS[target_step], "Выберите страну отправления"),
+            reply_markup=countries_select_kb("from_country_pick", include_back=False)
+        )
+        return
+
+    if target_step == "from_city":
+        await state.set_state(CreatePost.from_city)
+        country = data.get("from_country", "")
+        await target_message.answer(
+            form_text(post_type, STEP_NUMBERS[target_step], f"Выберите город отправления в стране {country}"),
+            reply_markup=cities_select_kb("from_city_pick", country, include_back=True)
+        )
+        return
+
+    if target_step == "to_country":
+        await state.set_state(CreatePost.to_country)
+        await target_message.answer(
+            form_text(post_type, STEP_NUMBERS[target_step], "Выберите страну назначения"),
+            reply_markup=countries_select_kb("to_country_pick", include_back=True)
+        )
+        return
+
+    if target_step == "to_city":
+        await state.set_state(CreatePost.to_city)
+        country = data.get("to_country", "")
+        await target_message.answer(
+            form_text(post_type, STEP_NUMBERS[target_step], f"Выберите город назначения в стране {country}"),
+            reply_markup=cities_select_kb("to_city_pick", country, include_back=True)
+        )
+        return
+
+    if target_step == "travel_date":
+        await state.set_state(CreatePost.travel_date)
+        await target_message.answer(
+            form_text(post_type, STEP_NUMBERS[target_step], "Выберите дату поездки / отправки"),
+            reply_markup=date_select_kb()
+        )
+        return
+
+    if target_step == "weight":
+        await state.set_state(CreatePost.weight)
+        await target_message.answer(
+            form_text(post_type, STEP_NUMBERS[target_step], "Выберите вес или объём"),
+            reply_markup=weight_select_kb()
+        )
+        return
+
+    if target_step == "description":
+        await state.set_state(CreatePost.description)
+        await target_message.answer(
+            form_text(post_type, STEP_NUMBERS[target_step], "Опишите объявление подробно\nЧто нужно передать / сколько места есть / условия"),
+            reply_markup=back_only_kb()
+        )
+        return
+
+    if target_step == "contact_note":
+        await state.set_state(CreatePost.contact_note)
+        await target_message.answer(
+            form_text(
+                post_type,
+                STEP_NUMBERS[target_step],
+                "Введите дополнительный контакт или примечание\nНапример: WeChat ID / только текст / без звонков\nЕсли не нужно — напишите -"
+            ),
+            reply_markup=back_only_kb()
+        )
+        return
+
+
+def get_current_create_step_name(state_name: Optional[str]) -> Optional[str]:
+    if not state_name:
+        return None
+
+    mapping = {
+        CreatePost.from_country.state: "from_country",
+        CreatePost.from_country_manual.state: "from_country",
+        CreatePost.from_city.state: "from_city",
+        CreatePost.from_city_manual.state: "from_city",
+        CreatePost.to_country.state: "to_country",
+        CreatePost.to_country_manual.state: "to_country",
+        CreatePost.to_city.state: "to_city",
+        CreatePost.to_city_manual.state: "to_city",
+        CreatePost.travel_date.state: "travel_date",
+        CreatePost.travel_date_manual.state: "travel_date",
+        CreatePost.weight.state: "weight",
+        CreatePost.weight_manual.state: "weight",
+        CreatePost.description.state: "description",
+        CreatePost.contact_note.state: "contact_note",
+    }
+    return mapping.get(state_name)
+
+
+CREATE_STEP_CLEANUP_KEYS = {
+    "from_country": ["from_country", "from_city", "to_country", "to_city", "travel_date", "weight_kg", "description", "contact_note"],
+    "from_city": ["from_city", "to_country", "to_city", "travel_date", "weight_kg", "description", "contact_note"],
+    "to_country": ["to_country", "to_city", "travel_date", "weight_kg", "description", "contact_note"],
+    "to_city": ["to_city", "travel_date", "weight_kg", "description", "contact_note"],
+    "travel_date": ["travel_date", "description", "contact_note"],
+    "weight": ["weight_kg", "description", "contact_note"],
+    "description": ["description", "contact_note"],
+    "contact_note": ["contact_note"],
+}
+
+
+async def clear_step_data_from(state: FSMContext, target_step: str):
+    data = await state.get_data()
+    for key in CREATE_STEP_CLEANUP_KEYS.get(target_step, []):
+        data.pop(key, None)
+    await state.set_data(data)
+
+
+# -------------------------
 # POST / DEAL DATA HELPERS
 # -------------------------
 
@@ -1099,7 +1313,8 @@ def top_route() -> Optional[sqlite3.Row]:
 
 def create_post_record(data: dict, user_id: int) -> int:
     ts = now_ts()
-    expires_at = ts + days_to_seconds(POST_TTL_DAYS)
+    expires_at = calculate_post_expires_at(ts, data.get("travel_date"), POST_TTL_DAYS)
+
     with closing(connect_db()) as conn, conn:
         cur = conn.execute("""
             INSERT INTO posts (
@@ -1200,10 +1415,10 @@ def calculate_coincidence_score(source_row, candidate_row: sqlite3.Row) -> Tuple
         score += 6
         notes.append("Один из городов назначения не указан")
 
-    source_date = parse_date_loose(source_row["travel_date"])
-    candidate_date = parse_date_loose(candidate_row["travel_date"])
+    source_date = extract_travel_end_datetime(source_row["travel_date"])
+    candidate_date = extract_travel_end_datetime(candidate_row["travel_date"])
     if source_date and candidate_date:
-        days_diff = abs((source_date - candidate_date).days)
+        days_diff = abs((source_date.date() - candidate_date.date()).days)
         if days_diff <= 2:
             score += 18
             notes.append("Даты очень близки")
@@ -1673,7 +1888,7 @@ async def begin_create(message: Message, state: FSMContext, post_type: str):
 
     await message.answer(
         form_text(post_type, 1, "Выберите страну отправления"),
-        reply_markup=countries_select_kb("from_country_pick")
+        reply_markup=countries_select_kb("from_country_pick", include_back=False)
     )
 
 
@@ -1844,8 +2059,28 @@ async def add_parcel(message: Message, state: FSMContext):
 
 
 # -------------------------
-# CREATE POST FLOW WITH BUTTONS
+# CREATE POST FLOW
 # -------------------------
+
+@router.callback_query(F.data == "create_back")
+async def create_back_handler(callback: CallbackQuery, state: FSMContext):
+    current_state = await state.get_state()
+    step_name = get_current_create_step_name(current_state)
+
+    if not step_name:
+        await callback.answer("Назад недоступно", show_alert=True)
+        return
+
+    idx = STEP_ORDER.index(step_name)
+    if idx == 0:
+        await callback.answer("Это первый шаг", show_alert=True)
+        return
+
+    prev_step = STEP_ORDER[idx - 1]
+    await clear_step_data_from(state, prev_step)
+    await render_create_step(prev_step, callback.message, state)
+    await callback.answer()
+
 
 @router.callback_query(F.data.startswith("from_country_pick:"))
 async def pick_from_country(callback: CallbackQuery, state: FSMContext):
@@ -1857,7 +2092,8 @@ async def pick_from_country(callback: CallbackQuery, state: FSMContext):
     if value == "__manual__":
         await state.set_state(CreatePost.from_country_manual)
         await callback.message.answer(
-            form_text(post_type, 1, "Введите страну отправления вручную")
+            form_text(post_type, 1, "Введите страну отправления вручную"),
+            reply_markup=back_only_kb()
         )
         await callback.answer()
         return
@@ -1866,7 +2102,7 @@ async def pick_from_country(callback: CallbackQuery, state: FSMContext):
     await state.set_state(CreatePost.from_city)
     await callback.message.answer(
         form_text(post_type, 2, f"Выберите город отправления в стране {value}"),
-        reply_markup=cities_select_kb("from_city_pick", value)
+        reply_markup=cities_select_kb("from_city_pick", value, include_back=True)
     )
     await callback.answer()
 
@@ -1881,7 +2117,7 @@ async def from_country_manual_input(message: Message, state: FSMContext):
     await state.set_state(CreatePost.from_city)
     await message.answer(
         form_text(post_type, 2, f"Выберите город отправления в стране {value}"),
-        reply_markup=cities_select_kb("from_city_pick", value)
+        reply_markup=cities_select_kb("from_city_pick", value, include_back=True)
     )
 
 
@@ -1894,7 +2130,8 @@ async def pick_from_city(callback: CallbackQuery, state: FSMContext):
     if value == "__manual__":
         await state.set_state(CreatePost.from_city_manual)
         await callback.message.answer(
-            form_text(post_type, 2, "Введите город отправления вручную")
+            form_text(post_type, 2, "Введите город отправления вручную"),
+            reply_markup=back_only_kb()
         )
         await callback.answer()
         return
@@ -1907,7 +2144,7 @@ async def pick_from_city(callback: CallbackQuery, state: FSMContext):
     await state.set_state(CreatePost.to_country)
     await callback.message.answer(
         form_text(post_type, 3, "Выберите страну назначения"),
-        reply_markup=countries_select_kb("to_country_pick")
+        reply_markup=countries_select_kb("to_country_pick", include_back=True)
     )
     await callback.answer()
 
@@ -1922,7 +2159,7 @@ async def from_city_manual_input(message: Message, state: FSMContext):
     await state.set_state(CreatePost.to_country)
     await message.answer(
         form_text(post_type, 3, "Выберите страну назначения"),
-        reply_markup=countries_select_kb("to_country_pick")
+        reply_markup=countries_select_kb("to_country_pick", include_back=True)
     )
 
 
@@ -1935,7 +2172,8 @@ async def pick_to_country(callback: CallbackQuery, state: FSMContext):
     if value == "__manual__":
         await state.set_state(CreatePost.to_country_manual)
         await callback.message.answer(
-            form_text(post_type, 3, "Введите страну назначения вручную")
+            form_text(post_type, 3, "Введите страну назначения вручную"),
+            reply_markup=back_only_kb()
         )
         await callback.answer()
         return
@@ -1944,7 +2182,7 @@ async def pick_to_country(callback: CallbackQuery, state: FSMContext):
     await state.set_state(CreatePost.to_city)
     await callback.message.answer(
         form_text(post_type, 4, f"Выберите город назначения в стране {value}"),
-        reply_markup=cities_select_kb("to_city_pick", value)
+        reply_markup=cities_select_kb("to_city_pick", value, include_back=True)
     )
     await callback.answer()
 
@@ -1959,7 +2197,7 @@ async def to_country_manual_input(message: Message, state: FSMContext):
     await state.set_state(CreatePost.to_city)
     await message.answer(
         form_text(post_type, 4, f"Выберите город назначения в стране {value}"),
-        reply_markup=cities_select_kb("to_city_pick", value)
+        reply_markup=cities_select_kb("to_city_pick", value, include_back=True)
     )
 
 
@@ -1972,7 +2210,8 @@ async def pick_to_city(callback: CallbackQuery, state: FSMContext):
     if value == "__manual__":
         await state.set_state(CreatePost.to_city_manual)
         await callback.message.answer(
-            form_text(post_type, 4, "Введите город назначения вручную")
+            form_text(post_type, 4, "Введите город назначения вручную"),
+            reply_markup=back_only_kb()
         )
         await callback.answer()
         return
@@ -2010,15 +2249,24 @@ async def pick_date(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     post_type = data.get("post_type", TYPE_PARCEL)
 
-    if value == "__manual__":
+    if value == "manual":
         await state.set_state(CreatePost.travel_date_manual)
         await callback.message.answer(
-            form_text(post_type, 5, "Введите точную дату\nНапример: 15.03.2026")
+            form_text(post_type, 5, "Введите точную дату\nНапример: 15.03.2026"),
+            reply_markup=back_only_kb()
         )
         await callback.answer()
         return
 
-    await state.update_data(travel_date=value)
+    if value == "week":
+        travel_date = make_date_range_text(7)
+    elif value == "month":
+        travel_date = make_date_range_text(30)
+    else:
+        await callback.answer("Неверный выбор", show_alert=True)
+        return
+
+    await state.update_data(travel_date=travel_date)
     await state.set_state(CreatePost.weight)
     await callback.message.answer(
         form_text(post_type, 6, "Выберите вес или объём"),
@@ -2032,7 +2280,16 @@ async def date_manual_input(message: Message, state: FSMContext):
     data = await state.get_data()
     post_type = data.get("post_type", TYPE_PARCEL)
 
-    await state.update_data(travel_date=message.text.strip()[:100])
+    raw = message.text.strip()[:100]
+    parsed = parse_date_loose(raw)
+    if not parsed:
+        await message.answer(
+            "Не смог распознать дату.\nВведите в формате: 15.03.2026",
+            reply_markup=back_only_kb()
+        )
+        return
+
+    await state.update_data(travel_date=format_date_ru(parsed))
     await state.set_state(CreatePost.weight)
     await message.answer(
         form_text(post_type, 6, "Выберите вес или объём"),
@@ -2049,7 +2306,8 @@ async def pick_weight(callback: CallbackQuery, state: FSMContext):
     if value == "__manual__":
         await state.set_state(CreatePost.weight_manual)
         await callback.message.answer(
-            form_text(post_type, 6, "Введите свой вес / объём\nНапример: 7 кг")
+            form_text(post_type, 6, "Введите свой вес / объём\nНапример: 7 кг"),
+            reply_markup=back_only_kb()
         )
         await callback.answer()
         return
@@ -2061,7 +2319,8 @@ async def pick_weight(callback: CallbackQuery, state: FSMContext):
 
     await state.set_state(CreatePost.description)
     await callback.message.answer(
-        form_text(post_type, 7, "Опишите объявление подробно\nЧто нужно передать / сколько места есть / условия")
+        form_text(post_type, 7, "Опишите объявление подробно\nЧто нужно передать / сколько места есть / условия"),
+        reply_markup=back_only_kb()
     )
     await callback.answer()
 
@@ -2075,7 +2334,8 @@ async def weight_manual_input(message: Message, state: FSMContext):
     await state.update_data(weight_kg=None if value == SKIP_VALUE else value[:50])
     await state.set_state(CreatePost.description)
     await message.answer(
-        form_text(post_type, 7, "Опишите объявление подробно\nЧто нужно передать / сколько места есть / условия")
+        form_text(post_type, 7, "Опишите объявление подробно\nЧто нужно передать / сколько места есть / условия"),
+        reply_markup=back_only_kb()
     )
 
 
@@ -2083,7 +2343,7 @@ async def weight_manual_input(message: Message, state: FSMContext):
 async def enter_description(message: Message, state: FSMContext):
     desc = (message.text or "").strip()
     if len(desc) < 3:
-        await message.answer("Описание слишком короткое. Напишите подробнее.")
+        await message.answer("Описание слишком короткое. Напишите подробнее.", reply_markup=back_only_kb())
         return
 
     data = await state.get_data()
@@ -2093,7 +2353,8 @@ async def enter_description(message: Message, state: FSMContext):
     await state.set_state(CreatePost.contact_note)
 
     await message.answer(
-        form_text(post_type, 8, "Введите дополнительный контакт или примечание\nНапример: WeChat ID / только текст / без звонков\nЕсли не нужно — напишите -")
+        form_text(post_type, 8, "Введите дополнительный контакт или примечание\nНапример: WeChat ID / только текст / без звонков\nЕсли не нужно — напишите -"),
+        reply_markup=back_only_kb()
     )
 
 
@@ -2284,7 +2545,11 @@ async def activate_post(callback: CallbackQuery, bot: Bot):
         return
 
     new_status = STATUS_PENDING if ADMIN_IDS else STATUS_ACTIVE
-    expires_at = now_ts() + days_to_seconds(POST_TTL_DAYS)
+    expires_at = calculate_post_expires_at(
+        now_ts(),
+        row["travel_date"],
+        post_ttl_days=POST_TTL_DAYS
+    )
 
     with closing(connect_db()) as conn, conn:
         conn.execute(
@@ -2875,7 +3140,11 @@ async def deal_confirm_handler(callback: CallbackQuery):
         await callback.answer("Сделка не найдена", show_alert=True)
         return
 
-    if deal["status"] not in (DEAL_ACCEPTED, DEAL_COMPLETED_BY_OWNER, DEAL_COMPLETED_BY_REQUESTER):
+    if deal["status"] not in (
+        DEAL_ACCEPTED,
+        DEAL_COMPLETED_BY_OWNER,
+        DEAL_COMPLETED_BY_REQUESTER,
+    ):
         await callback.answer("Эту сделку нельзя подтвердить", show_alert=True)
         return
 
@@ -2896,7 +3165,10 @@ async def deal_confirm_handler(callback: CallbackQuery):
             await callback.answer("Нет доступа", show_alert=True)
             return
 
-        refreshed = conn.execute("SELECT * FROM deals WHERE id=?", (deal_id,)).fetchone()
+        refreshed = conn.execute(
+            "SELECT * FROM deals WHERE id=?",
+            (deal_id,)
+        ).fetchone()
 
         if refreshed["owner_confirmed"] and refreshed["requester_confirmed"]:
             conn.execute("""
@@ -2940,7 +3212,6 @@ async def deal_confirm_handler(callback: CallbackQuery):
                 print(f"DEAL COMPLETE SEND ERROR: {e}")
 
         await callback.message.answer("Сделка полностью завершена.")
-
     else:
         try:
             await callback.bot.send_message(
@@ -2952,7 +3223,9 @@ async def deal_confirm_handler(callback: CallbackQuery):
         except Exception as e:
             print(f"DEAL CONFIRM NOTIFY ERROR: {e}")
 
-        await callback.message.answer("Ваше подтверждение сохранено. Ждем подтверждение второй стороны.")
+        await callback.message.answer(
+            "Ваше подтверждение сохранено. Ждем подтверждение второй стороны."
+        )
 
     await callback.answer()
 
@@ -2967,7 +3240,10 @@ async def deal_review_handler(callback: CallbackQuery, state: FSMContext):
         return
 
     if deal["status"] != DEAL_COMPLETED:
-        await callback.answer("Отзыв можно оставить только после завершенной сделки", show_alert=True)
+        await callback.answer(
+            "Отзыв можно оставить только после завершенной сделки",
+            show_alert=True
+        )
         return
 
     if callback.from_user.id == deal["owner_user_id"]:
@@ -2979,22 +3255,29 @@ async def deal_review_handler(callback: CallbackQuery, state: FSMContext):
         return
 
     await state.clear()
-    await state.update_data(reviewed_user_id=reviewed_user_id, post_id=deal["post_id"], deal_id=deal_id)
+    await state.update_data(
+        reviewed_user_id=reviewed_user_id,
+        post_id=deal["post_id"],
+        deal_id=deal_id
+    )
     await state.set_state(ReviewFlow.rating)
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="1", callback_data="review_rating:1"),
             InlineKeyboardButton(text="2", callback_data="review_rating:2"),
-            InlineKeyboardButton(text="3", callback_data="review_rating:3")
+            InlineKeyboardButton(text="3", callback_data="review_rating:3"),
         ],
         [
             InlineKeyboardButton(text="4", callback_data="review_rating:4"),
-            InlineKeyboardButton(text="5", callback_data="review_rating:5")
-        ]
+            InlineKeyboardButton(text="5", callback_data="review_rating:5"),
+        ],
     ])
 
-    await callback.message.answer("Поставьте оценку пользователю от 1 до 5:", reply_markup=kb)
+    await callback.message.answer(
+        "Поставьте оценку пользователю от 1 до 5:",
+        reply_markup=kb
+    )
     await callback.answer()
 
 
@@ -3019,7 +3302,14 @@ async def review_finish(message: Message, state: FSMContext):
     with closing(connect_db()) as conn, conn:
         try:
             conn.execute("""
-                INSERT INTO reviews (reviewer_user_id, reviewed_user_id, post_id, rating, text, created_at)
+                INSERT INTO reviews (
+                    reviewer_user_id,
+                    reviewed_user_id,
+                    post_id,
+                    rating,
+                    text,
+                    created_at
+                )
                 VALUES (?, ?, ?, ?, ?, ?)
             """, (
                 message.from_user.id,
@@ -3030,11 +3320,17 @@ async def review_finish(message: Message, state: FSMContext):
                 now_ts()
             ))
         except sqlite3.IntegrityError:
-            await message.answer("Такой отзыв уже оставлен.", reply_markup=main_menu(message.from_user.id))
+            await message.answer(
+                "Такой отзыв уже оставлен.",
+                reply_markup=main_menu(message.from_user.id)
+            )
             await state.clear()
             return
 
-    await message.answer("⭐ Спасибо! Отзыв сохранен.", reply_markup=main_menu(message.from_user.id))
+    await message.answer(
+        "⭐ Спасибо! Отзыв сохранен.",
+        reply_markup=main_menu(message.from_user.id)
+    )
     await state.clear()
 
 
@@ -3045,7 +3341,9 @@ async def deal_fail_post_handler(callback: CallbackQuery):
     if ok:
         await callback.message.answer("❌ Сделка отмечена как несостоявшаяся.")
     else:
-        await callback.message.answer("Не удалось найти активную сделку для этого объявления.")
+        await callback.message.answer(
+            "Не удалось найти активную сделку для этого объявления."
+        )
     await callback.answer()
 
 
@@ -3054,7 +3352,10 @@ async def deal_fail_direct_handler(callback: CallbackQuery):
     deal_id = int(callback.data.split(":")[1])
     deal = get_deal(deal_id)
 
-    if not deal or (deal["owner_user_id"] != callback.from_user.id and deal["requester_user_id"] != callback.from_user.id):
+    if not deal or (
+        deal["owner_user_id"] != callback.from_user.id
+        and deal["requester_user_id"] != callback.from_user.id
+    ):
         await callback.answer("Нет доступа", show_alert=True)
         return
 
@@ -3102,7 +3403,10 @@ async def complaint_reason(message: Message, state: FSMContext, bot: Bot):
 
     row = get_post(post_id)
     if not row:
-        await message.answer("Объявление не найдено.", reply_markup=main_menu(message.from_user.id))
+        await message.answer(
+            "Объявление не найдено.",
+            reply_markup=main_menu(message.from_user.id)
+        )
         await state.clear()
         return
 
@@ -3110,7 +3414,10 @@ async def complaint_reason(message: Message, state: FSMContext, bot: Bot):
 
     with closing(connect_db()) as conn, conn:
         conn.execute(
-            "INSERT INTO complaints (post_id, from_user_id, reason, created_at) VALUES (?, ?, ?, ?)",
+            """
+            INSERT INTO complaints (post_id, from_user_id, reason, created_at)
+            VALUES (?, ?, ?, ?)
+            """,
             (post_id, message.from_user.id, message.text.strip()[:1000], now_ts())
         )
 
@@ -3157,11 +3464,19 @@ async def admin_menu_handler(message: Message):
     if not is_admin(message.from_user.id):
         await message.answer("Админка доступна только администраторам.")
         return
+
     with closing(connect_db()) as conn:
-        pending = conn.execute("SELECT COUNT(*) AS c FROM posts WHERE status='pending'").fetchone()["c"]
-        complaints = conn.execute("SELECT COUNT(*) AS c FROM complaints").fetchone()["c"]
+        pending = conn.execute(
+            "SELECT COUNT(*) AS c FROM posts WHERE status='pending'"
+        ).fetchone()["c"]
+        complaints = conn.execute(
+            "SELECT COUNT(*) AS c FROM complaints"
+        ).fetchone()["c"]
+
     await message.answer(
-        f"Админка\n\nНа модерации: {pending}\nЖалоб: {complaints}\n\n"
+        f"Админка\n\n"
+        f"На модерации: {pending}\n"
+        f"Жалоб: {complaints}\n\n"
         "Команды:\n"
         "/admin_pending\n"
         "/admin_complaints\n"
@@ -3176,6 +3491,7 @@ async def admin_menu_handler(message: Message):
 async def admin_pending(message: Message):
     if not is_admin(message.from_user.id):
         return
+
     with closing(connect_db()) as conn:
         rows = conn.execute("""
             SELECT p.*, u.username, u.full_name
@@ -3185,11 +3501,16 @@ async def admin_pending(message: Message):
             ORDER BY p.created_at ASC
             LIMIT 20
         """).fetchall()
+
     if not rows:
         await message.answer("Нет объявлений на модерации.")
         return
+
     for row in rows:
-        await message.answer(post_text(row), reply_markup=admin_post_actions_kb(row["id"]))
+        await message.answer(
+            post_text(row),
+            reply_markup=admin_post_actions_kb(row["id"])
+        )
 
 
 @router.callback_query(F.data.startswith("adminapprove:"))
@@ -3197,16 +3518,27 @@ async def admin_approve(callback: CallbackQuery, bot: Bot):
     if not is_admin(callback.from_user.id):
         await callback.answer("Нет доступа", show_alert=True)
         return
+
     post_id = int(callback.data.split(":")[1])
+
     with closing(connect_db()) as conn, conn:
-        conn.execute("UPDATE posts SET status='active', updated_at=? WHERE id=?", (now_ts(), post_id))
+        conn.execute(
+            "UPDATE posts SET status='active', updated_at=? WHERE id=?",
+            (now_ts(), post_id)
+        )
+
     row = get_post(post_id)
     await callback.message.answer(f"Объявление {post_id} одобрено.")
+
     if row:
         try:
-            await bot.send_message(row["user_id"], f"Ваше объявление {post_id} одобрено и опубликовано.")
+            await bot.send_message(
+                row["user_id"],
+                f"Ваше объявление {post_id} одобрено и опубликовано."
+            )
         except Exception:
             pass
+
     await safe_publish(bot, post_id)
     await notify_coincidence_users(bot, post_id)
     await notify_subscribers(bot, post_id)
@@ -3218,16 +3550,27 @@ async def admin_reject(callback: CallbackQuery, bot: Bot):
     if not is_admin(callback.from_user.id):
         await callback.answer("Нет доступа", show_alert=True)
         return
+
     post_id = int(callback.data.split(":")[1])
+
     with closing(connect_db()) as conn, conn:
-        conn.execute("UPDATE posts SET status='rejected', updated_at=? WHERE id=?", (now_ts(), post_id))
+        conn.execute(
+            "UPDATE posts SET status='rejected', updated_at=? WHERE id=?",
+            (now_ts(), post_id)
+        )
+
     row = get_post(post_id)
     await callback.message.answer(f"Объявление {post_id} отклонено.")
+
     if row:
         try:
-            await bot.send_message(row["user_id"], f"Ваше объявление {post_id} отклонено модератором.")
+            await bot.send_message(
+                row["user_id"],
+                f"Ваше объявление {post_id} отклонено модератором."
+            )
         except Exception:
             pass
+
     await callback.answer("Отклонено")
 
 
@@ -3236,6 +3579,7 @@ async def admin_ban_post_owner(callback: CallbackQuery, bot: Bot):
     if not is_admin(callback.from_user.id):
         await callback.answer("Нет доступа", show_alert=True)
         return
+
     post_id = int(callback.data.split(":")[1])
     row = get_post(post_id)
     if not row:
@@ -3245,10 +3589,16 @@ async def admin_ban_post_owner(callback: CallbackQuery, bot: Bot):
     ban_user(row["user_id"])
 
     try:
-        await bot.send_message(row["user_id"], "Ваш аккаунт был ограничен администратором.")
+        await bot.send_message(
+            row["user_id"],
+            "Ваш аккаунт был ограничен администратором."
+        )
     except Exception:
         pass
-    await callback.message.answer(f"Пользователь {row['user_id']} забанен, его объявления деактивированы.")
+
+    await callback.message.answer(
+        f"Пользователь {row['user_id']} забанен, его объявления деактивированы."
+    )
     await callback.answer("Готово")
 
 
@@ -3256,17 +3606,20 @@ async def admin_ban_post_owner(callback: CallbackQuery, bot: Bot):
 async def admin_complaints(message: Message):
     if not is_admin(message.from_user.id):
         return
+
     with closing(connect_db()) as conn:
         rows = conn.execute("""
             SELECT c.*, p.user_id as post_owner_id, p.post_type, p.from_country, p.to_country
             FROM complaints c
-            LEFT JOIN posts p ON p.id=c.post_id
+            LEFT JOIN posts p ON p.id = c.post_id
             ORDER BY c.created_at DESC
             LIMIT 20
         """).fetchall()
+
     if not rows:
         await message.answer("Жалоб нет.")
         return
+
     for row in rows:
         await message.answer(
             f"Жалоба #{row['id']}\n"
@@ -3282,10 +3635,12 @@ async def admin_complaints(message: Message):
 async def admin_ban(message: Message):
     if not is_admin(message.from_user.id):
         return
+
     parts = message.text.strip().split()
     if len(parts) != 2 or not parts[1].isdigit():
         await message.answer("Использование: /admin_ban USER_ID")
         return
+
     user_id = int(parts[1])
     ban_user(user_id)
     await message.answer(f"Пользователь {user_id} забанен.")
@@ -3295,13 +3650,17 @@ async def admin_ban(message: Message):
 async def admin_unban(message: Message):
     if not is_admin(message.from_user.id):
         return
+
     parts = message.text.strip().split()
     if len(parts) != 2 or not parts[1].isdigit():
         await message.answer("Использование: /admin_unban USER_ID")
         return
+
     user_id = int(parts[1])
+
     with closing(connect_db()) as conn, conn:
         conn.execute("UPDATE users SET is_banned=0 WHERE user_id=?", (user_id,))
+
     await message.answer(f"Пользователь {user_id} разбанен.")
 
 
@@ -3309,13 +3668,17 @@ async def admin_unban(message: Message):
 async def admin_verify(message: Message):
     if not is_admin(message.from_user.id):
         return
+
     parts = message.text.strip().split()
     if len(parts) != 2 or not parts[1].isdigit():
         await message.answer("Использование: /admin_verify USER_ID")
         return
+
     user_id = int(parts[1])
+
     with closing(connect_db()) as conn, conn:
         conn.execute("UPDATE users SET is_verified=1 WHERE user_id=?", (user_id,))
+
     await message.answer(f"Пользователь {user_id} отмечен как проверенный.")
 
 
@@ -3323,14 +3686,20 @@ async def admin_verify(message: Message):
 async def admin_unverify(message: Message):
     if not is_admin(message.from_user.id):
         return
+
     parts = message.text.strip().split()
     if len(parts) != 2 or not parts[1].isdigit():
         await message.answer("Использование: /admin_unverify USER_ID")
         return
+
     user_id = int(parts[1])
+
     with closing(connect_db()) as conn, conn:
         conn.execute("UPDATE users SET is_verified=0 WHERE user_id=?", (user_id,))
-    await message.answer(f"Статус проверенного у пользователя {user_id} снят.")
+
+    await message.answer(
+        f"Статус проверенного у пользователя {user_id} снят."
+    )
 
 
 @router.message(F.text == "ℹ️ Помощь")

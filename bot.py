@@ -588,7 +588,6 @@ def main_menu(user_id: Optional[int] = None):
         [KeyboardButton(text="🔔 Подписки"), KeyboardButton(text="📊 Статистика")],
         [KeyboardButton(text="💰 Поднять объявление"), KeyboardButton(text="⭐ Оставить отзыв")],
         [KeyboardButton(text="🆘 Жалоба"), KeyboardButton(text="ℹ️ Помощь")],
-        [KeyboardButton(text="❌ Отмена / Меню")]
     ]
     if user_id is not None and is_admin(user_id):
         keyboard.append([KeyboardButton(text="👨‍💼 Админка")])
@@ -1734,14 +1733,7 @@ async def bump_info(message: Message):
         BUMP_PRICE_TEXT + "\n\nОткрой 'Мои объявления' и нажми 'Поднять' у нужного объявления.",
         reply_markup=main_menu(message.from_user.id)
     )
-
-
-@router.message(StateFilter("*"), F.text == "❌ Отмена / Меню")
-async def cancel_to_menu(message: Message, state: FSMContext):
-    await state.clear()
-    await message.answer("Возвращаю в меню.", reply_markup=main_menu(message.from_user.id))
-
-
+    
 @router.message(Command("find"))
 @router.message(F.text == "🔎 Найти совпадения")
 async def find_start(message: Message, state: FSMContext):

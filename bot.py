@@ -1427,12 +1427,14 @@ async def start_handler(message: Message, state: FSMContext):
 @router.message(Command("new_trip"))
 @router.message(F.text == "✈️ Взять посылку")
 async def add_trip(message: Message, state: FSMContext):
+    await state.clear()
     await begin_create(message, state, TYPE_TRIP)
 
 
 @router.message(Command("new_parcel"))
 @router.message(F.text == "📦 Отправить посылку")
 async def add_parcel(message: Message, state: FSMContext):
+    await state.clear()
     await begin_create(message, state, TYPE_PARCEL)
 
 

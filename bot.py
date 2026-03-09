@@ -46,7 +46,7 @@ BUMP_PRICE_TEXT = os.getenv(
     "Площадка не принимает оплату автоматически. Пока кнопка просто поднимает объявление выше."
 )
 
-MAX_ACTIVE_POSTS_PER_USER = int(os.getenv("MAX_ACTIVE_POSTS_PER_USER", "10"))
+MAX_ACTIVE_POSTS_PER_USER = int(os.getenv("MAX_ACTIVE_POSTS_PER_USER", "5"))
 MIN_SECONDS_BETWEEN_ACTIONS = int(os.getenv("MIN_SECONDS_BETWEEN_ACTIONS", "2"))
 POST_TTL_DAYS = int(os.getenv("POST_TTL_DAYS", "14"))
 COINCIDENCE_NOTIFY_LIMIT = int(os.getenv("COINCIDENCE_NOTIFY_LIMIT", "5"))
@@ -909,6 +909,16 @@ def coincidence_already_notified(post_a_id: int, post_b_id: int) -> bool:
         return row is not None
 
 
+def reserve_coincidence_notification(post_a_id: int, post_b_id: int) -> bool:
+    a, b = sorted([post_a_id, post_b_id])
+    with closing(connect_db()) as conn, conn:
+        cur = conn.execute("""
+            INSERT OR IGNORE INTO coincidence_notifications (post_a_id, post_b_id, created_at)
+            VALUES (?, ?, ?)
+        """, (a, b, now_ts()))
+        return cur.rowcount > 0
+
+
 def mark_coincidence_notified(post_a_id: int, post_b_id: int):
     a, b = sorted([post_a_id, post_b_id])
     with closing(connect_db()) as conn, conn:
@@ -1230,8 +1240,8 @@ async def notify_coincidence_users(bot: Bot, new_post_id: int):
         score = item["score"]
         notes = item["notes"]
 
-        if coincidence_already_notified(new_row["id"], row["id"]):
-            continue
+        if not reserve_coincidence_notification(new_row["id"], row["id"]):
+    continue
 
         intro = format_coincidence_badges(score, notes)
 
@@ -1253,7 +1263,6 @@ async def notify_coincidence_users(bot: Bot, new_post_id: int):
         except Exception as e:
             print(f"COINCIDENCE SEND B ERROR: {e}")
 
-        mark_coincidence_notified(new_row["id"], row["id"])
 
 
 async def notify_subscribers(bot: Bot, post_id: int):
@@ -1756,8 +1765,8 @@ async def my_posts_handler(message: Message):
         posts = conn.execute("""
             SELECT * FROM posts
             WHERE user_id=?
-            ORDER BY COALESCE(bumped_at, created_at) DESC
-            LIMIT 30
+ORDER BY id DESC 
+LIMIT 30
         """, (message.from_user.id,)).fetchall()
 
     if not posts:
@@ -2290,10 +2299,12 @@ async def deal_accept_handler(callback: CallbackQuery):
 
     try:
         await callback.bot.send_message(
-            deal["requester_user_id"],
-            f"✅ Ваша сделка по объявлению ID {deal['post_id']} принята.\n"
-            "Откройте раздел '🤝 Мои сделки' для дальнейших действий."
-        )
+    deal["requester_user_id"],
+    f"✅ Ваша сделка по объявлению ID {deal['post_id']} принята.\n\n"
+    "Управление сделками происходит во вкладке МЕНЮ '🤝 Мои сделки'.\n"
+    "Там вы сможете закрыть сделку и оставить отзыв.\n\n"
+    "Для перехода — откройте МЕНЮ бота."
+)
     except Exception:
         pass
 
@@ -2434,6 +2445,23 @@ async def deal_confirm_handler(callback: CallbackQuery):
                         [InlineKeyboardButton(text="⭐ Оставить отзыв", callback_data=f"deal_review:{deal_id}")]
                     ])
                 )
+                other_user_id = (
+    deal["requester_user_id"]
+    if callback.from_user.id == deal["owner_user_id"]
+    else deal["owner_user_id"]
+)
+
+if final_status != DEAL_COMPLETED:
+    try:
+        await callback.bot.send_message(
+            other_user_id,
+            f"📌 Вторая сторона подтвердила завершение сделки по объявлению ID {deal['post_id']}.\n\n"
+            "Чтобы окончательно закрыть сделку, откройте МЕНЮ → '🤝 Мои сделки' "
+            "и подтвердите завершение со своей стороны."
+        )
+    except Exception as e:
+        print(f"DEAL CONFIRM NOTIFY ERROR: {e}")
+        
             except Exception:
                 pass
 

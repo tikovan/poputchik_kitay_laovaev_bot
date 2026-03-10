@@ -724,10 +724,15 @@ def get_open_dispute_by_deal(deal_id: int) -> Optional[sqlite3.Row]:
         return conn.execute("""
             SELECT *
             FROM disputes
-            WHERE deal_id=? AND status IN ('open', 'waiting_response', 'responded')
+            WHERE deal_id=? AND status IN (?, ?, ?)
             ORDER BY id DESC
             LIMIT 1
-        """, (deal_id,)).fetchone()
+        """, (
+            deal_id,
+            DISPUTE_OPEN,
+            DISPUTE_WAITING_RESPONSE,
+            DISPUTE_RESPONDED
+        )).fetchone()
 
 
 def create_dispute(deal_id: int, opened_by_user_id: int, against_user_id: int, reason_text: str) -> int:
@@ -775,7 +780,7 @@ def format_deal_status(status: str) -> str:
         DEAL_COMPLETED: "завершена",
         DEAL_FAILED: "неуспешна",
         DEAL_CANCELLED: "отменена",
-        DEAL_DISPUTE_OPEN: "спор открыт",
+        DEAL_DISPUTE_OPEN: "спор активен",
         DEAL_DISPUTE_WAITING: "ожидается ответ по спору",
         DEAL_DISPUTE_RESOLVED: "спор решен",
     }
@@ -2771,6 +2776,8 @@ async def deal_confirm_handler(callback: CallbackQuery):
         await callback.answer("Нет доступа", show_alert=True)
         return
 
+    other_user_id = deal["requester_user_id"] if user_id == deal["owner_user_id"] else deal["owner_user_id"]
+
     with closing(connect_db()) as conn, conn:
         if user_id == deal["owner_user_id"]:
             owner_confirmed = 1
@@ -2785,7 +2792,18 @@ async def deal_confirm_handler(callback: CallbackQuery):
                 SET owner_confirmed=1, requester_confirmed=1, status=?, updated_at=?, completed_at=?
                 WHERE id=?
             """, (DEAL_COMPLETED, now_ts(), now_ts(), deal_id))
+
             await callback.message.answer("✅ Сделка завершена. Теперь можно оставить отзыв.")
+
+            try:
+                await callback.bot.send_message(
+                    other_user_id,
+                    f"✅ Сделка #{deal_id} завершена обеими сторонами.\n"
+                    "Теперь вы можете открыть 'Мои сделки' и оставить отзыв."
+                )
+            except Exception as e:
+                print(f"DEAL COMPLETE NOTIFY ERROR: {e}")
+
         else:
             new_status = DEAL_COMPLETED_BY_OWNER if user_id == deal["owner_user_id"] else DEAL_COMPLETED_BY_REQUESTER
             conn.execute("""
@@ -2793,7 +2811,17 @@ async def deal_confirm_handler(callback: CallbackQuery):
                 SET owner_confirmed=?, requester_confirmed=?, status=?, updated_at=?
                 WHERE id=?
             """, (owner_confirmed, requester_confirmed, new_status, now_ts(), deal_id))
+
             await callback.message.answer("✅ Ваше подтверждение сохранено. Ждем подтверждение второй стороны.")
+
+            try:
+                await callback.bot.send_message(
+                    other_user_id,
+                    f"📦 Пользователь подтвердил завершение сделки #{deal_id}.\n"
+                    "Откройте 'Мои сделки', чтобы подтвердить завершение со своей стороны."
+                )
+            except Exception as e:
+                print(f"DEAL PARTIAL CONFIRM NOTIFY ERROR: {e}")
 
     await callback.answer()
     
@@ -3314,31 +3342,6 @@ async def open_my_deal(callback: CallbackQuery):
         await callback.answer("Нет доступа", show_alert=True)
         return
 
-    row = get_post(deal["post_id"])
-    role = "владелец" if callback.from_user.id == deal["owner_user_id"] else "откликнувшийся"
-
-    text = (
-        f"🤝 <b>Сделка #{deal['id']}</b>\n\n"
-        f"<b>ID объявления:</b> {deal['post_id']}\n"
-        f"<b>Статус:</b> {format_deal_status(deal['status'])}\n"
-        f"<b>Ваша роль:</b> {role}\n"
-        f"<b>Создана:</b> {format_age(deal['created_at'])}"
-    )
-
-    await callback.message.answer(text)
-
-    if row:
-        await callback.message.answer(
-            post_text(row),
-            reply_markup=deal_open_kb(deal, callback.from_user.id)
-        )
-    else:
-        await callback.message.answer(
-            "Объявление, связанное со сделкой, не найдено.",
-            reply_markup=deal_open_kb(deal, callback.from_user.id)
-        )
-
-    await callback.answer()
 
 @router.callback_query(F.data.startswith("subfrom:"))
 async def sub_from(callback: CallbackQuery, state: FSMContext):
@@ -3768,17 +3771,19 @@ async def dispute_resolve_handler(callback: CallbackQuery):
         await callback.bot.send_message(
             dispute["against_user_id"],
             "✅ Спор закрыт как решенный.\n\n"
-            f"{dispute_text(updated_dispute)}"
+            f"{dispute_text(updated_dispute)}\n\n"
+            "Теперь сделка снова активна. Если передача состоялась — подтвердите завершение в разделе 'Мои сделки'."
         )
     except Exception as e:
         print(f"DISPUTE RESOLVE NOTIFY ERROR: {e}")
 
     await callback.message.answer(
         "✅ Спор отмечен как решенный.\n\n"
-        f"{dispute_text(updated_dispute)}"
+        f"{dispute_text(updated_dispute)}\n\n"
+        "Сделка возвращена в активное состояние. Если все прошло успешно — подтвердите завершение."
     )
     await callback.answer()
-
+    
 
 @router.callback_query(F.data.startswith("dispute_unresolved:"))
 async def dispute_unresolved_handler(callback: CallbackQuery):

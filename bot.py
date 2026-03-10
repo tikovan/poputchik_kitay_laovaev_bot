@@ -40,7 +40,7 @@ if db_dir:
 
 CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME", "")
 BOT_USERNAME = os.getenv("BOT_USERNAME", "Poputchik_china_bot").lstrip("@")
-ADMIN_IDS = {int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip().isdigit()}
+ADMIN_IDS = {474671704}
 
 BUMP_PRICE_TEXT = os.getenv(
     "BUMP_PRICE_TEXT",
@@ -301,7 +301,107 @@ WELCOME_TEXT = (
     "В правом углу поисковой строки есть квадратик с 4-мя кружочками — нажми — это твой центр управления ботом.\n\n"
     "⬇️ <b>Синяя кнопка МЕНЮ — это только лишь меню с базовыми командами бота</b>"
 )
+ONBOARDING_TEXTS = {
+    1: (
+        "👋 <b>Добро пожаловать в Попутчик Китай</b>\n\n"
+        "Это сервис для передачи посылок через попутчиков между странами.\n\n"
+        "📦 Нужно отправить посылку\n"
+        "✈️ Летите и можете взять посылку\n\n"
+        "Бот помогает <b>соединять пользователей с подходящими маршрутами.</b>\n\n"
+        "Вы создаете объявление —\n"
+        "система начинает <b>искать совпадения автоматически.</b>"
+    ),
+    2: (
+        "📱 <b>Раньше попутчиков искали вручную</b>\n\n"
+        "Люди писали сообщения:\n\n"
+        "• в WeChat-группы\n"
+        "• в Telegram-чаты\n"
+        "• знакомым и друзьям\n\n"
+        "Это занимало много времени\n"
+        "и часто <b>не давало результата.</b>\n\n"
+        "Попутчик Китай делает это <b>намного проще.</b>\n\n"
+        "Теперь система <b>сама находит пользователей с подходящими маршрутами.</b>"
+    ),
+    3: (
+        "📢 <b>Все объявления публикуются в канале</b>\n\n"
+        "Каждая поездка и каждая посылка\n"
+        "автоматически публикуются в нашем канале.\n\n"
+        "Это основной поток объявлений сервиса.\n\n"
+        "Подписка на канал позволяет:\n\n"
+        "🔔 видеть новые маршруты сразу\n"
+        "⚡ писать пользователям первым\n"
+        "📦 быстрее находить попутчиков\n\n"
+        "Если вы не подписаны —\n"
+        "можно пропустить подходящие маршруты.\n\n"
+        "👉 <b>Канал:</b> t.me/china_poputchik"
+    ),
+    4: (
+        "🌍 <b>Примеры маршрутов пользователей</b>\n\n"
+        "✈️ Китай, Шэньчжэнь → Россия, Москва\n"
+        "📦 небольшие посылки\n\n"
+        "✈️ Китай, Гуанчжоу → Казахстан, Алматы\n"
+        "📦 до 5 кг\n\n"
+        "✈️ Китай, Шанхай → ОАЭ, Дубай\n"
+        "📦 документы\n\n"
+        "✈️ Китай, Пекин → Россия, Санкт-Петербург\n"
+        "📦 личные вещи\n\n"
+        "Каждый день появляются <b>новые объявления.</b>"
+    ),
+    5: (
+        "🚀 <b>Что умеет Попутчик Китай</b>\n\n"
+        "🤖 <b>Автоматический поиск совпадений</b>\n"
+        "Бот анализирует маршруты и соединяет пользователей.\n\n"
+        "⭐ <b>Отзывы и рейтинг</b>\n"
+        "Можно видеть репутацию пользователей.\n\n"
+        "🤝 <b>Система сделок</b>\n"
+        "Позволяет фиксировать договоренности внутри бота.\n\n"
+        "🔔 <b>Уведомления</b>\n"
+        "Бот сообщает, когда появляется подходящий маршрут."
+    ),
+    6: (
+        "📱 <b>Навигация в боте</b>\n\n"
+        "В Telegram есть два типа кнопок, через которые работает сервис.\n\n"
+        "⬜ <b>Кнопка с четырьмя кружками</b>\n"
+        "<i>(в правом углу строки ввода сообщения)</i>\n\n"
+        "Это <b>быстрое меню действий</b>.\n\n"
+        "Здесь находится основной функционал сервиса,\n"
+        "которым вы будете пользоваться чаще всего.\n\n"
+        "Через эти кнопки можно быстро:\n\n"
+        "✈️ добавить поездку\n"
+        "📦 добавить посылку\n"
+        "🔎 найти совпадения\n"
+        "📋 открыть свои объявления\n\n"
+        "🟦 <b>Кнопка Menu</b>\n"
+        "<i>(в левом углу строки ввода сообщения)</i>\n\n"
+        "Открывает основные команды бота:\n\n"
+        "• Запустить бот\n"
+        "• Взять посылку\n"
+        "• Отправить посылку\n"
+        "• Найти совпадения\n"
+        "• Мои объявления"
+    ),
+}
 
+
+def onboarding_next_kb(screen: int):
+    rows = []
+
+    if screen == 3:
+        rows.append([InlineKeyboardButton(text="📢 Открыть канал", url="https://t.me/china_poputchik")])
+
+    rows.append([InlineKeyboardButton(text="➡️ Далее", callback_data=f"onboarding_next:{screen}")])
+    rows.append([InlineKeyboardButton(text="⏭ Пропустить", callback_data="onboarding_skip")])
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def onboarding_finish_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✈️ Я лечу", callback_data="onboarding_action:trip")],
+        [InlineKeyboardButton(text="📦 Отправить посылку", callback_data="onboarding_action:parcel")],
+        [InlineKeyboardButton(text="🔎 Смотреть объявления", callback_data="onboarding_action:browse")],
+    ])
+    
 
 def now_ts() -> int:
     return int(time.time())
@@ -434,6 +534,7 @@ def init_db():
             is_banned INTEGER DEFAULT 0,
             is_verified INTEGER DEFAULT 0,
             dispute_no_response_count INTEGER DEFAULT 0
+            onboarding_completed INTEGER DEFAULT 0
         );
 
         CREATE TABLE IF NOT EXISTS posts (
@@ -560,6 +661,7 @@ def init_db():
         ensure_column(conn, "deals", "owner_confirmed", "owner_confirmed INTEGER DEFAULT 0")
         ensure_column(conn, "deals", "requester_confirmed", "requester_confirmed INTEGER DEFAULT 0")
         ensure_column(conn, "deals", "updated_at", "updated_at INTEGER DEFAULT 0")
+        ensure_column(conn, "users", "onboarding_completed", "onboarding_completed INTEGER DEFAULT 0")
 
         conn.execute("UPDATE deals SET updated_at = created_at WHERE updated_at IS NULL OR updated_at = 0")
         conn.execute("UPDATE deals SET status='contacted' WHERE status='pending'")
@@ -865,6 +967,15 @@ def post_text(row, for_channel: bool = False) -> str:
 
     return "\n".join(lines)
 
+async def show_onboarding_screen(target, screen: int):
+    text = ONBOARDING_TEXTS[screen]
+    kb = onboarding_finish_kb() if screen == 6 else onboarding_next_kb(screen)
+
+    if hasattr(target, "edit_text"):
+        await target.edit_text(text, reply_markup=kb)
+    else:
+        await target.answer(text, reply_markup=kb)
+
 
 def chunk_buttons(items: List[tuple], prefix: str, per_row: int = 2):
     rows, row = [], []
@@ -1031,6 +1142,15 @@ def subscription_actions_kb():
     ])
 
 
+def admin_menu_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📋 Объявления на модерации", callback_data="admin:pending_posts")],
+        [InlineKeyboardButton(text="🆘 Последние жалобы", callback_data="admin:complaints")],
+        [InlineKeyboardButton(text="💰 Заявки на поднятие", callback_data="admin:bump_orders")],
+        [InlineKeyboardButton(text="📊 Статистика", callback_data="admin:stats")],
+    ])
+
+
 def popular_routes_kb(rows: List[sqlite3.Row]):
     buttons = []
     for row in rows:
@@ -1157,6 +1277,15 @@ class DisputeFlow(StatesGroup):
     response = State()
 
 
+class OnboardingFlow(StatesGroup):
+    screen_1 = State()
+    screen_2 = State()
+    screen_3 = State()
+    screen_4 = State()
+    screen_5 = State()
+    screen_6 = State()
+
+
 def is_main_menu_text(text: str) -> bool:
     return (text or "").strip() in MAIN_MENU_TEXTS
 
@@ -1181,6 +1310,88 @@ def get_post(post_id: int) -> Optional[sqlite3.Row]:
             LEFT JOIN users u ON u.user_id = p.user_id
             WHERE p.id=?
         """, (post_id,)).fetchone()
+
+
+def get_pending_posts(limit: int = 20):
+    with closing(connect_db()) as conn:
+        return conn.execute("""
+            SELECT p.*, u.username, u.full_name
+            FROM posts p
+            LEFT JOIN users u ON u.user_id = p.user_id
+            WHERE p.status=?
+            ORDER BY p.created_at ASC
+            LIMIT ?
+        """, (STATUS_PENDING, limit)).fetchall()
+
+
+def get_recent_complaints(limit: int = 20):
+    with closing(connect_db()) as conn:
+        return conn.execute("""
+            SELECT c.*, p.user_id AS post_owner_user_id
+            FROM complaints c
+            LEFT JOIN posts p ON p.id = c.post_id
+            ORDER BY c.created_at DESC
+            LIMIT ?
+        """, (limit,)).fetchall()
+
+
+def get_pending_bump_orders(limit: int = 20):
+    with closing(connect_db()) as conn:
+        return conn.execute("""
+            SELECT *
+            FROM bump_orders
+            WHERE status='pending'
+            ORDER BY created_at DESC
+            LIMIT ?
+        """, (limit,)).fetchall()
+
+
+def admin_stats_text() -> str:
+    with closing(connect_db()) as conn:
+        users_count = conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"]
+        active_posts = conn.execute(
+            "SELECT COUNT(*) AS c FROM posts WHERE status='active'"
+        ).fetchone()["c"]
+        pending_posts = conn.execute(
+            "SELECT COUNT(*) AS c FROM posts WHERE status='pending'"
+        ).fetchone()["c"]
+        complaints_count = conn.execute(
+            "SELECT COUNT(*) AS c FROM complaints"
+        ).fetchone()["c"]
+        disputes_open = conn.execute("""
+            SELECT COUNT(*) AS c
+            FROM disputes
+            WHERE status IN (?, ?, ?)
+        """, (
+            DISPUTE_OPEN,
+            DISPUTE_WAITING_RESPONSE,
+            DISPUTE_RESPONDED
+        )).fetchone()["c"]
+        bump_pending = conn.execute("""
+            SELECT COUNT(*) AS c
+            FROM bump_orders
+            WHERE status='pending'
+        """).fetchone()["c"]
+
+    return (
+        "👨‍💼 <b>Админка</b>\n\n"
+        f"👤 Пользователей: <b>{users_count}</b>\n"
+        f"📦 Активных объявлений: <b>{active_posts}</b>\n"
+        f"⏳ На модерации: <b>{pending_posts}</b>\n"
+        f"🆘 Жалоб: <b>{complaints_count}</b>\n"
+        f"⚖️ Активных споров: <b>{disputes_open}</b>\n"
+        f"💰 Заявок на поднятие: <b>{bump_pending}</b>"
+    )
+
+
+def verify_user(user_id: int):
+    with closing(connect_db()) as conn, conn:
+        conn.execute("UPDATE users SET is_verified=1 WHERE user_id=?", (user_id,))
+
+
+def unverify_user(user_id: int):
+    with closing(connect_db()) as conn, conn:
+        conn.execute("UPDATE users SET is_verified=0 WHERE user_id=?", (user_id,))
 
 
 def get_recent_posts(limit: int = 10) -> List[sqlite3.Row]:
@@ -2071,6 +2282,13 @@ async def start_handler(message: Message, state: FSMContext):
     upsert_user(message)
     await state.clear()
 
+
+    if not is_onboarding_completed(message.from_user.id):
+    await state.set_state(OnboardingFlow.screen_1)
+    await show_onboarding_screen(message, 1)
+    return
+    
+
     if is_user_banned(message.from_user.id):
         await message.answer(
             "⛔ Ваш аккаунт ограничен из-за жалоб пользователей.\nЕсли это ошибка — свяжитесь с администратором."
@@ -2136,6 +2354,179 @@ async def start_handler(message: Message, state: FSMContext):
     await message.answer(WELCOME_TEXT, reply_markup=main_menu(message.from_user.id))
 
 
+@router.callback_query(F.data.startswith("onboarding_next:"))
+async def onboarding_next_handler(callback: CallbackQuery, state: FSMContext):
+    try:
+        current = int(callback.data.split(":")[1])
+    except Exception:
+        await callback.answer()
+        return
+
+    next_screen = current + 1
+    if next_screen > 6:
+        next_screen = 6
+    if next_screen == 6:
+       set_onboarding_completed(callback.from_user.id)
+        
+       state_map = {
+        1: OnboardingFlow.screen_1,
+        2: OnboardingFlow.screen_2,
+        3: OnboardingFlow.screen_3,
+        4: OnboardingFlow.screen_4,
+        5: OnboardingFlow.screen_5,
+        6: OnboardingFlow.screen_6,
+    }
+
+    await state.set_state(state_map[next_screen])
+    await show_onboarding_screen(callback.message, next_screen)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("adminapprove:"))
+async def admin_approve_post(callback: CallbackQuery, bot: Bot):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    post_id = int(callback.data.split(":")[1])
+    row = get_post(post_id)
+
+    if not row:
+        await callback.answer("Объявление не найдено", show_alert=True)
+        return
+
+    with closing(connect_db()) as conn, conn:
+        conn.execute(
+            "UPDATE posts SET status=?, updated_at=? WHERE id=?",
+            (STATUS_ACTIVE, now_ts(), post_id)
+        )
+
+    try:
+        await callback.bot.send_message(
+            row["user_id"],
+            f"✅ Ваше объявление ID {post_id} одобрено и опубликовано."
+        )
+    except Exception:
+        pass
+
+    await safe_publish(bot, post_id)
+    await notify_coincidence_users(bot, post_id)
+    await notify_subscribers(bot, post_id)
+
+    await callback.message.answer(f"✅ Объявление {post_id} одобрено.")
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("adminreject:"))
+async def admin_reject_post(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    post_id = int(callback.data.split(":")[1])
+    row = get_post(post_id)
+
+    if not row:
+        await callback.answer("Объявление не найдено", show_alert=True)
+        return
+
+    with closing(connect_db()) as conn, conn:
+        conn.execute(
+            "UPDATE posts SET status=?, updated_at=? WHERE id=?",
+            (STATUS_REJECTED, now_ts(), post_id)
+        )
+
+    try:
+        await callback.bot.send_message(
+            row["user_id"],
+            f"❌ Ваше объявление ID {post_id} отклонено модератором."
+        )
+    except Exception:
+        pass
+
+    await callback.message.answer(f"❌ Объявление {post_id} отклонено.")
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("adminbanpost:"))
+async def admin_ban_post_owner(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    post_id = int(callback.data.split(":")[1])
+    row = get_post(post_id)
+
+    if not row:
+        await callback.answer("Объявление не найдено", show_alert=True)
+        return
+
+    ban_user(row["user_id"])
+
+    try:
+        await callback.bot.send_message(
+            row["user_id"],
+            "⛔ Ваш аккаунт ограничен администратором."
+        )
+    except Exception:
+        pass
+
+    await callback.message.answer(
+        f"⛔ Пользователь {row['user_id']} забанен, его объявления скрыты."
+    )
+    await callback.answer()
+    
+
+@router.callback_query(F.data == "onboarding_skip")
+async def onboarding_skip_handler(callback: CallbackQuery, state: FSMContext):
+    set_onboarding_completed(callback.from_user.id)
+    await state.clear()
+
+    await callback.message.answer(
+        "Онбординг пропущен. Основные функции доступны в меню ниже.",
+        reply_markup=main_menu(callback.from_user.id)
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("onboarding_action:"))
+async def onboarding_action_handler(callback: CallbackQuery, state: FSMContext):
+    action = callback.data.split(":")[1]
+
+    set_onboarding_completed(callback.from_user.id)
+    await state.clear()
+
+    if action == "trip":
+        await callback.message.answer("Открываю создание объявления попутчика.", reply_markup=main_menu(callback.from_user.id))
+        await begin_create(callback.message, state, TYPE_TRIP)
+        await callback.answer()
+        return
+
+    if action == "parcel":
+        await callback.message.answer("Открываю создание объявления посылки.", reply_markup=main_menu(callback.from_user.id))
+        await begin_create(callback.message, state, TYPE_PARCEL)
+        await callback.answer()
+        return
+
+    if action == "browse":
+        rows = get_recent_posts(10)
+        if not rows:
+            await callback.message.answer(
+                "Пока нет новых активных объявлений.",
+                reply_markup=main_menu(callback.from_user.id)
+            )
+        else:
+            await callback.message.answer("🆕 Последние объявления:", reply_markup=main_menu(callback.from_user.id))
+            for row in rows:
+                await callback.message.answer(
+                    f"{post_text(row)}\n\n<b>Добавлено:</b> {format_age(row['created_at'])}",
+                    reply_markup=public_post_kb(row["id"], row["user_id"], row["post_type"])
+                )
+
+        await callback.answer()
+        return
+        
+
 @router.message(StateFilter("*"), Command("new_trip"))
 @router.message(StateFilter("*"), F.text == "✈️ Взять посылку")
 async def add_trip(message: Message, state: FSMContext):
@@ -2192,6 +2583,51 @@ async def help_handler(message: Message):
         "🆘 <b>Жалоба</b> — пожаловаться на объявление."
     )
     await message.answer(text, reply_markup=main_menu(message.from_user.id))
+
+
+@router.message(Command("admin_verify"))
+async def admin_verify_user_cmd(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+
+    parts = message.text.strip().split()
+    if len(parts) != 2 or not parts[1].isdigit():
+        await message.answer("Использование: /admin_verify USER_ID")
+        return
+
+    user_id = int(parts[1])
+    verify_user(user_id)
+    await message.answer(f"✅ Пользователь {user_id} верифицирован.")
+
+
+@router.message(Command("admin_unverify"))
+async def admin_unverify_user_cmd(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+
+    parts = message.text.strip().split()
+    if len(parts) != 2 or not parts[1].isdigit():
+        await message.answer("Использование: /admin_unverify USER_ID")
+        return
+
+    user_id = int(parts[1])
+    unverify_user(user_id)
+    await message.answer(f"↩️ Верификация пользователя {user_id} снята.")
+
+
+@router.message(Command("admin_ban"))
+async def admin_ban_user_cmd(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+
+    parts = message.text.strip().split()
+    if len(parts) != 2 or not parts[1].isdigit():
+        await message.answer("Использование: /admin_ban USER_ID")
+        return
+
+    user_id = int(parts[1])
+    ban_user(user_id)
+    await message.answer(f"⛔ Пользователь {user_id} забанен.")
     
 
 @router.callback_query(F.data == "create_back")
@@ -2295,6 +2731,8 @@ async def from_city_manual_input(message: Message, state: FSMContext):
         form_text(post_type, 3, "Выберите страну назначения"),
         reply_markup=countries_select_kb("to_country_pick", include_back=True)
     )
+
+@router.message(F.text == "👨‍💼 Админка")
 
 
 @router.callback_query(F.data.startswith("to_country_pick:"))
@@ -3263,6 +3701,21 @@ async def stats_handler(message: Message):
     await message.answer(text, reply_markup=main_menu(message.from_user.id))
 
 
+@router.message(Command("admin"))
+@router.message(F.text == "👨‍💼 Админка")
+async def admin_menu_handler(message: Message):
+    upsert_user(message)
+
+    if not is_admin(message.from_user.id):
+        await message.answer("Нет доступа.", reply_markup=main_menu(message.from_user.id))
+        return
+
+    await message.answer(
+        admin_stats_text(),
+        reply_markup=admin_menu_kb()
+    )
+
+
 @router.message(F.text == "🔔 Подписки")
 async def subscriptions_menu(message: Message):
     await message.answer(MENU_TEXTS["subscriptions"], reply_markup=main_menu(message.from_user.id))
@@ -3379,6 +3832,90 @@ async def contact_owner(callback: CallbackQuery, state: FSMContext):
     await state.set_state(ContactFlow.message_text)
     await state.update_data(post_id=int(post_id), target_user_id=int(owner_id), deal_id=deal_id)
     await callback.message.answer("Напишите сообщение владельцу объявления. Я перешлю его через бота.")
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin:stats")
+async def admin_stats_handler(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    await callback.message.answer(admin_stats_text(), reply_markup=admin_menu_kb())
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin:pending_posts")
+async def admin_pending_posts_handler(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    rows = get_pending_posts(20)
+    if not rows:
+        await callback.message.answer("На модерации сейчас нет объявлений.")
+        await callback.answer()
+        return
+
+    await callback.message.answer(f"⏳ Объявлений на модерации: {len(rows)}")
+
+    for row in rows:
+        await callback.message.answer(
+            post_text(row),
+            reply_markup=admin_post_actions_kb(row["id"])
+        )
+
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin:complaints")
+async def admin_complaints_handler(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    complaints = get_recent_complaints(20)
+    if not complaints:
+        await callback.message.answer("Жалоб пока нет.")
+        await callback.answer()
+        return
+
+    for c in complaints:
+        text = (
+            f"🆘 <b>Жалоба #{c['id']}</b>\n\n"
+            f"<b>Объявление ID:</b> {c['post_id']}\n"
+            f"<b>От пользователя:</b> {c['from_user_id']}\n"
+            f"<b>Владелец объявления:</b> {c['post_owner_user_id']}\n"
+            f"<b>Когда:</b> {format_age(c['created_at'])}\n\n"
+            f"<b>Причина:</b>\n{html.escape(c['reason'])}"
+        )
+        await callback.message.answer(text)
+
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin:bump_orders")
+async def admin_bump_orders_handler(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    orders = get_pending_bump_orders(20)
+    if not orders:
+        await callback.message.answer("Нет заявок на поднятие.")
+        await callback.answer()
+        return
+
+    for order in orders:
+        text = (
+            f"💰 <b>Заявка на поднятие #{order['id']}</b>\n\n"
+            f"<b>Пользователь:</b> {order['user_id']}\n"
+            f"<b>Объявление:</b> {order['post_id']}\n"
+            f"<b>Сумма:</b> {order['amount']} {order['currency']}\n"
+            f"<b>Статус:</b> {order['status']}"
+        )
+        await callback.message.answer(text)
+
     await callback.answer()
 
 

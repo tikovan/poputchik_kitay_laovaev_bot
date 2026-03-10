@@ -3948,7 +3948,6 @@ async def contact_owner(callback: CallbackQuery, state: FSMContext):
         "• историю аккаунта\n"
         "• связан ли человек с Китаем\n\n"
 
-        "<b>Никогда не делайте предоплату!</b>"
     )
 
     await callback.answer()

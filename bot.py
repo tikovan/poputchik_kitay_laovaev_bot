@@ -1491,8 +1491,10 @@ def calculate_coincidence_score(source_row, candidate_row: sqlite3.Row) -> Tuple
 
     source_date = extract_travel_end_datetime(source_row["travel_date"])
     candidate_date = extract_travel_end_datetime(candidate_row["travel_date"])
+
     if source_date and candidate_date:
         days_diff = abs((source_date.date() - candidate_date.date()).days)
+
         if days_diff <= 2:
             score += 18
             notes.append("Даты очень близки")
@@ -1511,6 +1513,7 @@ def calculate_coincidence_score(source_row, candidate_row: sqlite3.Row) -> Tuple
 
     trip_weight = None
     parcel_weight = None
+
     if source_row["post_type"] == TYPE_TRIP:
         trip_weight = source_weight
         parcel_weight = candidate_weight
@@ -1524,6 +1527,7 @@ def calculate_coincidence_score(source_row, candidate_row: sqlite3.Row) -> Tuple
             notes.append("Вес подходит полностью")
         else:
             ratio = 0 if parcel_weight == 0 else trip_weight / parcel_weight
+
             if ratio >= 0.5:
                 score += 10
                 notes.append(f"Вес подходит частично: можно взять около {trip_weight:g} кг из {parcel_weight:g} кг")

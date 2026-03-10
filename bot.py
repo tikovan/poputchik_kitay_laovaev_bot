@@ -3088,50 +3088,20 @@ async def find_to(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("findto:"))
-async def find_to(callback: CallbackQuery, state: FSMContext):
-    country = callback.data.split(":", 1)[1]
-    data = await state.get_data()
-    source_post_type = TYPE_TRIP if data["looking_for"] == "trip" else TYPE_PARCEL
+@router.callback_query(F.data.startswith("viewphoto:"))
+async def view_photo_handler(callback: CallbackQuery):
+    post_id = int(callback.data.split(":")[1])
+    row = get_post(post_id)
 
-    pseudo_source = {
-        "post_type": source_post_type,
-        "from_country": data["from_country"],
-        "to_country": country,
-        "from_city": None,
-        "to_city": None,
-        "travel_date": None,
-        "weight_kg": None,
-        "user_id": callback.from_user.id,
-    }
+    if not row or not row["photo_file_id"]:
+        await callback.answer("Фото не найдено", show_alert=True)
+        return
 
-    coincidences = get_coincidences(
-        post_type=source_post_type,
-        from_country=data["from_country"],
-        to_country=country,
-        exclude_user_id=callback.from_user.id,
-        source_row=pseudo_source,
-        limit=10
+    await callback.message.answer_photo(
+        photo=row["photo_file_id"],
+        caption=f"Фото посылки для объявления ID {post_id}"
     )
-
-    await state.clear()
-
-    if not coincidences:
-        await callback.message.answer("Совпадений пока нет.")
-    else:
-        await callback.message.answer(f"Найдено совпадений: {len(coincidences)}")
-        for item in coincidences:
-            row = item["row"]
-            score = item["score"]
-            notes = item["notes"]
-            intro = format_coincidence_badges(score, notes)
-            await callback.message.answer(
-                f"{intro}\n\n{post_text(row)}",
-                reply_markup=public_post_kb(row["id"], row["user_id"], row["post_type"])
-            )
-
     await callback.answer()
-
 
 @router.callback_query(F.data.startswith("coincidences:"))
 async def coincidences_for_post(callback: CallbackQuery):

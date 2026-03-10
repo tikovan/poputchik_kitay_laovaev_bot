@@ -304,41 +304,41 @@ WELCOME_TEXT = (
 ONBOARDING_TEXTS = {
     1: (
         "👋 <b>Добро пожаловать в Попутчик Китай</b>\n\n"
-        "Это сервис для передачи посылок через попутчиков между странами.\n\n"
-        "📦 Нужно отправить посылку\n"
-        "✈️ Летите и можете взять посылку\n\n"
-        "Бот помогает <b>соединять пользователей с подходящими маршрутами.</b>\n\n"
+        "Сервис для передачи посылок с попутчиками.\n\n"
+        "📦 Нужно отправить посылку?\n"
+        "✈️ Летите и готовы помочь другим людям?\n\n"
+        "Платформа соединяет пользователей\n"
+        "по подходящим маршрутам.\n\n"
         "Вы создаете объявление —\n"
-        "система начинает <b>искать совпадения автоматически.</b>"
+        "система <b>автоматически найдет и уведомит вас о совпадении.</b>"
     ),
+
     2: (
         "📱 <b>Раньше попутчиков искали вручную</b>\n\n"
-        "Люди писали сообщения:\n\n"
-        "• в WeChat-группы\n"
-        "• в Telegram-чаты\n"
-        "• знакомым и друзьям\n\n"
-        "Это занимало много времени\n"
+        "Люди рассылали сообщения по\n\n"
+        "WeChat-группам, знакомым и друзьям\n"
+        "Это занимало много времени и терпения\n"
         "и часто <b>не давало результата.</b>\n\n"
-        "Попутчик Китай делает это <b>намного проще.</b>\n\n"
-        "Теперь система <b>сама находит пользователей с подходящими маршрутами.</b>"
+        "Попутчик Китай делает поиск <b>невероятно простым.</b>\n\n"
+        "Система <b>сама находит пользователей с подходящими маршрутами пока вы пьете свой лате.</b>"
     ),
+
     3: (
         "📢 <b>Все объявления публикуются в канале</b>\n\n"
         "Каждая поездка и каждая посылка\n"
         "автоматически публикуются в нашем канале.\n\n"
         "Это основной поток объявлений сервиса.\n\n"
-        "Подписка на канал позволяет:\n\n"
-        "🔔 видеть новые маршруты сразу\n"
+        "ОБЯЗАТЕЛЬНО ПОДПИШИСЬ на канал,чтобы:\n\n"
+        "🔔 моментально видеть новые маршруты\n"
         "⚡ писать пользователям первым\n"
         "📦 быстрее находить попутчиков\n\n"
-        "Если вы не подписаны —\n"
-        "можно пропустить подходящие маршруты.\n\n"
         "👉 <b>Канал:</b> t.me/china_poputchik"
     ),
+
     4: (
         "🌍 <b>Примеры маршрутов пользователей</b>\n\n"
         "✈️ Китай, Шэньчжэнь → Россия, Москва\n"
-        "📦 небольшие посылки\n\n"
+        "📦 образцы тканей\n\n"
         "✈️ Китай, Гуанчжоу → Казахстан, Алматы\n"
         "📦 до 5 кг\n\n"
         "✈️ Китай, Шанхай → ОАЭ, Дубай\n"
@@ -347,30 +347,40 @@ ONBOARDING_TEXTS = {
         "📦 личные вещи\n\n"
         "Каждый день появляются <b>новые объявления.</b>"
     ),
+
     5: (
         "🚀 <b>Что умеет Попутчик Китай</b>\n\n"
-        "🤖 <b>Автоматический поиск совпадений</b>\n"
-        "Бот анализирует маршруты и соединяет пользователей.\n\n"
+        "🤖 <b>Автоматический умный поиск совпадений</b>\n"
+        "Система 24/7 анализирует маршруты и соединяет пользователей.\n\n"
         "⭐ <b>Отзывы и рейтинг</b>\n"
         "Можно видеть репутацию пользователей.\n\n"
         "🤝 <b>Система сделок</b>\n"
         "Позволяет фиксировать договоренности внутри бота.\n\n"
         "🔔 <b>Уведомления</b>\n"
-        "Бот сообщает, когда появляется подходящий маршрут."
+        "Бот сообщает, когда появляется подходящее Вам обьявление."
     ),
+
     6: (
         "📱 <b>Навигация в боте</b>\n\n"
-        "В Telegram есть два типа кнопок, через которые работает сервис.\n\n"
+        "В Боте есть два типа кнопок с помощью которых происходит управление.\n\n"
         "⬜ <b>Кнопка с четырьмя кружками</b>\n"
         "<i>(в правом углу строки ввода сообщения)</i>\n\n"
-        "Это <b>быстрое меню действий</b>.\n\n"
-        "Здесь находится основной функционал сервиса,\n"
-        "которым вы будете пользоваться чаще всего.\n\n"
-        "Через эти кнопки можно быстро:\n\n"
-        "✈️ добавить поездку\n"
-        "📦 добавить посылку\n"
-        "🔎 найти совпадения\n"
-        "📋 открыть свои объявления\n\n"
+        "Это <b>интерактивное меню действий</b>.\n\n"
+        "Здесь находится основной функционал сервиса.\n"
+        "Именно им Вы будете пользоваться чаще всего.\n\n"
+        "Через эти кнопки можно быстро управлять вкладками:\n\n"
+        "✈️ Взять посылку\n"
+        "📦 Отправить посылку\n"
+        "🔎 Найти совпадения\n"
+        "📋 Мои объявления\n"
+        "🤝 Мои сделки\n"
+        "🔔 Подписки\n"
+        "🆕 Новые объявления\n"
+        "🔥 Популярные маршруты\n"
+        "💰 Поднять объявление\n"
+        "📊 Статистика\n"
+        "🚩 Пожаловаться\n"
+        "ℹ️ Помощь\n\n"
         "🟦 <b>Кнопка Menu</b>\n"
         "<i>(в левом углу строки ввода сообщения)</i>\n\n"
         "Открывает основные команды бота:\n\n"
@@ -516,16 +526,21 @@ def connect_db():
     return conn
 
 
-def admin_complaint_actions_kb(complaint_id: int, post_id: int, owner_user_id: int):
-    return InlineKeyboardMarkup(inline_keyboard=[
+def admin_complaint_actions_kb(complaint_id: int, post_id: int, owner_user_id: Optional[int]):
+    rows = [
         [InlineKeyboardButton(text="📄 Открыть объявление", callback_data=f"admincomplaint_openpost:{post_id}")],
-        [
-            InlineKeyboardButton(text="❌ Скрыть объявление", callback_data=f"admincomplaint_hidepost:{post_id}"),
-            InlineKeyboardButton(text="🚫 Бан владельца", callback_data=f"admincomplaint_banuser:{owner_user_id}")
-        ],
+        [InlineKeyboardButton(text="❌ Скрыть объявление", callback_data=f"admincomplaint_hidepost:{post_id}")],
         [InlineKeyboardButton(text="✅ Жалоба обработана", callback_data=f"admincomplaint_done:{complaint_id}")]
-    ])
+    ]
 
+    if owner_user_id:
+        rows.insert(
+            2,
+            [InlineKeyboardButton(text="🚫 Бан владельца", callback_data=f"admincomplaint_banuser:{owner_user_id}")]
+        )
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+    
 
 def ensure_column(conn: sqlite3.Connection, table: str, column: str, ddl: str):
     cols = [r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
@@ -1247,14 +1262,19 @@ def main_menu(user_id: Optional[int] = None):
     keyboard = [
         [KeyboardButton(text="✈️ Взять посылку"), KeyboardButton(text="📦 Отправить посылку")],
         [KeyboardButton(text="🔎 Найти совпадения"), KeyboardButton(text="📋 Мои объявления")],
-        [KeyboardButton(text="🤝 Мои сделки"), KeyboardButton(text="🔥 Популярные маршруты")],
-        [KeyboardButton(text="🆕 Новые объявления"), KeyboardButton(text="🔔 Подписки")],
-        [KeyboardButton(text="📊 Статистика"), KeyboardButton(text="💰 Поднять объявление")],
-        [KeyboardButton(text="🆘 Жалоба"), KeyboardButton(text="ℹ️ Помощь")],
+        [KeyboardButton(text="🤝 Мои сделки"), KeyboardButton(text="🔔 Подписки")],
+        [KeyboardButton(text="🆕 Новые объявления"), KeyboardButton(text="🔥 Популярные маршруты")],
+        [KeyboardButton(text="💰 Поднять объявление"), KeyboardButton(text="📊 Статистика")],
+        [KeyboardButton(text="🚩 Пожаловаться"), KeyboardButton(text="ℹ️ Помощь")],
     ]
+
     if user_id is not None and is_admin(user_id):
         keyboard.append([KeyboardButton(text="👨‍💼 Админка")])
-    return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
+
+    return ReplyKeyboardMarkup(
+        keyboard=keyboard,
+        resize_keyboard=True
+    )
 
 
 class CreatePost(StatesGroup):
@@ -2610,20 +2630,8 @@ async def my_deals_menu(message: Message):
     await message.answer("Ваши сделки:", reply_markup=deal_list_kb(deals))
 
 
-@router.message(F.text == "🆘 Жалоба")
+@router.message(F.text == "🚩 Пожаловаться")
 async def complaint_start(message: Message, state: FSMContext):
-    await state.clear()
-    await state.set_state(ComplaintFlow.post_id)
-    await message.answer(
-    "🆘 <b>Отправить жалобу</b>\n\n"
-    "Если пользователь:\n"
-    "• не отвечает\n"
-    "• пытается обмануть\n"
-    "• нарушает правила сервиса\n\n"
-    "Вы можете отправить жалобу.\n\n"
-    "Введите <b>ID объявления</b>, на которое хотите пожаловаться.\n"
-    "ID указан в каждом объявлении."
-)
     
 
 @router.message(F.text == "ℹ️ Помощь")
@@ -2636,7 +2644,7 @@ async def help_handler(message: Message):
         "📋 <b>Мои объявления</b> — управление своими объявлениями.\n"
         "🤝 <b>Мои сделки</b> — ваши активные и завершенные сделки.\n"
         "🔔 <b>Подписки</b> — уведомления по нужным маршрутам.\n"
-        "🆘 <b>Жалоба</b> — пожаловаться на объявление."
+        "🚩 <b>Пожаловаться</b> — сообщить о проблеме с объявлением или пользователем."
     )
     await message.answer(text, reply_markup=main_menu(message.from_user.id))
 
@@ -3957,83 +3965,116 @@ async def admin_complaints_handler(callback: CallbackQuery):
 
 @router.callback_query(F.data.startswith("admincomplaint_openpost:"))
 async def admin_complaint_open_post(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("Нет доступа", show_alert=True)
-        return
+    try:
+        if not is_admin(callback.from_user.id):
+            await callback.answer("Нет доступа", show_alert=True)
+            return
 
-    post_id = int(callback.data.split(":")[1])
-    row = get_post(post_id)
+        post_id = int(callback.data.split(":")[1])
+        row = get_post(post_id)
 
-    if not row:
-        await callback.answer("Объявление не найдено", show_alert=True)
-        return
+        if not row:
+            await callback.answer("Объявление не найдено", show_alert=True)
+            return
 
-    await callback.message.answer(
-        post_text(row),
-        reply_markup=admin_post_actions_kb(post_id)
-    )
-    await callback.answer()
+        await callback.message.answer(
+            post_text(row),
+            reply_markup=admin_post_actions_kb(post_id)
+        )
+        await callback.answer()
+
+    except Exception as e:
+        print(f"ADMIN COMPLAINT OPEN POST ERROR: {e}")
+        await callback.answer("Ошибка при открытии объявления", show_alert=True)
 
 
 @router.callback_query(F.data.startswith("admincomplaint_hidepost:"))
 async def admin_complaint_hide_post(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("Нет доступа", show_alert=True)
-        return
+    try:
+        if not is_admin(callback.from_user.id):
+            await callback.answer("Нет доступа", show_alert=True)
+            return
 
-    post_id = int(callback.data.split(":")[1])
-    row = get_post(post_id)
+        post_id = int(callback.data.split(":")[1])
+        row = get_post(post_id)
 
-    if not row:
-        await callback.answer("Объявление не найдено", show_alert=True)
-        return
+        if not row:
+            await callback.answer("Объявление не найдено", show_alert=True)
+            return
 
-    await remove_post_from_channel(callback.bot, row)
+        await remove_post_from_channel(callback.bot, row)
 
-    with closing(connect_db()) as conn, conn:
-        conn.execute(
-            "UPDATE posts SET status=?, updated_at=? WHERE id=?",
-            (STATUS_INACTIVE, now_ts(), post_id)
-        )
+        with closing(connect_db()) as conn, conn:
+            conn.execute(
+                "UPDATE posts SET status=?, updated_at=? WHERE id=?",
+                (STATUS_INACTIVE, now_ts(), post_id)
+            )
 
-    await callback.message.answer(f"❌ Объявление {post_id} скрыто.")
-    await callback.answer()
+        try:
+            await callback.bot.send_message(
+                row["user_id"],
+                f"⚠️ Ваше объявление ID {post_id} скрыто администратором."
+            )
+        except Exception:
+            pass
+
+        await callback.message.answer(f"❌ Объявление {post_id} скрыто.")
+        await callback.answer()
+
+    except Exception as e:
+        print(f"ADMIN COMPLAINT HIDE POST ERROR: {e}")
+        await callback.answer("Ошибка при скрытии объявления", show_alert=True)
 
 
 @router.callback_query(F.data.startswith("admincomplaint_banuser:"))
 async def admin_complaint_ban_user(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("Нет доступа", show_alert=True)
-        return
-
-    user_id = int(callback.data.split(":")[1])
-    ban_user(user_id)
-
     try:
-        await callback.bot.send_message(
-            user_id,
-            "⛔ Ваш аккаунт ограничен администратором."
-        )
-    except Exception:
-        pass
+        if not is_admin(callback.from_user.id):
+            await callback.answer("Нет доступа", show_alert=True)
+            return
 
-    await callback.message.answer(f"🚫 Пользователь {user_id} забанен.")
-    await callback.answer()
+        raw_user_id = callback.data.split(":")[1]
+        if not raw_user_id.isdigit():
+            await callback.answer("Некорректный user_id", show_alert=True)
+            return
+
+        user_id = int(raw_user_id)
+        ban_user(user_id)
+
+        try:
+            await callback.bot.send_message(
+                user_id,
+                "⛔ Ваш аккаунт ограничен администратором."
+            )
+        except Exception:
+            pass
+
+        await callback.message.answer(f"🚫 Пользователь {user_id} забанен.")
+        await callback.answer()
+
+    except Exception as e:
+        print(f"ADMIN COMPLAINT BAN USER ERROR: {e}")
+        await callback.answer("Ошибка при бане пользователя", show_alert=True)
 
 
 @router.callback_query(F.data.startswith("admincomplaint_done:"))
 async def admin_complaint_done(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("Нет доступа", show_alert=True)
-        return
+    try:
+        if not is_admin(callback.from_user.id):
+            await callback.answer("Нет доступа", show_alert=True)
+            return
 
-    complaint_id = int(callback.data.split(":")[1])
+        complaint_id = int(callback.data.split(":")[1])
 
-    with closing(connect_db()) as conn, conn:
-        conn.execute("DELETE FROM complaints WHERE id=?", (complaint_id,))
+        with closing(connect_db()) as conn, conn:
+            conn.execute("DELETE FROM complaints WHERE id=?", (complaint_id,))
 
-    await callback.message.answer(f"✅ Жалоба #{complaint_id} отмечена как обработанная.")
-    await callback.answer()
+        await callback.message.answer(f"✅ Жалоба #{complaint_id} обработана.")
+        await callback.answer()
+
+    except Exception as e:
+        print(f"ADMIN COMPLAINT DONE ERROR: {e}")
+        await callback.answer("Ошибка при обработке жалобы", show_alert=True)
 
 
 @router.callback_query(F.data == "admin:bump_orders")

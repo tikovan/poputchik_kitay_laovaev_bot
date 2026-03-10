@@ -533,7 +533,7 @@ def init_db():
             last_action_at INTEGER DEFAULT 0,
             is_banned INTEGER DEFAULT 0,
             is_verified INTEGER DEFAULT 0,
-            dispute_no_response_count INTEGER DEFAULT 0
+            dispute_no_response_count INTEGER DEFAULT 0，
             onboarding_completed INTEGER DEFAULT 0
         );
 

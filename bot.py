@@ -2076,7 +2076,16 @@ async def my_deals_menu(message: Message):
 async def complaint_start(message: Message, state: FSMContext):
     await state.clear()
     await state.set_state(ComplaintFlow.post_id)
-    await message.answer("Введите ID объявления, на которое хотите пожаловаться.")
+   await message.answer(
+    "🆘 <b>Отправить жалобу</b>\n\n"
+    "Если пользователь:\n"
+    "• не отвечает\n"
+    "• пытается обмануть\n"
+    "• нарушает правила сервиса\n\n"
+    "Вы можете отправить жалобу.\n\n"
+    "Введите <b>ID объявления</b>, на которое хотите пожаловаться.\n"
+    "ID указан в каждом объявлении."
+)
     
 
 @router.message(F.text == "ℹ️ Помощь")

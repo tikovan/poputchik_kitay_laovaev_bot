@@ -2063,16 +2063,35 @@ async def add_parcel(message: Message, state: FSMContext):
 
 @router.message(F.text == "🤝 Мои сделки")
 async def my_deals_menu(message: Message):
-    ...
+    upsert_user(message)
+    await message.answer(MENU_TEXTS["deals"], reply_markup=main_menu(message.from_user.id))
+    deals = list_user_deals(message.from_user.id)
+    if not deals:
+        await message.answer("У вас пока нет сделок.", reply_markup=main_menu(message.from_user.id))
+        return
+    await message.answer("Ваши сделки:", reply_markup=deal_list_kb(deals))
+
 
 @router.message(F.text == "🆘 Жалоба")
 async def complaint_start(message: Message, state: FSMContext):
-    ...
-
+    await state.clear()
+    await state.set_state(ComplaintFlow.post_id)
+    await message.answer("Введите ID объявления, на которое хотите пожаловаться.")
+    
 
 @router.message(F.text == "ℹ️ Помощь")
 async def help_handler(message: Message):
-    ...
+    text = (
+        "<b>Помощь</b>\n\n"
+        "✈️ <b>Взять посылку</b> — если вы летите и можете что-то передать.\n"
+        "📦 <b>Отправить посылку</b> — если вам нужно что-то передать.\n"
+        "🔎 <b>Найти совпадения</b> — быстрый поиск подходящих объявлений.\n"
+        "📋 <b>Мои объявления</b> — управление своими объявлениями.\n"
+        "🤝 <b>Мои сделки</b> — ваши активные и завершенные сделки.\n"
+        "🔔 <b>Подписки</b> — уведомления по нужным маршрутам.\n"
+        "🆘 <b>Жалоба</b> — пожаловаться на объявление."
+    )
+    await message.answer(text, reply_markup=main_menu(message.from_user.id))
     
 
 @router.callback_query(F.data == "create_back")
@@ -2717,6 +2736,34 @@ async def find_to(callback: CallbackQuery, state: FSMContext):
         "weight_kg": None,
         "user_id": callback.from_user.id,
     }
+
+    coincidences = get_coincidences(
+        post_type=source_post_type,
+        from_country=data["from_country"],
+        to_country=country,
+        exclude_user_id=callback.from_user.id,
+        source_row=pseudo_source,
+        limit=10
+    )
+
+    await state.clear()
+
+    if not coincidences:
+        await callback.message.answer("Совпадений пока нет.")
+    else:
+        await callback.message.answer(f"Найдено совпадений: {len(coincidences)}")
+        for item in coincidences:
+            row = item["row"]
+            score = item["score"]
+            notes = item["notes"]
+            intro = format_coincidence_badges(score, notes)
+            await callback.message.answer(
+                f"{intro}\n\n{post_text(row)}",
+                reply_markup=public_post_kb(row["id"], row["user_id"], row["post_type"])
+            )
+
+    await callback.answer()
+
 
 @router.callback_query(F.data.startswith("viewphoto:"))
 async def view_photo_handler(callback: CallbackQuery):

@@ -1920,6 +1920,7 @@ async def render_create_step(target_step: str, target_message: Message, state: F
         )
         return
         
+
 @router.inline_query()
 async def inline_search_handler(inline_query: InlineQuery):
     query = (inline_query.query or "").strip()

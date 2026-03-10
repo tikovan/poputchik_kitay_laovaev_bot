@@ -2383,7 +2383,9 @@ async def pick_weight(callback: CallbackQuery, state: FSMContext):
         reply_markup=back_only_kb()
     )
     await callback.answer()
-   async def main():
+
+
+async def main():
     if not BOT_TOKEN:
         raise RuntimeError("Set BOT_TOKEN env var")
 

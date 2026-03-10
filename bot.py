@@ -533,7 +533,7 @@ def init_db():
             last_action_at INTEGER DEFAULT 0,
             is_banned INTEGER DEFAULT 0,
             is_verified INTEGER DEFAULT 0,
-            dispute_no_response_count INTEGER DEFAULT 0，
+            dispute_no_response_count INTEGER DEFAULT 0,
             onboarding_completed INTEGER DEFAULT 0
         );
 
@@ -679,6 +679,23 @@ def upsert_user(message_or_callback):
                 username=excluded.username,
                 full_name=excluded.full_name
         """, (user.id, user.username, (user.full_name or "")[:200], created_at))
+
+
+def is_onboarding_completed(user_id: int) -> bool:
+    with closing(connect_db()) as conn:
+        row = conn.execute(
+            "SELECT onboarding_completed FROM users WHERE user_id=?",
+            (user_id,)
+        ).fetchone()
+        return bool(row and row["onboarding_completed"])
+
+
+def set_onboarding_completed(user_id: int):
+    with closing(connect_db()) as conn, conn:
+        conn.execute(
+            "UPDATE users SET onboarding_completed=1 WHERE user_id=?",
+            (user_id,)
+        )
 
 
 def is_admin(user_id: int) -> bool:
@@ -971,10 +988,15 @@ async def show_onboarding_screen(target, screen: int):
     text = ONBOARDING_TEXTS[screen]
     kb = onboarding_finish_kb() if screen == 6 else onboarding_next_kb(screen)
 
-    if hasattr(target, "edit_text"):
-        await target.edit_text(text, reply_markup=kb)
-    else:
-        await target.answer(text, reply_markup=kb)
+    try:
+        if hasattr(target, "edit_text"):
+            await target.edit_text(text, reply_markup=kb)
+        else:
+            await target.answer(text, reply_markup=kb)
+    except Exception as e:
+        print(f"SHOW_ONBOARDING_SCREEN ERROR: {e}")
+        if hasattr(target, "answer"):
+            await target.answer(text, reply_markup=kb)
 
 
 def chunk_buttons(items: List[tuple], prefix: str, per_row: int = 2):
@@ -2359,16 +2381,14 @@ async def onboarding_next_handler(callback: CallbackQuery, state: FSMContext):
     try:
         current = int(callback.data.split(":")[1])
     except Exception:
-        await callback.answer()
+        await callback.answer("Ошибка", show_alert=True)
         return
 
     next_screen = current + 1
     if next_screen > 6:
         next_screen = 6
-    if next_screen == 6:
-       set_onboarding_completed(callback.from_user.id)
-        
-       state_map = {
+
+    state_map = {
         1: OnboardingFlow.screen_1,
         2: OnboardingFlow.screen_2,
         3: OnboardingFlow.screen_3,
@@ -2377,10 +2397,12 @@ async def onboarding_next_handler(callback: CallbackQuery, state: FSMContext):
         6: OnboardingFlow.screen_6,
     }
 
+    if next_screen == 6:
+        set_onboarding_completed(callback.from_user.id)
+
     await state.set_state(state_map[next_screen])
     await show_onboarding_screen(callback.message, next_screen)
     await callback.answer()
-
 
 @router.callback_query(F.data.startswith("adminapprove:"))
 async def admin_approve_post(callback: CallbackQuery, bot: Bot):
@@ -2497,14 +2519,32 @@ async def onboarding_action_handler(callback: CallbackQuery, state: FSMContext):
     await state.clear()
 
     if action == "trip":
-        await callback.message.answer("Открываю создание объявления попутчика.", reply_markup=main_menu(callback.from_user.id))
-        await begin_create(callback.message, state, TYPE_TRIP)
+        await state.update_data(post_type=TYPE_TRIP)
+        await state.set_state(CreatePost.from_country)
+
+        await callback.message.answer(
+            MENU_TEXTS["trip"],
+            reply_markup=main_menu(callback.from_user.id)
+        )
+        await callback.message.answer(
+            form_text(TYPE_TRIP, 1, "Выберите страну отправления"),
+            reply_markup=countries_select_kb("from_country_pick", include_back=False)
+        )
         await callback.answer()
         return
 
     if action == "parcel":
-        await callback.message.answer("Открываю создание объявления посылки.", reply_markup=main_menu(callback.from_user.id))
-        await begin_create(callback.message, state, TYPE_PARCEL)
+        await state.update_data(post_type=TYPE_PARCEL)
+        await state.set_state(CreatePost.from_country)
+
+        await callback.message.answer(
+            MENU_TEXTS["parcel"],
+            reply_markup=main_menu(callback.from_user.id)
+        )
+        await callback.message.answer(
+            form_text(TYPE_PARCEL, 1, "Выберите страну отправления"),
+            reply_markup=countries_select_kb("from_country_pick", include_back=False)
+        )
         await callback.answer()
         return
 
@@ -2516,7 +2556,10 @@ async def onboarding_action_handler(callback: CallbackQuery, state: FSMContext):
                 reply_markup=main_menu(callback.from_user.id)
             )
         else:
-            await callback.message.answer("🆕 Последние объявления:", reply_markup=main_menu(callback.from_user.id))
+            await callback.message.answer(
+                "🆕 Последние объявления:",
+                reply_markup=main_menu(callback.from_user.id)
+            )
             for row in rows:
                 await callback.message.answer(
                     f"{post_text(row)}\n\n<b>Добавлено:</b> {format_age(row['created_at'])}",
@@ -2525,6 +2568,8 @@ async def onboarding_action_handler(callback: CallbackQuery, state: FSMContext):
 
         await callback.answer()
         return
+
+    await callback.answer("Неизвестное действие", show_alert=True)
         
 
 @router.message(StateFilter("*"), Command("new_trip"))
@@ -2731,8 +2776,6 @@ async def from_city_manual_input(message: Message, state: FSMContext):
         form_text(post_type, 3, "Выберите страну назначения"),
         reply_markup=countries_select_kb("to_country_pick", include_back=True)
     )
-
-@router.message(F.text == "👨‍💼 Админка")
 
 
 @router.callback_query(F.data.startswith("to_country_pick:"))

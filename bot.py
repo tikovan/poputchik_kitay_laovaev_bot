@@ -848,7 +848,7 @@ def post_text(row, for_channel: bool = False) -> str:
     lines.append(f"<b>ID объявления:</b> {row['id']}")
 
     if for_channel:
-    lines.append(
+       lines.append(
         "Откройте объявление и напишите пользователю.\n"
         "Возможно, ваша посылка уже почти в пути ✈️📦."
     )

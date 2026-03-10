@@ -3947,7 +3947,6 @@ async def contact_owner(callback: CallbackQuery, state: FSMContext):
         "• WeChat второго пользователя\n"
         "• историю аккаунта\n"
         "• связан ли человек с Китаем\n\n"
-
     )
 
     await callback.answer()

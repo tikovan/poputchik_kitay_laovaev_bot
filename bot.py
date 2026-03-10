@@ -2841,46 +2841,7 @@ async def delete_post(callback: CallbackQuery):
 
     await callback.message.answer("🗑 Объявление удалено.")
     await callback.answer()
-
-
-@router.message(DisputeFlow.reason)
-async def dispute_reason_input(message: Message, state: FSMContext):
-    data = await state.get_data()
-    deal_id = data["deal_id"]
-    deal = get_deal(deal_id)
-
-    if not deal:
-        await message.answer("Сделка не найдена.", reply_markup=main_menu(message.from_user.id))
-        await state.clear()
-        return
-
-    reason = (message.text or "").strip()
-    if len(reason) < 3:
-        await message.answer("Опишите причину подробнее.")
-        return
-
-    against_user_id = deal["requester_user_id"] if message.from_user.id == deal["owner_user_id"] else deal["owner_user_id"]
-    dispute_id = create_dispute(deal_id, message.from_user.id, against_user_id, reason)
-
-    with closing(connect_db()) as conn, conn:
-        conn.execute("UPDATE deals SET status=?, updated_at=? WHERE id=?", (DEAL_DISPUTE_WAITING, now_ts(), deal_id))
-
-    try:
-        await message.bot.send_message(
-            against_user_id,
-            f"⚠️ По сделке #{deal_id} открыт спор.\n\n"
-            f"Причина: {html.escape(reason)}\n\n"
-            "Ответьте администратору или второй стороне как можно скорее."
-        )
-    except Exception:
-        pass
-
-    await message.answer(
-        f"✅ Спор по сделке #{deal_id} открыт.",
-        reply_markup=main_menu(message.from_user.id)
-    )
-    await state.clear()
-
+    
 
 @router.callback_query(F.data.startswith("deal_dispute_open:"))
 async def deal_dispute_open_handler(callback: CallbackQuery, state: FSMContext):

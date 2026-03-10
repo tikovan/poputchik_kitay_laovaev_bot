@@ -3290,20 +3290,6 @@ async def sub_type(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("mydeal:"))
-async def open_my_deal(callback: CallbackQuery):
-    deal_id = int(callback.data.split(":")[1])
-    deal = get_deal(deal_id)
-
-    if not deal:
-        await callback.answer("Сделка не найдена", show_alert=True)
-        return
-
-    if callback.from_user.id not in (deal["owner_user_id"], deal["requester_user_id"]):
-        await callback.answer("Нет доступа", show_alert=True)
-        return
-
-
 @router.callback_query(F.data.startswith("subfrom:"))
 async def sub_from(callback: CallbackQuery, state: FSMContext):
     country = callback.data.split(":", 1)[1]

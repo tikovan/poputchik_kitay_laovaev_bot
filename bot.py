@@ -3358,30 +3358,6 @@ async def delete_post(callback: CallbackQuery):
     await callback.answer()
     
 
-    if not deal:
-        await callback.answer("Сделка не найдена", show_alert=True)
-        return
-
-    if callback.from_user.id not in (deal["owner_user_id"], deal["requester_user_id"]):
-        await callback.answer("Нет доступа", show_alert=True)
-        return
-
-    existing = get_open_dispute_by_deal(deal_id)
-    if existing:
-        await callback.answer("По этой сделке уже открыт спор", show_alert=True)
-        return
-
-    await state.clear()
-    await state.set_state(DisputeFlow.reason)
-    await state.update_data(deal_id=deal_id)
-
-    await callback.message.answer(
-        "Опишите причину спора.\n"
-        "Например: пользователь не вышел на связь, посылка не доставлена, обман."
-    )
-    await callback.answer()
-
-
 @router.callback_query(F.data.startswith("deactivate:"))
 async def deactivate_post(callback: CallbackQuery):
     post_id = int(callback.data.split(":")[1])

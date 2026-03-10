@@ -2061,6 +2061,20 @@ async def add_parcel(message: Message, state: FSMContext):
     await begin_create(message, state, TYPE_PARCEL)
 
 
+@router.message(F.text == "🤝 Мои сделки")
+async def my_deals_menu(message: Message):
+    ...
+
+@router.message(F.text == "🆘 Жалоба")
+async def complaint_start(message: Message, state: FSMContext):
+    ...
+
+
+@router.message(F.text == "🆘 Жалоба")
+async def complaint_start(message: Message, state: FSMContext):
+    ...
+    
+
 @router.callback_query(F.data == "create_back")
 async def create_back_handler(callback: CallbackQuery, state: FSMContext):
     current_state = await state.get_state()
@@ -2704,6 +2718,21 @@ async def find_to(callback: CallbackQuery, state: FSMContext):
         "user_id": callback.from_user.id,
     }
 
+@router.callback_query(F.data.startswith("viewphoto:"))
+async def view_photo_handler(callback: CallbackQuery):
+    post_id = int(callback.data.split(":")[1])
+    row = get_post(post_id)
+
+    if not row or not row["photo_file_id"]:
+        await callback.answer("Фото не найдено", show_alert=True)
+        return
+
+    await callback.message.answer_photo(
+        photo=row["photo_file_id"],
+        caption=f"Фото посылки для объявления ID {post_id}"
+    )
+    await callback.answer()
+
     coincidences = get_coincidences(
         post_type=source_post_type,
         from_country=data["from_country"],
@@ -2909,6 +2938,31 @@ async def sub_list(callback: CallbackQuery):
             "Ваши подписки. Нажмите на нужную, чтобы удалить:",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=rows)
         )
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("user_reviews:"))
+async def user_reviews_handler(callback: CallbackQuery):
+    user_id = int(callback.data.split(":")[1])
+    reviews = get_user_reviews(user_id, limit=10)
+
+    if not reviews:
+        await callback.answer("Отзывов пока нет", show_alert=True)
+        return
+
+    parts = ["⭐ <b>Отзывы о пользователе</b>\n"]
+    for r in reviews:
+        author = r["full_name"] or r["username"] or "Пользователь"
+        text = r["text"] or "Без текста"
+        parts.append(
+            f"\n<b>{html.escape(author)}</b> — {'⭐' * int(r['rating'])}\n"
+            f"{html.escape(text)}"
+        )
+
+    text = "\n".join(parts)
+    if len(text) > 4000:
+        text = text[:3900] + "\n\n..."
+
+    await callback.message.answer(text)
     await callback.answer()
 
 

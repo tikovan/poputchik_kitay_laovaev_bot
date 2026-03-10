@@ -224,7 +224,7 @@ MAIN_MENU_TEXTS = {
     "🔔 Подписки",
     "📊 Статистика",
     "💰 Поднять объявление",
-    "🆘 Жалоба",
+    "🚩 Пожаловаться",
     "ℹ️ Помощь",
     "👨‍💼 Админка",
 }
@@ -2632,6 +2632,13 @@ async def my_deals_menu(message: Message):
 
 @router.message(F.text == "🚩 Пожаловаться")
 async def complaint_start(message: Message, state: FSMContext):
+    await state.clear()
+    await state.set_state(ComplaintFlow.post_id)
+    await message.answer(
+        "🚩 <b>Пожаловаться</b>\n\n"
+        "Введите <b>ID объявления</b>, на которое хотите пожаловаться.\n\n"
+        "ID указан внизу каждого объявления."
+    )
     
 
 @router.message(F.text == "ℹ️ Помощь")

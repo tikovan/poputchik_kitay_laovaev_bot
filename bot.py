@@ -2935,6 +2935,64 @@ async def recent_posts_handler(message: Message):
         )
 
 
+@router.message(ComplaintFlow.post_id)
+async def complaint_post_id_input(message: Message, state: FSMContext):
+    text = (message.text or "").strip()
+
+    if not text.isdigit():
+        await message.answer("Введите корректный ID объявления числом.")
+        return
+
+    post_id = int(text)
+    row = get_post(post_id)
+    if not row:
+        await message.answer("Объявление с таким ID не найдено.")
+        return
+
+    await state.update_data(post_id=post_id)
+    await state.set_state(ComplaintFlow.reason)
+    await message.answer(
+        f"🆘 <b>Жалоба на объявление {post_id}</b>\n\n"
+        "Опишите причину жалобы.\n"
+        "Например: не отвечает, подозрение на обман, некорректное объявление."
+    )
+
+
+@router.message(ComplaintFlow.reason)
+async def complaint_reason_input(message: Message, state: FSMContext):
+    reason = (message.text or "").strip()
+    if len(reason) < 3:
+        await message.answer("Опишите причину жалобы чуть подробнее.")
+        return
+
+    data = await state.get_data()
+    post_id = data["post_id"]
+
+    with closing(connect_db()) as conn, conn:
+        conn.execute(
+            "INSERT INTO complaints (post_id, from_user_id, reason, created_at) VALUES (?, ?, ?, ?)",
+            (post_id, message.from_user.id, reason[:1000], now_ts())
+        )
+
+    await state.clear()
+    await message.answer(
+        "✅ Жалоба отправлена администратору.",
+        reply_markup=main_menu(message.from_user.id)
+    )
+
+    for admin_id in ADMIN_IDS:
+        try:
+            await message.bot.send_message(
+                admin_id,
+                f"🆘 Новая жалоба\n\n"
+                f"Объявление ID: <b>{post_id}</b>\n"
+                f"От пользователя: <b>{message.from_user.id}</b>\n\n"
+                f"Причина:\n{html.escape(reason[:1000])}"
+            )
+        except Exception:
+            pass
+
+
 @router.message(F.text == "📊 Статистика")
 async def stats_handler(message: Message):
     await message.answer(MENU_TEXTS["stats"], reply_markup=main_menu(message.from_user.id))

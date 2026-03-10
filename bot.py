@@ -919,7 +919,6 @@ def post_text(row, for_channel: bool = False) -> str:
 
     return "\n".join(lines)
 
-
 def chunk_buttons(items: List[tuple], prefix: str, per_row: int = 2):
     rows = []
     row = []
@@ -1457,7 +1456,6 @@ def reserve_coincidence_notification(post_a_id: int, post_b_id: int) -> bool:
         """, (a, b, now_ts()))
         return cur.rowcount > 0
 
-
 def calculate_coincidence_score(source_row, candidate_row: sqlite3.Row) -> Tuple[int, List[str]]:
     score = 40
     notes: List[str] = []
@@ -1491,10 +1489,8 @@ def calculate_coincidence_score(source_row, candidate_row: sqlite3.Row) -> Tuple
 
     source_date = extract_travel_end_datetime(source_row["travel_date"])
     candidate_date = extract_travel_end_datetime(candidate_row["travel_date"])
-
     if source_date and candidate_date:
         days_diff = abs((source_date.date() - candidate_date.date()).days)
-
         if days_diff <= 2:
             score += 18
             notes.append("Даты очень близки")
@@ -1513,7 +1509,6 @@ def calculate_coincidence_score(source_row, candidate_row: sqlite3.Row) -> Tuple
 
     trip_weight = None
     parcel_weight = None
-
     if source_row["post_type"] == TYPE_TRIP:
         trip_weight = source_weight
         parcel_weight = candidate_weight
@@ -1527,7 +1522,6 @@ def calculate_coincidence_score(source_row, candidate_row: sqlite3.Row) -> Tuple
             notes.append("Вес подходит полностью")
         else:
             ratio = 0 if parcel_weight == 0 else trip_weight / parcel_weight
-
             if ratio >= 0.5:
                 score += 10
                 notes.append(f"Вес подходит частично: можно взять около {trip_weight:g} кг из {parcel_weight:g} кг")
@@ -1542,6 +1536,7 @@ def calculate_coincidence_score(source_row, candidate_row: sqlite3.Row) -> Tuple
         notes.append("Вес указан неточно")
 
     return score, notes
+
 
 def get_coincidences(
     post_type: str,
@@ -2383,37 +2378,3 @@ async def pick_weight(callback: CallbackQuery, state: FSMContext):
         reply_markup=back_only_kb()
     )
     await callback.answer()
-
-
-async def main():
-    if not BOT_TOKEN:
-        raise RuntimeError("Set BOT_TOKEN env var")
-
-    init_db()
-
-    bot = Bot(
-        BOT_TOKEN,
-        default=DefaultBotProperties(parse_mode=ParseMode.HTML)
-    )
-
-    await bot.set_my_commands([
-        BotCommand(command="start", description="Запустить бота"),
-        BotCommand(command="new_trip", description="Взять посылку"),
-        BotCommand(command="new_parcel", description="Отправить посылку"),
-        BotCommand(command="find", description="Найти совпадения"),
-        BotCommand(command="my", description="Мои объявления"),
-        BotCommand(command="admin", description="Админка"),
-    ])
-
-    dp = Dispatcher(storage=MemoryStorage())
-    dp.include_router(router)
-
-    asyncio.create_task(expire_old_posts(bot))
-    asyncio.create_task(global_coincidence_loop(bot))
-
-    await bot.delete_webhook(drop_pending_updates=True)
-    await dp.start_polling(bot)
-
-
-if __name__ == "__main__":
-    asyncio.run(main())

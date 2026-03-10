@@ -2383,3 +2383,32 @@ async def pick_weight(callback: CallbackQuery, state: FSMContext):
         reply_markup=back_only_kb()
     )
     await callback.answer()
+    async def main():
+    if not BOT_TOKEN:
+        raise RuntimeError("Set BOT_TOKEN env var")
+
+    init_db()
+
+    bot = Bot(BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+
+    await bot.set_my_commands([
+        BotCommand(command="start", description="Запустить бота"),
+        BotCommand(command="new_trip", description="Взять посылку"),
+        BotCommand(command="new_parcel", description="Отправить посылку"),
+        BotCommand(command="find", description="Найти совпадения"),
+        BotCommand(command="my", description="Мои объявления"),
+        BotCommand(command="admin", description="Админка"),
+    ])
+
+    dp = Dispatcher(storage=MemoryStorage())
+    dp.include_router(router)
+
+    asyncio.create_task(expire_old_posts(bot))
+    asyncio.create_task(global_coincidence_loop(bot))
+
+    await bot.delete_webhook(drop_pending_updates=True)
+    await dp.start_polling(bot)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

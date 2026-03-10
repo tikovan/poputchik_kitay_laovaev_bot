@@ -516,6 +516,17 @@ def connect_db():
     return conn
 
 
+def admin_complaint_actions_kb(complaint_id: int, post_id: int, owner_user_id: int):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📄 Открыть объявление", callback_data=f"admincomplaint_openpost:{post_id}")],
+        [
+            InlineKeyboardButton(text="❌ Скрыть объявление", callback_data=f"admincomplaint_hidepost:{post_id}"),
+            InlineKeyboardButton(text="🚫 Бан владельца", callback_data=f"admincomplaint_banuser:{owner_user_id}")
+        ],
+        [InlineKeyboardButton(text="✅ Жалоба обработана", callback_data=f"admincomplaint_done:{complaint_id}")]
+    ])
+
+
 def ensure_column(conn: sqlite3.Connection, table: str, column: str, ddl: str):
     cols = [r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
     if column not in cols:
@@ -3932,8 +3943,96 @@ async def admin_complaints_handler(callback: CallbackQuery):
             f"<b>Когда:</b> {format_age(c['created_at'])}\n\n"
             f"<b>Причина:</b>\n{html.escape(c['reason'])}"
         )
-        await callback.message.answer(text)
+        await callback.message.answer(
+    text,
+    reply_markup=admin_complaint_actions_kb(
+        c["id"],
+        c["post_id"],
+        c["post_owner_user_id"]
+    )
+)
 
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admincomplaint_openpost:"))
+async def admin_complaint_open_post(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    post_id = int(callback.data.split(":")[1])
+    row = get_post(post_id)
+
+    if not row:
+        await callback.answer("Объявление не найдено", show_alert=True)
+        return
+
+    await callback.message.answer(
+        post_text(row),
+        reply_markup=admin_post_actions_kb(post_id)
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admincomplaint_hidepost:"))
+async def admin_complaint_hide_post(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    post_id = int(callback.data.split(":")[1])
+    row = get_post(post_id)
+
+    if not row:
+        await callback.answer("Объявление не найдено", show_alert=True)
+        return
+
+    await remove_post_from_channel(callback.bot, row)
+
+    with closing(connect_db()) as conn, conn:
+        conn.execute(
+            "UPDATE posts SET status=?, updated_at=? WHERE id=?",
+            (STATUS_INACTIVE, now_ts(), post_id)
+        )
+
+    await callback.message.answer(f"❌ Объявление {post_id} скрыто.")
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admincomplaint_banuser:"))
+async def admin_complaint_ban_user(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    user_id = int(callback.data.split(":")[1])
+    ban_user(user_id)
+
+    try:
+        await callback.bot.send_message(
+            user_id,
+            "⛔ Ваш аккаунт ограничен администратором."
+        )
+    except Exception:
+        pass
+
+    await callback.message.answer(f"🚫 Пользователь {user_id} забанен.")
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admincomplaint_done:"))
+async def admin_complaint_done(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    complaint_id = int(callback.data.split(":")[1])
+
+    with closing(connect_db()) as conn, conn:
+        conn.execute("DELETE FROM complaints WHERE id=?", (complaint_id,))
+
+    await callback.message.answer(f"✅ Жалоба #{complaint_id} отмечена как обработанная.")
     await callback.answer()
 
 

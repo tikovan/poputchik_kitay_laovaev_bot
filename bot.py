@@ -3350,11 +3350,6 @@ async def delete_post(callback: CallbackQuery):
     await callback.answer()
     
 
-@router.callback_query(F.data.startswith("deal_dispute_open:"))
-async def deal_dispute_open_handler(callback: CallbackQuery, state: FSMContext):
-    deal_id = int(callback.data.split(":")[1])
-    deal = get_deal(deal_id)
-
     if not deal:
         await callback.answer("Сделка не найдена", show_alert=True)
         return

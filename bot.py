@@ -2076,7 +2076,7 @@ async def my_deals_menu(message: Message):
 async def complaint_start(message: Message, state: FSMContext):
     await state.clear()
     await state.set_state(ComplaintFlow.post_id)
-   await message.answer(
+    await message.answer(
     "🆘 <b>Отправить жалобу</b>\n\n"
     "Если пользователь:\n"
     "• не отвечает\n"

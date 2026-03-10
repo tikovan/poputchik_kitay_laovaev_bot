@@ -997,15 +997,22 @@ def public_post_kb(post_id: int, owner_id: int, post_type: Optional[str] = None)
 
 
 def channel_post_kb(post_id: int, post_type: Optional[str] = None):
-    row = get_post(post_id)
-    rows = [
-        [InlineKeyboardButton(text="✉️ Связаться с владельцем", url=bot_link(f"contact_{post_id}"))],
-        [InlineKeyboardButton(text="🤝 Открыть объявление", url=post_deeplink(post_id))]
-    ]
-    if row and row["photo_file_id"]:
-        rows.append([InlineKeyboardButton(text="🖼 Открыть в боте и посмотреть фото", url=post_deeplink(post_id))])
-    rows.append([InlineKeyboardButton(text="📤 Поделиться", url=f"https://t.me/share/url?url={post_deeplink(post_id)}")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🤝 Открыть объявление, чтобы связаться",
+                    url=post_deeplink(post_id)
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="📤 Поделиться",
+                    url=f"https://t.me/share/url?url={post_deeplink(post_id)}"
+                )
+            ],
+        ]
+    )
 
 
 def subscription_actions_kb():

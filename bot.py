@@ -84,6 +84,7 @@ DISPUTE_WAITING_RESPONSE = "waiting_response"
 DISPUTE_RESPONDED = "responded"
 DISPUTE_EXPIRED = "expired"
 DISPUTE_RESOLVED = "resolved"
+DISPUTE_CLOSED_UNRESOLVED = "closed_unresolved"
 
 MANUAL_COUNTRY = "🌍 Ввести другую страну"
 MANUAL_CITY = "✏️ Ввести другой город"
@@ -1055,6 +1056,35 @@ def deal_open_kb(deal: sqlite3.Row, user_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def dispute_actions_kb(dispute: sqlite3.Row, viewer_user_id: int) -> InlineKeyboardMarkup:
+    rows = []
+
+    if dispute["status"] == DISPUTE_WAITING_RESPONSE and viewer_user_id == dispute["against_user_id"]:
+        rows.append([
+            InlineKeyboardButton(
+                text="📩 Ответить по спору",
+                callback_data=f"dispute_reply:{dispute['id']}"
+            )
+        ])
+
+    if dispute["status"] == DISPUTE_RESPONDED and viewer_user_id == dispute["opened_by_user_id"]:
+        rows.append([
+            InlineKeyboardButton(
+                text="✅ Решено",
+                callback_data=f"dispute_resolve:{dispute['id']}"
+            ),
+            InlineKeyboardButton(
+                text="❌ Не решено",
+                callback_data=f"dispute_unresolved:{dispute['id']}"
+            )
+        ])
+
+    if not rows:
+        rows = [[InlineKeyboardButton(text="Ок", callback_data="noop")]]
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def main_menu(user_id: Optional[int] = None):
     keyboard = [
         [KeyboardButton(text="✈️ Взять посылку"), KeyboardButton(text="📦 Отправить посылку")],
@@ -1738,7 +1768,9 @@ async def dispute_timeout_loop(bot: Bot):
                 try:
                     await bot.send_message(
                         dispute["against_user_id"],
-                        "⛔ Вы не ответили по спорной сделке в установленный срок.\nВаш аккаунт временно ограничен. Свяжитесь с администратором."
+                        "⛔ Вы не ответили по спору в установленный срок.\n"
+                         f"Срок ответа: {DISPUTE_RESPONSE_HOURS} часов.\n"
+                         "Ваш аккаунт временно ограничен. Свяжитесь с администратором."
                     )
                 except Exception:
                     pass
@@ -1746,7 +1778,9 @@ async def dispute_timeout_loop(bot: Bot):
                 try:
                     await bot.send_message(
                         dispute["opened_by_user_id"],
-                        "⚠️ Вторая сторона не ответила по спору в установленный срок.\nАккаунт второй стороны ограничен, информация передана администратору."
+                        "⚠️ Вторая сторона не ответила по спору в установленный срок.\n"
+                        f"Срок ожидания: {DISPUTE_RESPONSE_HOURS} часов.\n"
+                        "Спор закрыт автоматически, аккаунт второй стороны ограничен."
                     )
                 except Exception:
                     pass
@@ -1799,6 +1833,50 @@ def owner_only(callback: CallbackQuery, post_id: int) -> Optional[sqlite3.Row]:
     if not row or row["user_id"] != callback.from_user.id:
         return None
     return row
+
+def format_deadline_left(ts_value: Optional[int]) -> str:
+    if not ts_value:
+        return "не указан"
+    diff = int(ts_value) - now_ts()
+    if diff <= 0:
+        return "время истекло"
+
+    hours = diff // 3600
+    minutes = (diff % 3600) // 60
+
+    if hours > 0:
+        return f"{hours} ч {minutes} мин"
+    return f"{minutes} мин"
+
+
+def format_dispute_status(status: str) -> str:
+    mapping = {
+        DISPUTE_OPEN: "открыт",
+        DISPUTE_WAITING_RESPONSE: "ожидается ответ второй стороны",
+        DISPUTE_RESPONDED: "ответ получен",
+        DISPUTE_EXPIRED: "истек по времени",
+        DISPUTE_RESOLVED: "решен",
+        DISPUTE_CLOSED_UNRESOLVED: "закрыт без решения",
+    }
+    return mapping.get(status, status)
+
+
+def dispute_text(dispute: sqlite3.Row) -> str:
+    lines = [
+        f"⚖️ <b>Спор по сделке #{dispute['deal_id']}</b>",
+        f"<b>Статус:</b> {format_dispute_status(dispute['status'])}",
+    ]
+
+    if dispute["reason_text"]:
+        lines.append(f"<b>Причина:</b> {html.escape(dispute['reason_text'])}")
+
+    if dispute["response_text"]:
+        lines.append(f"<b>Ответ второй стороны:</b> {html.escape(dispute['response_text'])}")
+
+    if dispute["status"] in (DISPUTE_WAITING_RESPONSE, DISPUTE_OPEN):
+        lines.append(f"<b>До авто-завершения:</b> {format_deadline_left(dispute['response_deadline_at'])}")
+
+    return "\n".join(lines)
 
 
 def get_current_create_step_name(state_name: Optional[str]) -> Optional[str]:
@@ -3025,33 +3103,6 @@ async def view_photo_handler(callback: CallbackQuery):
     )
     await callback.answer()
 
-    coincidences = get_coincidences(
-        post_type=source_post_type,
-        from_country=data["from_country"],
-        to_country=country,
-        exclude_user_id=callback.from_user.id,
-        source_row=pseudo_source,
-        limit=10
-    )
-
-    await state.clear()
-
-    if not coincidences:
-        await callback.message.answer("Совпадений пока нет.")
-    else:
-        await callback.message.answer(f"Найдено совпадений: {len(coincidences)}")
-        for item in coincidences:
-            row = item["row"]
-            score = item["score"]
-            notes = item["notes"]
-            intro = format_coincidence_badges(score, notes)
-            await callback.message.answer(
-                f"{intro}\n\n{post_text(row)}",
-                reply_markup=public_post_kb(row["id"], row["user_id"], row["post_type"])
-            )
-
-    await callback.answer()
-
 
 @router.callback_query(F.data.startswith("coincidences:"))
 async def coincidences_for_post(callback: CallbackQuery):
@@ -3529,6 +3580,247 @@ async def deal_accept_handler(callback: CallbackQuery):
     await callback.answer()
 
 
+@router.callback_query(F.data.startswith("deal_dispute_open:"))
+async def deal_dispute_open_handler(callback: CallbackQuery, state: FSMContext):
+    deal_id = int(callback.data.split(":")[1])
+    deal = get_deal(deal_id)
+
+    if not deal:
+        await callback.answer("Сделка не найдена", show_alert=True)
+        return
+
+    if callback.from_user.id not in (deal["owner_user_id"], deal["requester_user_id"]):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    existing = get_open_dispute_by_deal(deal_id)
+    if existing:
+        await callback.message.answer(
+            dispute_text(existing),
+            reply_markup=dispute_actions_kb(existing, callback.from_user.id)
+        )
+        await callback.answer("Спор уже открыт")
+        return
+
+    other_user_id = deal["requester_user_id"] if callback.from_user.id == deal["owner_user_id"] else deal["owner_user_id"]
+
+    await state.clear()
+    await state.set_state(DisputeFlow.reason)
+    await state.update_data(
+        deal_id=deal_id,
+        against_user_id=other_user_id
+    )
+
+    await callback.message.answer(
+        "⚖️ <b>Открытие спора</b>\n\n"
+        "Опишите проблему.\n"
+        "Например:\n"
+        "• пользователь не отвечает\n"
+        "• посылка не доставлена\n"
+        "• есть подозрение на обман\n\n"
+        f"Вторая сторона должна ответить в течение <b>{DISPUTE_RESPONSE_HOURS} часов</b>."
+    )
+    await callback.answer()
+
+
+@router.message(DisputeFlow.reason)
+async def dispute_reason_input(message: Message, state: FSMContext):
+    reason_text = (message.text or "").strip()
+    if len(reason_text) < 3:
+        await message.answer("Опишите проблему чуть подробнее.")
+        return
+
+    data = await state.get_data()
+    deal_id = data["deal_id"]
+    against_user_id = data["against_user_id"]
+
+    dispute_id = create_dispute(
+        deal_id=deal_id,
+        opened_by_user_id=message.from_user.id,
+        against_user_id=against_user_id,
+        reason_text=reason_text[:1500]
+    )
+
+    with closing(connect_db()) as conn, conn:
+        conn.execute(
+            "UPDATE deals SET status=?, updated_at=? WHERE id=?",
+            (DEAL_DISPUTE_WAITING, now_ts(), deal_id)
+        )
+
+    dispute = get_dispute(dispute_id)
+
+    try:
+        await message.bot.send_message(
+            against_user_id,
+            "⚠️ По одной из ваших сделок открыт спор.\n\n"
+            f"{dispute_text(dispute)}\n\n"
+            "Пожалуйста, ответьте в установленный срок.",
+            reply_markup=dispute_actions_kb(dispute, against_user_id)
+        )
+    except Exception as e:
+        print(f"DISPUTE NOTIFY TARGET ERROR: {e}")
+
+    await message.answer(
+        "✅ Спор открыт.\n\n"
+        f"{dispute_text(dispute)}",
+        reply_markup=dispute_actions_kb(dispute, message.from_user.id)
+    )
+    await state.clear()
+
+
+@router.callback_query(F.data.startswith("dispute_reply:"))
+async def dispute_reply_handler(callback: CallbackQuery, state: FSMContext):
+    dispute_id = int(callback.data.split(":")[1])
+    dispute = get_dispute(dispute_id)
+
+    if not dispute:
+        await callback.answer("Спор не найден", show_alert=True)
+        return
+
+    if callback.from_user.id != dispute["against_user_id"]:
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    if dispute["status"] != DISPUTE_WAITING_RESPONSE:
+        await callback.answer("По этому спору уже нельзя ответить", show_alert=True)
+        return
+
+    await state.clear()
+    await state.set_state(DisputeFlow.response)
+    await state.update_data(dispute_id=dispute_id)
+
+    await callback.message.answer(
+        "📩 Напишите ваш ответ по спору.\n\n"
+        "Опишите ситуацию подробно."
+    )
+    await callback.answer()
+
+
+@router.message(DisputeFlow.response)
+async def dispute_response_input(message: Message, state: FSMContext):
+    response_text = (message.text or "").strip()
+    if len(response_text) < 2:
+        await message.answer("Ответ слишком короткий.")
+        return
+
+    data = await state.get_data()
+    dispute_id = data["dispute_id"]
+    dispute = get_dispute(dispute_id)
+
+    if not dispute:
+        await message.answer("Спор не найден.")
+        await state.clear()
+        return
+
+    save_dispute_response(dispute_id, response_text[:1500])
+
+    with closing(connect_db()) as conn, conn:
+        conn.execute(
+            "UPDATE deals SET status=?, updated_at=? WHERE id=?",
+            (DEAL_DISPUTE_OPEN, now_ts(), dispute["deal_id"])
+        )
+
+    updated_dispute = get_dispute(dispute_id)
+
+    try:
+        await message.bot.send_message(
+            dispute["opened_by_user_id"],
+            "📩 Вторая сторона ответила по спору.\n\n"
+            f"{dispute_text(updated_dispute)}\n\n"
+            "Выберите, решена ли проблема.",
+            reply_markup=dispute_actions_kb(updated_dispute, dispute["opened_by_user_id"])
+        )
+    except Exception as e:
+        print(f"DISPUTE NOTIFY OPENER ERROR: {e}")
+
+    await message.answer(
+        "✅ Ваш ответ отправлен.\n\n"
+        "Теперь ожидаем решения первой стороны."
+    )
+    await state.clear()
+
+
+@router.callback_query(F.data.startswith("dispute_resolve:"))
+async def dispute_resolve_handler(callback: CallbackQuery):
+    dispute_id = int(callback.data.split(":")[1])
+    dispute = get_dispute(dispute_id)
+
+    if not dispute:
+        await callback.answer("Спор не найден", show_alert=True)
+        return
+
+    if callback.from_user.id != dispute["opened_by_user_id"]:
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    with closing(connect_db()) as conn, conn:
+        conn.execute(
+            "UPDATE disputes SET status=?, updated_at=? WHERE id=?",
+            (DISPUTE_RESOLVED, now_ts(), dispute_id)
+        )
+        conn.execute(
+            "UPDATE deals SET status=?, updated_at=? WHERE id=?",
+            (DEAL_ACCEPTED, now_ts(), dispute["deal_id"])
+        )
+
+    updated_dispute = get_dispute(dispute_id)
+
+    try:
+        await callback.bot.send_message(
+            dispute["against_user_id"],
+            "✅ Спор закрыт как решенный.\n\n"
+            f"{dispute_text(updated_dispute)}"
+        )
+    except Exception as e:
+        print(f"DISPUTE RESOLVE NOTIFY ERROR: {e}")
+
+    await callback.message.answer(
+        "✅ Спор отмечен как решенный.\n\n"
+        f"{dispute_text(updated_dispute)}"
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("dispute_unresolved:"))
+async def dispute_unresolved_handler(callback: CallbackQuery):
+    dispute_id = int(callback.data.split(":")[1])
+    dispute = get_dispute(dispute_id)
+
+    if not dispute:
+        await callback.answer("Спор не найден", show_alert=True)
+        return
+
+    if callback.from_user.id != dispute["opened_by_user_id"]:
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    with closing(connect_db()) as conn, conn:
+        conn.execute(
+            "UPDATE disputes SET status=?, updated_at=? WHERE id=?",
+            (DISPUTE_CLOSED_UNRESOLVED, now_ts(), dispute_id)
+        )
+        conn.execute(
+            "UPDATE deals SET status=?, updated_at=? WHERE id=?",
+            (DEAL_FAILED, now_ts(), dispute["deal_id"])
+        )
+
+    updated_dispute = get_dispute(dispute_id)
+
+    try:
+        await callback.bot.send_message(
+            dispute["against_user_id"],
+            "❌ Спор закрыт без решения.\n\n"
+            f"{dispute_text(updated_dispute)}"
+        )
+    except Exception as e:
+        print(f"DISPUTE UNRESOLVED NOTIFY ERROR: {e}")
+
+    await callback.message.answer(
+        "❌ Спор закрыт без решения.\n\n"
+        f"{dispute_text(updated_dispute)}"
+    )
+    await callback.answer()
+
 @router.callback_query(F.data.startswith("deal_reject:"))
 async def deal_reject_handler(callback: CallbackQuery):
     deal_id = int(callback.data.split(":")[1])
@@ -3555,6 +3847,40 @@ async def deal_reject_handler(callback: CallbackQuery):
 
     await callback.message.answer("Сделка отклонена.")
     await callback.answer()
+
+
+@router.callback_query(F.data.startswith("mydeal:"))
+async def open_my_deal(callback: CallbackQuery):
+    deal_id = int(callback.data.split(":")[1])
+    deal = get_deal(deal_id)
+
+    if not deal:
+        await callback.answer("Сделка не найдена", show_alert=True)
+        return
+
+    if callback.from_user.id not in (deal["owner_user_id"], deal["requester_user_id"]):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    role = "владелец объявления" if callback.from_user.id == deal["owner_user_id"] else "откликнувшийся пользователь"
+
+    text = (
+        f"🤝 <b>Сделка #{deal['id']}</b>\n\n"
+        f"<b>ID объявления:</b> {deal['post_id']}\n"
+        f"<b>Ваш статус:</b> {role}\n"
+        f"<b>Состояние сделки:</b> {format_deal_status(deal['status'])}"
+    )
+
+    dispute = get_open_dispute_by_deal(deal_id)
+    if dispute:
+        text += "\n\n" + dispute_text(dispute)
+        kb = dispute_actions_kb(dispute, callback.from_user.id)
+    else:
+        kb = deal_open_kb(deal, callback.from_user.id)
+
+    await callback.message.answer(text, reply_markup=kb)
+    await callback.answer()
+    
 
 @router.callback_query(F.data == "noop")
 async def noop(callback: CallbackQuery):

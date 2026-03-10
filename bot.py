@@ -2284,9 +2284,9 @@ async def start_handler(message: Message, state: FSMContext):
 
 
     if not is_onboarding_completed(message.from_user.id):
-    await state.set_state(OnboardingFlow.screen_1)
-    await show_onboarding_screen(message, 1)
-    return
+        await state.set_state(OnboardingFlow.screen_1)
+        await show_onboarding_screen(message, 1)
+        return
     
 
     if is_user_banned(message.from_user.id):

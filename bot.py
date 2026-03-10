@@ -2637,7 +2637,7 @@ async def complaint_start(message: Message, state: FSMContext):
     await message.answer(
         "🚩 <b>Пожаловаться</b>\n\n"
         "Введите <b>ID объявления</b>, на которое хотите пожаловаться.\n\n"
-        "ID указан внизу каждого объявления."
+        "ID указан внизу каждого объявления." 
     )
     
 

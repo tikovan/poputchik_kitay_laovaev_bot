@@ -54,6 +54,7 @@ COINCIDENCE_NOTIFY_LIMIT = int(os.getenv("COINCIDENCE_NOTIFY_LIMIT", "5"))
 BUMP_PRICE_AMOUNT = int(os.getenv("BUMP_PRICE_AMOUNT", "10"))
 BUMP_PRICE_CURRENCY = os.getenv("BUMP_PRICE_CURRENCY", "CNY")
 DISPUTE_RESPONSE_HOURS = int(os.getenv("DISPUTE_RESPONSE_HOURS", "48"))
+AUTO_HIDE_COMPLAINTS_THRESHOLD = int(os.getenv("AUTO_HIDE_COMPLAINTS_THRESHOLD", "3"))
 
 router = Router()
 
@@ -2651,7 +2652,14 @@ async def help_handler(message: Message):
         "📋 <b>Мои объявления</b> — управление своими объявлениями.\n"
         "🤝 <b>Мои сделки</b> — ваши активные и завершенные сделки.\n"
         "🔔 <b>Подписки</b> — уведомления по нужным маршрутам.\n"
-        "🚩 <b>Пожаловаться</b> — сообщить о проблеме с объявлением или пользователем."
+        "🚩 <b>Пожаловаться</b> — сообщить о проблеме с объявлением или пользователем.\n\n"
+        "<b>🔐 Безопасность</b>\n\n"
+        "Перед сделкой рекомендуем:\n"
+        "• обменяться WeChat\n"
+        "• проверить историю аккаунта\n"
+        "• убедиться, что человек реально связан с Китаем\n"
+        "• не переводить предоплату незнакомым людям\n\n"
+        "<b>Никогда не делайте предоплату незнакомому человеку.</b>"
     )
     await message.answer(text, reply_markup=main_menu(message.from_user.id))
 
@@ -3729,23 +3737,72 @@ async def complaint_reason_input(message: Message, state: FSMContext):
             (post_id, message.from_user.id, reason[:1000], now_ts())
         )
 
+        complaints_count = conn.execute(
+            "SELECT COUNT(*) AS c FROM complaints WHERE post_id=?",
+            (post_id,)
+        ).fetchone()["c"]
+
+        row = conn.execute("""
+            SELECT p.*, u.username, u.full_name
+            FROM posts p
+            LEFT JOIN users u ON u.user_id = p.user_id
+            WHERE p.id=?
+        """, (post_id,)).fetchone()
+
+        auto_hidden = False
+        if row and row["status"] == STATUS_ACTIVE and complaints_count >= AUTO_HIDE_COMPLAINTS_THRESHOLD:
+            conn.execute(
+                "UPDATE posts SET status=?, updated_at=? WHERE id=?",
+                (STATUS_INACTIVE, now_ts(), post_id)
+            )
+            auto_hidden = True
+
     await state.clear()
-    await message.answer(
-        "✅ Жалоба отправлена администратору.",
-        reply_markup=main_menu(message.from_user.id)
-    )
+
+    if auto_hidden:
+        try:
+            await remove_post_from_channel(message.bot, row)
+        except Exception as e:
+            print(f"AUTO HIDE CHANNEL REMOVE ERROR: {e}")
+
+        try:
+            await message.bot.send_message(
+                row["user_id"],
+                f"⚠️ Ваше объявление ID {post_id} временно скрыто автоматически, "
+                f"так как набрало {complaints_count} жалобы.\n"
+                "Если это ошибка — свяжитесь с администратором."
+            )
+        except Exception as e:
+            print(f"AUTO HIDE OWNER NOTIFY ERROR: {e}")
+
+        await message.answer(
+            "✅ Жалоба отправлена.\n"
+            "Объявление автоматически скрыто и отправлено на проверку администратору.",
+            reply_markup=main_menu(message.from_user.id)
+        )
+    else:
+        await message.answer(
+            "✅ Жалоба отправлена администратору.",
+            reply_markup=main_menu(message.from_user.id)
+        )
 
     for admin_id in ADMIN_IDS:
         try:
-            await message.bot.send_message(
-                admin_id,
+            admin_text = (
                 f"🆘 Новая жалоба\n\n"
                 f"Объявление ID: <b>{post_id}</b>\n"
-                f"От пользователя: <b>{message.from_user.id}</b>\n\n"
-                f"Причина:\n{html.escape(reason[:1000])}"
+                f"От пользователя: <b>{message.from_user.id}</b>\n"
+                f"Всего жалоб по объявлению: <b>{complaints_count}</b>\n"
             )
-        except Exception:
-            pass
+
+            if auto_hidden:
+                admin_text += "\n⚠️ <b>Объявление автоматически скрыто.</b>\n"
+
+            admin_text += f"\nПричина:\n{html.escape(reason[:1000])}"
+
+            await message.bot.send_message(admin_id, admin_text)
+        except Exception as e:
+            print(f"ADMIN COMPLAINT NOTIFY ERROR: {e}")
 
 
 @router.message(F.text == "📊 Статистика")
@@ -3882,22 +3939,43 @@ async def sub_delete(callback: CallbackQuery):
 @router.callback_query(F.data.startswith("contact:"))
 async def contact_owner(callback: CallbackQuery, state: FSMContext):
     _, post_id, owner_id = callback.data.split(":")
-    if int(owner_id) == callback.from_user.id:
+    post_id = int(post_id)
+    owner_id = int(owner_id)
+
+    if owner_id == callback.from_user.id:
         await callback.answer("Это ваше объявление", show_alert=True)
         return
 
     deal_id = ensure_deal(
-        post_id=int(post_id),
-        owner_user_id=int(owner_id),
+        post_id=post_id,
+        owner_user_id=owner_id,
         requester_user_id=callback.from_user.id,
         initiator_user_id=callback.from_user.id
     )
 
     await state.set_state(ContactFlow.message_text)
-    await state.update_data(post_id=int(post_id), target_user_id=int(owner_id), deal_id=deal_id)
-    await callback.message.answer("Напишите сообщение владельцу объявления. Я перешлю его через бота.")
-    await callback.answer()
+    await state.update_data(
+        post_id=post_id,
+        target_user_id=owner_id,
+        deal_id=deal_id
+    )
 
+    await callback.message.answer(
+        "✉️ <b>Напишите сообщение владельцу объявления.</b>\n"
+        "Я перешлю его через бота.\n\n"
+
+        "🔒 <b>Важно:</b>\n"
+        "Никогда не переводите предоплату незнакомым людям.\n\n"
+
+        "Перед сделкой рекомендуем проверить:\n"
+        "• WeChat второго пользователя\n"
+        "• историю аккаунта\n"
+        "• связан ли человек с Китаем\n\n"
+
+        "<b>Никогда не делайте предоплату!</b>"
+    )
+
+    await callback.answer()
 
 @router.callback_query(F.data == "admin:stats")
 async def admin_stats_handler(callback: CallbackQuery):

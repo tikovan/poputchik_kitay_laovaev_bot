@@ -2070,8 +2070,8 @@ async def complaint_start(message: Message, state: FSMContext):
     ...
 
 
-@router.message(F.text == "🆘 Жалоба")
-async def complaint_start(message: Message, state: FSMContext):
+@router.message(F.text == "ℹ️ Помощь")
+async def help_handler(message: Message):
     ...
     
 

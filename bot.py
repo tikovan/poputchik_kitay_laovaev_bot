@@ -3037,6 +3037,45 @@ async def sub_type(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
+@router.callback_query(F.data.startswith("mydeal:"))
+async def open_my_deal(callback: CallbackQuery):
+    deal_id = int(callback.data.split(":")[1])
+    deal = get_deal(deal_id)
+
+    if not deal:
+        await callback.answer("Сделка не найдена", show_alert=True)
+        return
+
+    if callback.from_user.id not in (deal["owner_user_id"], deal["requester_user_id"]):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    row = get_post(deal["post_id"])
+    role = "владелец" if callback.from_user.id == deal["owner_user_id"] else "откликнувшийся"
+
+    text = (
+        f"🤝 <b>Сделка #{deal['id']}</b>\n\n"
+        f"<b>ID объявления:</b> {deal['post_id']}\n"
+        f"<b>Статус:</b> {format_deal_status(deal['status'])}\n"
+        f"<b>Ваша роль:</b> {role}\n"
+        f"<b>Создана:</b> {format_age(deal['created_at'])}"
+    )
+
+    await callback.message.answer(text)
+
+    if row:
+        await callback.message.answer(
+            post_text(row),
+            reply_markup=deal_open_kb(deal, callback.from_user.id)
+        )
+    else:
+        await callback.message.answer(
+            "Объявление, связанное со сделкой, не найдено.",
+            reply_markup=deal_open_kb(deal, callback.from_user.id)
+        )
+
+    await callback.answer()
+
 @router.callback_query(F.data.startswith("subfrom:"))
 async def sub_from(callback: CallbackQuery, state: FSMContext):
     country = callback.data.split(":", 1)[1]

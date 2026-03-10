@@ -2295,6 +2295,21 @@ async def to_city_manual_input(message: Message, state: FSMContext):
     )
 
 
+@router.callback_query(F.data.startswith("complain:"))
+async def complaint_from_button(callback: CallbackQuery, state: FSMContext):
+    post_id = int(callback.data.split(":")[1])
+    await state.clear()
+    await state.set_state(ComplaintFlow.reason)
+    await state.update_data(post_id=post_id)
+
+    await callback.message.answer(
+        f"🆘 <b>Жалоба на объявление {post_id}</b>\n\n"
+        "Опишите причину жалобы.\n"
+        "Например: не отвечает, подозрение на обман, некорректное объявление."
+    )
+    await callback.answer()
+    
+
 @router.callback_query(F.data.startswith("datepick:"))
 async def pick_date(callback: CallbackQuery, state: FSMContext):
     value = callback.data.split(":", 1)[1]

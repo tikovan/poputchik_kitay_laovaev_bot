@@ -1040,12 +1040,10 @@ def deal_open_kb(deal: sqlite3.Row, user_id: int) -> InlineKeyboardMarkup:
         rows.append([InlineKeyboardButton(text="⭐ Оставить отзыв", callback_data=f"deal_review:{deal['id']}")])
 
     if deal["status"] in (
-        DEAL_CONTACTED,
-        DEAL_OFFERED,
-        DEAL_ACCEPTED,
-        DEAL_COMPLETED_BY_OWNER,
-        DEAL_COMPLETED_BY_REQUESTER,
-    ):
+    DEAL_ACCEPTED,
+    DEAL_COMPLETED_BY_OWNER,
+    DEAL_COMPLETED_BY_REQUESTER,
+):
         rows.append([InlineKeyboardButton(text="📦 Посылка не доставлена", callback_data=f"deal_dispute_open:{deal['id']}")])
 
     if not rows:
@@ -2553,6 +2551,110 @@ async def my_posts_handler(message: Message):
     await message.answer("📋 Ваши объявления:", reply_markup=my_posts_kb(posts))
 
 
+@router.callback_query(F.data.startswith("deal_review:"))
+async def deal_review_start(callback: CallbackQuery, state: FSMContext):
+    deal_id = int(callback.data.split(":")[1])
+    deal = get_deal(deal_id)
+
+    if not deal:
+        await callback.answer("Сделка не найдена", show_alert=True)
+        return
+
+    if callback.from_user.id not in (deal["owner_user_id"], deal["requester_user_id"]):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    if deal["status"] != DEAL_COMPLETED:
+        await callback.answer("Отзыв можно оставить только по завершенной сделке", show_alert=True)
+        return
+
+    if has_user_left_review_for_deal(deal, callback.from_user.id):
+        await callback.answer("Вы уже оставили отзыв", show_alert=True)
+        return
+
+    reviewed_user_id = deal["requester_user_id"] if callback.from_user.id == deal["owner_user_id"] else deal["owner_user_id"]
+
+    await state.clear()
+    await state.set_state(ReviewFlow.rating)
+    await state.update_data(
+        deal_id=deal_id,
+        reviewed_user_id=reviewed_user_id,
+        post_id=deal["post_id"]
+    )
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="1", callback_data="review_rating:1"),
+            InlineKeyboardButton(text="2", callback_data="review_rating:2"),
+            InlineKeyboardButton(text="3", callback_data="review_rating:3"),
+            InlineKeyboardButton(text="4", callback_data="review_rating:4"),
+            InlineKeyboardButton(text="5", callback_data="review_rating:5"),
+        ]
+    ])
+
+    await callback.message.answer(
+        "⭐ Выберите оценку пользователю от 1 до 5:",
+        reply_markup=kb
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("review_rating:"))
+async def review_rating_pick(callback: CallbackQuery, state: FSMContext):
+    rating = int(callback.data.split(":")[1])
+
+    if rating < 1 or rating > 5:
+        await callback.answer("Неверная оценка", show_alert=True)
+        return
+
+    await state.update_data(rating=rating)
+    await state.set_state(ReviewFlow.text)
+
+    await callback.message.answer(
+        "Напишите короткий отзыв.\n"
+        "Если без текста — отправьте минус: -"
+    )
+    await callback.answer()
+
+
+@router.message(ReviewFlow.text)
+async def review_text_input(message: Message, state: FSMContext):
+    data = await state.get_data()
+
+    reviewed_user_id = data["reviewed_user_id"]
+    post_id = data["post_id"]
+    rating = data["rating"]
+
+    text = (message.text or "").strip()
+    if not text:
+        await message.answer("Введите текст отзыва или '-'")
+        return
+
+    review_text = None if text == "-" else text[:500]
+
+    try:
+        with closing(connect_db()) as conn, conn:
+            conn.execute("""
+                INSERT INTO reviews (
+                    reviewer_user_id, reviewed_user_id, post_id, rating, text, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+            """, (
+                message.from_user.id,
+                reviewed_user_id,
+                post_id,
+                rating,
+                review_text,
+                now_ts()
+            ))
+
+        await message.answer("✅ Отзыв сохранен.", reply_markup=main_menu(message.from_user.id))
+
+    except sqlite3.IntegrityError:
+        await message.answer("Вы уже оставили отзыв по этой сделке.", reply_markup=main_menu(message.from_user.id))
+
+    await state.clear()
+
+
 @router.callback_query(F.data.startswith("mypost:"))
 async def open_my_post(callback: CallbackQuery):
     await callback.answer()
@@ -2574,6 +2676,47 @@ async def open_my_post(callback: CallbackQuery):
         await callback.message.answer("Не удалось открыть объявление.")
 
 
+@router.callback_query(F.data.startswith("deal_confirm:"))
+async def deal_confirm_handler(callback: CallbackQuery):
+    deal_id = int(callback.data.split(":")[1])
+    deal = get_deal(deal_id)
+
+    if not deal:
+        await callback.answer("Сделка не найдена", show_alert=True)
+        return
+
+    user_id = callback.from_user.id
+    if user_id not in (deal["owner_user_id"], deal["requester_user_id"]):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    with closing(connect_db()) as conn, conn:
+        if user_id == deal["owner_user_id"]:
+            owner_confirmed = 1
+            requester_confirmed = deal["requester_confirmed"]
+        else:
+            owner_confirmed = deal["owner_confirmed"]
+            requester_confirmed = 1
+
+        if owner_confirmed and requester_confirmed:
+            conn.execute("""
+                UPDATE deals
+                SET owner_confirmed=1, requester_confirmed=1, status=?, updated_at=?, completed_at=?
+                WHERE id=?
+            """, (DEAL_COMPLETED, now_ts(), now_ts(), deal_id))
+            await callback.message.answer("✅ Сделка завершена. Теперь можно оставить отзыв.")
+        else:
+            new_status = DEAL_COMPLETED_BY_OWNER if user_id == deal["owner_user_id"] else DEAL_COMPLETED_BY_REQUESTER
+            conn.execute("""
+                UPDATE deals
+                SET owner_confirmed=?, requester_confirmed=?, status=?, updated_at=?
+                WHERE id=?
+            """, (owner_confirmed, requester_confirmed, new_status, now_ts(), deal_id))
+            await callback.message.answer("✅ Ваше подтверждение сохранено. Ждем подтверждение второй стороны.")
+
+    await callback.answer()
+    
+
 @router.callback_query(F.data.startswith("delete:"))
 async def delete_post(callback: CallbackQuery):
     post_id = int(callback.data.split(":")[1])
@@ -2588,6 +2731,74 @@ async def delete_post(callback: CallbackQuery):
         conn.execute("UPDATE posts SET status=?, updated_at=? WHERE id=?", (STATUS_DELETED, now_ts(), post_id))
 
     await callback.message.answer("🗑 Объявление удалено.")
+    await callback.answer()
+
+
+@router.message(DisputeFlow.reason)
+async def dispute_reason_input(message: Message, state: FSMContext):
+    data = await state.get_data()
+    deal_id = data["deal_id"]
+    deal = get_deal(deal_id)
+
+    if not deal:
+        await message.answer("Сделка не найдена.", reply_markup=main_menu(message.from_user.id))
+        await state.clear()
+        return
+
+    reason = (message.text or "").strip()
+    if len(reason) < 3:
+        await message.answer("Опишите причину подробнее.")
+        return
+
+    against_user_id = deal["requester_user_id"] if message.from_user.id == deal["owner_user_id"] else deal["owner_user_id"]
+    dispute_id = create_dispute(deal_id, message.from_user.id, against_user_id, reason)
+
+    with closing(connect_db()) as conn, conn:
+        conn.execute("UPDATE deals SET status=?, updated_at=? WHERE id=?", (DEAL_DISPUTE_WAITING, now_ts(), deal_id))
+
+    try:
+        await message.bot.send_message(
+            against_user_id,
+            f"⚠️ По сделке #{deal_id} открыт спор.\n\n"
+            f"Причина: {html.escape(reason)}\n\n"
+            "Ответьте администратору или второй стороне как можно скорее."
+        )
+    except Exception:
+        pass
+
+    await message.answer(
+        f"✅ Спор по сделке #{deal_id} открыт.",
+        reply_markup=main_menu(message.from_user.id)
+    )
+    await state.clear()
+
+
+@router.callback_query(F.data.startswith("deal_dispute_open:"))
+async def deal_dispute_open_handler(callback: CallbackQuery, state: FSMContext):
+    deal_id = int(callback.data.split(":")[1])
+    deal = get_deal(deal_id)
+
+    if not deal:
+        await callback.answer("Сделка не найдена", show_alert=True)
+        return
+
+    if callback.from_user.id not in (deal["owner_user_id"], deal["requester_user_id"]):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    existing = get_open_dispute_by_deal(deal_id)
+    if existing:
+        await callback.answer("По этой сделке уже открыт спор", show_alert=True)
+        return
+
+    await state.clear()
+    await state.set_state(DisputeFlow.reason)
+    await state.update_data(deal_id=deal_id)
+
+    await callback.message.answer(
+        "Опишите причину спора.\n"
+        "Например: пользователь не вышел на связь, посылка не доставлена, обман."
+    )
     await callback.answer()
 
 

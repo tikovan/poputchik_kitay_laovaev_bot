@@ -1520,19 +1520,14 @@ def deal_open_kb(deal: sqlite3.Row, user_id: int) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="Ок", callback_data="noop")
         ])
 
-    # ⬅️ НАЗАД
     rows.append([
-        InlineKeyboardButton(text="⬅️ Назад", callback_data="back:my_deals")
+        InlineKeyboardButton(
+            text="⬅️ Назад",
+            callback_data="back:my_deals"
+        )
     ])
 
-   rows.append([
-    InlineKeyboardButton(
-        text="⬅️ Назад",
-        callback_data="back:my_deals"
-    )
-])
-
-return InlineKeyboardMarkup(inline_keyboard=rows)
+    return InlineKeyboardMarkup(inline_keyboard=rows)
     
 
 def get_active_deal_by_post(post_id: int) -> Optional[sqlite3.Row]:

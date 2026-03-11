@@ -4332,10 +4332,30 @@ async def deal_confirm_handler(callback: CallbackQuery):
         return
 
     if deal["status"] == DEAL_COMPLETED:
-        await callback.message.answer(
-            "✅ Сделка уже завершена.\n\nТеперь можно оставить отзыв.",
-            reply_markup=deal_open_kb(deal, callback.from_user.id)
+        route = deal_title(deal)
+        role = "владелец объявления" if user_id == deal["owner_user_id"] else "откликнувшийся пользователь"
+
+        text = (
+            f"🤝 <b>{html.escape(route)}</b>\n\n"
+            f"<b>ID сделки:</b> {deal['id']}\n"
+            f"<b>ID объявления:</b> {deal['post_id']}\n"
+            f"<b>Ваша роль:</b> {role}\n"
+            f"<b>Статус:</b> {format_deal_status(deal['status'])}\n\n"
+            "✅ Сделка уже завершена.\n"
+            "Теперь можно оставить отзыв."
         )
+
+        try:
+            await callback.message.edit_text(
+                text,
+                reply_markup=deal_open_kb(deal, user_id)
+            )
+        except Exception:
+            await callback.message.answer(
+                text,
+                reply_markup=deal_open_kb(deal, user_id)
+            )
+
         await callback.answer()
         return
 
@@ -4358,22 +4378,45 @@ async def deal_confirm_handler(callback: CallbackQuery):
 
             completed_deal = get_deal(deal_id)
 
-            try:
-                await callback.message.edit_reply_markup(reply_markup=None)
-            except Exception:
-                pass
+            route = deal_title(completed_deal)
+            role = "владелец объявления" if user_id == completed_deal["owner_user_id"] else "откликнувшийся пользователь"
 
-            await callback.message.answer(
-                "✅ Сделка завершена.\n\n"
-                "Теперь можно оставить отзыв.",
-                reply_markup=deal_open_kb(completed_deal, callback.from_user.id)
+            text = (
+                f"🤝 <b>{html.escape(route)}</b>\n\n"
+                f"<b>ID сделки:</b> {completed_deal['id']}\n"
+                f"<b>ID объявления:</b> {completed_deal['post_id']}\n"
+                f"<b>Ваша роль:</b> {role}\n"
+                f"<b>Статус:</b> {format_deal_status(completed_deal['status'])}\n\n"
+                "✅ Сделка завершена.\n"
+                "Теперь можно оставить отзыв."
             )
 
             try:
+                await callback.message.edit_text(
+                    text,
+                    reply_markup=deal_open_kb(completed_deal, callback.from_user.id)
+                )
+            except Exception:
+                await callback.message.answer(
+                    text,
+                    reply_markup=deal_open_kb(completed_deal, callback.from_user.id)
+                )
+
+            try:
+                other_role = "владелец объявления" if other_user_id == completed_deal["owner_user_id"] else "откликнувшийся пользователь"
+                other_text = (
+                    f"🤝 <b>{html.escape(route)}</b>\n\n"
+                    f"<b>ID сделки:</b> {completed_deal['id']}\n"
+                    f"<b>ID объявления:</b> {completed_deal['post_id']}\n"
+                    f"<b>Ваша роль:</b> {other_role}\n"
+                    f"<b>Статус:</b> {format_deal_status(completed_deal['status'])}\n\n"
+                    "✅ Сделка завершена обеими сторонами.\n"
+                    "Теперь можно оставить отзыв."
+                )
+
                 await callback.bot.send_message(
                     other_user_id,
-                    f"✅ Сделка #{deal_id} завершена обеими сторонами.\n"
-                    "Теперь вы можете открыть 'Мои сделки' и оставить отзыв.",
+                    other_text,
                     reply_markup=deal_open_kb(completed_deal, other_user_id)
                 )
             except Exception as e:
@@ -4387,12 +4430,28 @@ async def deal_confirm_handler(callback: CallbackQuery):
                 WHERE id=?
             """, (owner_confirmed, requester_confirmed, new_status, now_ts(), deal_id))
 
-            try:
-                await callback.message.edit_reply_markup(reply_markup=None)
-            except Exception:
-                pass
+            updated_deal = get_deal(deal_id)
 
-            await callback.message.answer("✅ Ваше подтверждение сохранено. Ждем подтверждение второй стороны.")
+            route = deal_title(updated_deal)
+            role = "владелец объявления" if user_id == updated_deal["owner_user_id"] else "откликнувшийся пользователь"
+
+            text = (
+                f"🤝 <b>{html.escape(route)}</b>\n\n"
+                f"<b>ID сделки:</b> {updated_deal['id']}\n"
+                f"<b>ID объявления:</b> {updated_deal['post_id']}\n"
+                f"<b>Ваша роль:</b> {role}\n"
+                f"<b>Статус:</b> {format_deal_status(updated_deal['status'])}\n\n"
+                "✅ Ваше подтверждение сохранено.\n"
+                "Ждем подтверждение второй стороны."
+            )
+
+            try:
+                await callback.message.edit_text(
+                    text,
+                    reply_markup=deal_open_kb(updated_deal, callback.from_user.id)
+                )
+            except Exception:
+                await callback.message.answer(text)
 
             try:
                 await callback.bot.send_message(

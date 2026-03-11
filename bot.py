@@ -2825,12 +2825,17 @@ async def start_handler(message: Message, state: FSMContext):
         return
 
     if start_arg.startswith("contact_"):
-       post_id_str = start_arg.replace("contact_", "", 1)
-    if  post_id_str.isdigit():
+    post_id_str = start_arg.replace("contact_", "", 1)
+
+    if post_id_str.isdigit():
         row = get_post(int(post_id_str))
+
         if row and row["status"] == STATUS_ACTIVE:
             if row["user_id"] == message.from_user.id:
-                await message.answer("Это ваше объявление.", reply_markup=main_menu(message.from_user.id))
+                await message.answer(
+                    "Это ваше объявление.",
+                    reply_markup=main_menu(message.from_user.id)
+                )
                 return
 
             await state.set_state(ContactFlow.message_text)
@@ -2839,6 +2844,7 @@ async def start_handler(message: Message, state: FSMContext):
                 target_user_id=row["user_id"],
                 deal_id=None
             )
+
             await message.answer(
                 "✉️ Вы открыли связь с владельцем объявления:\n\n"
                 f"{post_text(row)}\n\n"

@@ -535,6 +535,17 @@ def connect_db():
     return conn
 
 
+def go_my_deals_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(
+                text="🤝 Мои сделки",
+                callback_data="back:my_deals"
+            )
+        ]
+    ])
+
+
 def admin_complaint_actions_kb(complaint_id: int, post_id: int, owner_user_id: Optional[int]):
     rows = [
         [InlineKeyboardButton(text="📄 Открыть объявление", callback_data=f"admincomplaint_openpost:{post_id}")],
@@ -1382,20 +1393,6 @@ def post_actions_kb(post_id: int, status: str):
     rows.append([
         InlineKeyboardButton(text="⬅️ Назад", callback_data="back:my_posts")
     ])
-
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-def dispute_failed_against_kb(deal_id: int):
-
-    rows = [
-        [
-            InlineKeyboardButton(
-                text="⭐ Оставить отзыв",
-                callback_data=f"deal_review:{deal_id}"
-            )
-        ]
-    ]
 
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -2290,6 +2287,22 @@ def post_route_title(row: sqlite3.Row) -> str:
     return route
 
 
+def extract_chat_ref_from_message(text: Optional[str]) -> Optional[tuple[int, int, Optional[int]]]:
+    if not text:
+        return None
+
+    m = re.search(r"chat_ref:(\d+):(\d+):(\d+)", text)
+    if not m:
+        return None
+
+    post_id = int(m.group(1))
+    target_user_id = int(m.group(2))
+    raw_deal_id = int(m.group(3))
+    deal_id = None if raw_deal_id == 0 else raw_deal_id
+
+    return post_id, target_user_id, deal_id
+
+
 def split_deals_by_sections(deals: List[sqlite3.Row]):
     in_progress = []
     disputes = []
@@ -2614,42 +2627,60 @@ async def dispute_timeout_loop(bot: Bot):
                 """, (now_ts(),)).fetchall()
 
             for dispute in disputes:
+
+                deal = get_deal(dispute["deal_id"])
+
                 with closing(connect_db()) as conn, conn:
-                    conn.execute("UPDATE disputes SET status=?, updated_at=? WHERE id=?", (DISPUTE_EXPIRED, now_ts(), dispute["id"]))
-                    conn.execute("UPDATE deals SET status=?, updated_at=? WHERE id=?", (DEAL_FAILED, now_ts(), dispute["deal_id"]))
+                    conn.execute(
+                        "UPDATE disputes SET status=?, updated_at=? WHERE id=?",
+                        (DISPUTE_EXPIRED, now_ts(), dispute["id"])
+                    )
+
+                    conn.execute(
+                        "UPDATE deals SET status=?, updated_at=? WHERE id=?",
+                        (DEAL_FAILED, now_ts(), dispute["deal_id"])
+                    )
+
                     conn.execute("""
                         UPDATE users
                         SET dispute_no_response_count = COALESCE(dispute_no_response_count, 0) + 1
                         WHERE user_id=?
                     """, (dispute["against_user_id"],))
 
+                # ограничение аккаунта
                 ban_user(dispute["against_user_id"])
 
                 try:
                     await bot.send_message(
                         dispute["against_user_id"],
                         "⛔ Вы не ответили по спору в установленный срок.\n"
-                         f"Срок ответа: {DISPUTE_RESPONSE_HOURS} часов.\n"
-                         "Ваш аккаунт временно ограничен. Свяжитесь с администратором."
+                        f"Срок ответа: {DISPUTE_RESPONSE_HOURS} часов.\n\n"
+                        "Сделка признана неуспешной.\n"
+                        "Ваш аккаунт временно ограничен.\n"
+                        "Если произошла ошибка — свяжитесь с администратором.",
+                        reply_markup=dispute_failed_against_kb(deal["id"]) if deal else None
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"DISPUTE TIMEOUT TARGET ERROR: {e}")
 
                 try:
                     await bot.send_message(
                         dispute["opened_by_user_id"],
                         "⚠️ Вторая сторона не ответила по спору в установленный срок.\n"
-                        f"Срок ожидания: {DISPUTE_RESPONSE_HOURS} часов.\n"
-                        "Спор закрыт автоматически, аккаунт второй стороны ограничен."
+                        f"Срок ожидания: {DISPUTE_RESPONSE_HOURS} часов.\n\n"
+                        "Спор закрыт автоматически.\n"
+                        "Сделка признана неуспешной.",
+                        reply_markup=dispute_failed_opened_by_kb(deal["id"]) if deal else None
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"DISPUTE TIMEOUT OPENER ERROR: {e}")
 
                 for admin_id in ADMIN_IDS:
                     try:
                         await bot.send_message(
                             admin_id,
-                            f"⛔ Пользователь {dispute['against_user_id']} не ответил по спору #{dispute['deal_id']} в срок и был ограничен."
+                            f"⛔ Пользователь {dispute['against_user_id']} не ответил "
+                            f"по спору сделки #{dispute['deal_id']} и был ограничен."
                         )
                     except Exception:
                         pass
@@ -4255,6 +4286,14 @@ async def deal_confirm_handler(callback: CallbackQuery):
         await callback.answer("Нет доступа", show_alert=True)
         return
 
+    if deal["status"] == DEAL_COMPLETED:
+        await callback.message.answer(
+            "✅ Сделка уже завершена.\n\nТеперь можно оставить отзыв.",
+            reply_markup=deal_open_kb(deal, callback.from_user.id)
+        )
+        await callback.answer()
+        return
+
     other_user_id = deal["requester_user_id"] if user_id == deal["owner_user_id"] else deal["owner_user_id"]
 
     with closing(connect_db()) as conn, conn:
@@ -4273,6 +4312,11 @@ async def deal_confirm_handler(callback: CallbackQuery):
             """, (DEAL_COMPLETED, now_ts(), now_ts(), deal_id))
 
             completed_deal = get_deal(deal_id)
+
+            try:
+                await callback.message.edit_reply_markup(reply_markup=None)
+            except Exception:
+                pass
 
             await callback.message.answer(
                 "✅ Сделка завершена.\n\n"
@@ -4297,6 +4341,11 @@ async def deal_confirm_handler(callback: CallbackQuery):
                 SET owner_confirmed=?, requester_confirmed=?, status=?, updated_at=?
                 WHERE id=?
             """, (owner_confirmed, requester_confirmed, new_status, now_ts(), deal_id))
+
+            try:
+                await callback.message.edit_reply_markup(reply_markup=None)
+            except Exception:
+                pass
 
             await callback.message.answer("✅ Ваше подтверждение сохранено. Ждем подтверждение второй стороны.")
 
@@ -4916,24 +4965,13 @@ async def contact_owner(callback: CallbackQuery, state: FSMContext):
     )
 
     await callback.message.answer(
-        "✉️ <b>Напишите сообщение владельцу объявления.</b>\n"
-        "Я перешлю его через бота.\n\n"
+        "✉️ <b>Чат с владельцем объявления открыт.</b>\n\n"
+        "Напишите первое сообщение — я отправлю его через бота.\n"
+        "Дальше вы сможете просто продолжать переписку здесь.\n\n"
         "🔒 <b>Важно:</b>\n"
-        "Никогда не переводите предоплату незнакомым людям.\n\n"
-        "Перед сделкой рекомендуем проверить:\n"
-        "• WeChat второго пользователя\n"
-        "• историю аккаунта\n"
-        "• связан ли человек с Китаем\n\n"
+        "Никогда не переводите предоплату незнакомым людям."
     )
 
-    await callback.answer()
-@router.callback_query(F.data == "admin:stats")
-async def admin_stats_handler(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("Нет доступа", show_alert=True)
-        return
-
-    await callback.message.answer(admin_stats_text(), reply_markup=admin_menu_kb())
     await callback.answer()
 
 
@@ -5514,21 +5552,15 @@ async def relay_message(message: Message, state: FSMContext):
         username_part = f" (@{html.escape(message.from_user.username)})" if message.from_user.username else ""
         safe_text = html.escape(text)
 
-        reply_kb = InlineKeyboardMarkup(inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="💬 Ответить через бота",
-                    callback_data=f"reply_contact:{post_id}:{message.from_user.id}:{deal_id or 0}"
-                )
-            ]
-        ])
+        chat_ref = f"chat_ref:{post_id}:{message.from_user.id}:{deal_id or 0}"
 
         await message.bot.send_message(
             target_user_id,
             f"💬 <b>Новое сообщение по объявлению ID {post_id}</b>\n\n"
             f"<b>От:</b> {from_name}{username_part}\n\n"
-            f"{safe_text}",
-            reply_markup=reply_kb
+            f"{safe_text}\n\n"
+            f"<i>Чтобы ответить, просто нажмите «Ответить» на это сообщение в Telegram.</i>\n"
+            f"<code>{chat_ref}</code>"
         )
 
         with closing(connect_db()) as conn, conn:
@@ -5542,8 +5574,7 @@ async def relay_message(message: Message, state: FSMContext):
 
         await message.answer("✅ Сообщение отправлено.")
 
-        # ВАЖНО: state.clear() здесь НЕ делаем,
-        # чтобы пользователь мог дальше писать без повторного нажатия кнопки
+        # state НЕ очищаем — пользователь может писать дальше подряд
 
     except Exception as e:
         print(f"RELAY MESSAGE ERROR: {e}")
@@ -5552,6 +5583,30 @@ async def relay_message(message: Message, state: FSMContext):
             reply_markup=main_menu(message.from_user.id)
         )
         await state.clear()
+
+
+@router.message(F.reply_to_message)
+async def reply_to_contact_message(message: Message, state: FSMContext):
+    reply_text = message.reply_to_message.text or message.reply_to_message.caption or ""
+    chat_ref = extract_chat_ref_from_message(reply_text)
+
+    if not chat_ref:
+        return
+
+    post_id, target_user_id, deal_id = chat_ref
+
+    if target_user_id == message.from_user.id:
+        await message.answer("Нельзя ответить самому себе.")
+        return
+
+    await state.set_state(ContactFlow.message_text)
+    await state.update_data(
+        post_id=post_id,
+        target_user_id=target_user_id,
+        deal_id=deal_id
+    )
+
+    await relay_message(message, state)
 
 
 @router.callback_query(F.data.startswith("offer_deal:"))
@@ -5711,18 +5766,20 @@ async def deal_request_accept_handler(callback: CallbackQuery):
             f"✅ Ваша заявка принята.\n\n"
             f"Вы успешно открыли сделку по объявлению <b>{html.escape(route)}</b> (ID {req['post_id']}).\n"
             f"Объявление перенесено в раздел <b>🤝 МОИ СДЕЛКИ</b> — перейдите туда для управления сделкой.\n\n"
-            f"ID сделки: <b>{deal_id}</b>"
+            f"ID сделки: <b>{deal_id}</b>",
+            reply_markup=go_my_deals_kb()
         )
     except Exception as e:
         print(f"DEAL ACCEPT NOTIFY REQUESTER ERROR: {e}")
 
-    await callback.message.answer(
+        await callback.message.answer(
         f"✅ Сделка открыта.\n\n"
         f"Ваше объявление <b>{html.escape(route)}</b> (ID {req['post_id']}) перенесено из канала "
         f"в раздел <b>🤝 МОИ СДЕЛКИ</b> — перейдите туда для управления сделкой.\n\n"
-        f"ID сделки: <b>{deal_id}</b>"
+        f"ID сделки: <b>{deal_id}</b>",
+        reply_markup=go_my_deals_kb()
     )
-
+        
     await callback.answer()
     
 
@@ -5779,8 +5836,8 @@ async def deal_accept_handler(callback: CallbackQuery):
             deal["requester_user_id"],
             f"✅ Ваша сделка по объявлению ID {deal['post_id']} принята.\n\n"
             "Управление сделками происходит во вкладке МЕНЮ '🤝 Мои сделки'.\n"
-            "Там вы сможете закрыть сделку и оставить отзыв.\n\n"
-            "Для перехода — откройте МЕНЮ бота."
+            "Там вы сможете закрыть сделку и оставить отзыв.",
+            reply_markup=go_my_deals_kb()
         )
     except Exception:
         pass
@@ -5795,11 +5852,12 @@ async def deal_accept_handler(callback: CallbackQuery):
         "• завершить сделку\n"
         "• оставить отзыв\n\n"
         "⚠️ <b>Важно</b>\n"
-        "Никогда не переводите предоплату незнакомым людям."
+        "Никогда не переводите предоплату незнакомым людям.",
+        reply_markup=go_my_deals_kb()
     )
 
     await callback.answer()
-
+    
 @router.callback_query(F.data.startswith("deal_dispute_open:"))
 async def deal_dispute_open_handler(callback: CallbackQuery, state: FSMContext):
     deal_id = int(callback.data.split(":")[1])

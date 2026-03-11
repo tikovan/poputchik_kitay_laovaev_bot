@@ -4464,7 +4464,7 @@ async def deal_confirm_handler(callback: CallbackQuery):
     # уведомление второй стороне
     other_user_id = fresh_deal["requester_user_id"] if callback.from_user.id == fresh_deal["owner_user_id"] else fresh_deal["owner_user_id"]
 
-        try:
+    try:
         both_confirmed = int(fresh_deal["owner_confirmed"] or 0) == 1 and int(fresh_deal["requester_confirmed"] or 0) == 1
 
         if both_confirmed:

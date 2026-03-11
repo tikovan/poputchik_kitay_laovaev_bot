@@ -706,6 +706,7 @@ ON deal_requests(requester_user_id, status, created_at);
         ensure_column(conn, "users", "is_banned", "is_banned INTEGER DEFAULT 0")
         ensure_column(conn, "users", "last_action_at", "last_action_at INTEGER DEFAULT 0")
         ensure_column(conn, "users", "dispute_no_response_count", "dispute_no_response_count INTEGER DEFAULT 0")
+        ensure_column(conn, "users", "failed_dispute_count", "failed_dispute_count INTEGER DEFAULT 0")
         ensure_column(conn, "posts", "expires_at", "expires_at INTEGER")
         ensure_column(conn, "posts", "photo_file_id", "photo_file_id TEXT")
         ensure_column(conn, "deals", "initiator_user_id", "initiator_user_id INTEGER")
@@ -1343,6 +1344,20 @@ def post_actions_kb(post_id: int, status: str):
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def dispute_failed_against_kb(deal_id: int):
+
+    rows = [
+        [
+            InlineKeyboardButton(
+                text="⭐ Оставить отзыв",
+                callback_data=f"deal_review:{deal_id}"
+            )
+        ]
+    ]
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def admin_post_actions_kb(post_id: int):
     return InlineKeyboardMarkup(inline_keyboard=[
         [
@@ -1353,12 +1368,7 @@ def admin_post_actions_kb(post_id: int):
     ])
 
 
-def public_post_kb(
-    post_id: int,
-    owner_id: int,
-    post_type: Optional[str] = None,
-    back_target: Optional[str] = None
-):
+def public_post_kb(post_id: int, owner_id: int, post_type: Optional[str] = None):
     _, reviews_count = user_rating_summary(owner_id)
     row = get_post(post_id)
 
@@ -1369,7 +1379,10 @@ def public_post_kb(
 
     if row and row["photo_file_id"]:
         rows.append([
-            InlineKeyboardButton(text="🖼 Посмотреть фото посылки", callback_data=f"viewphoto:{post_id}")
+            InlineKeyboardButton(
+                text="🖼 Посмотреть фото посылки",
+                callback_data=f"viewphoto:{post_id}"
+            )
         ])
 
     if reviews_count > 0:
@@ -1381,20 +1394,28 @@ def public_post_kb(
         ])
 
     rows.append([
-        InlineKeyboardButton(text="⚠️ Пожаловаться", callback_data=f"complain:{post_id}")
+        InlineKeyboardButton(
+            text="⚠️ Пожаловаться",
+            callback_data=f"complain:{post_id}"
+        )
     ])
 
     rows.append([
-        InlineKeyboardButton(text="📤 Поделиться", url=f"https://t.me/share/url?url={post_deeplink(post_id)}")
+        InlineKeyboardButton(
+            text="📤 Поделиться",
+            url=f"https://t.me/share/url?url={post_deeplink(post_id)}"
+        )
     ])
 
-    if back_target:
-        rows.append([
-            InlineKeyboardButton(text="⬅️ Назад", callback_data=f"back:{back_target}")
-        ])
+    rows.append([
+        InlineKeyboardButton(
+            text="⬅️ Назад",
+            callback_data="back:new_posts"
+        )
+    ])
 
     return InlineKeyboardMarkup(inline_keyboard=rows)
-
+    
 
 def channel_post_kb(post_id: int, post_type: Optional[str] = None):
     return InlineKeyboardMarkup(
@@ -1504,7 +1525,14 @@ def deal_open_kb(deal: sqlite3.Row, user_id: int) -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="⬅️ Назад", callback_data="back:my_deals")
     ])
 
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+   rows.append([
+    InlineKeyboardButton(
+        text="⬅️ Назад",
+        callback_data="back:my_deals"
+    )
+])
+
+return InlineKeyboardMarkup(inline_keyboard=rows)
     
 
 def get_active_deal_by_post(post_id: int) -> Optional[sqlite3.Row]:
@@ -3609,28 +3637,62 @@ async def back_router(callback: CallbackQuery):
     action = callback.data.split(":")[1]
 
     if action == "my_posts":
+
         posts = get_user_posts(callback.from_user.id)
 
-        await callback.message.answer(
-            "📋 Ваши объявления:",
-            reply_markup=my_posts_kb(posts)
-        )
+        if not posts:
+            await callback.message.answer("У вас пока нет объявлений.")
+        else:
+            await callback.message.answer(
+                "📋 Ваши объявления:",
+                reply_markup=my_posts_kb(posts)
+            )
 
     elif action == "my_deals":
-        deals = get_user_deals(callback.from_user.id)
 
-        await callback.message.answer(
-            "🤝 Ваши сделки:",
-            reply_markup=deal_list_kb(deals)
-        )
+        deals = list_user_deals(callback.from_user.id)
+
+        if not deals:
+            await callback.message.answer("У вас пока нет сделок.")
+        else:
+            in_progress, disputes, finished = split_deals_by_sections(deals)
+
+            if in_progress:
+                await callback.message.answer(
+                    "🟢 Сделки в процессе",
+                    reply_markup=deal_section_kb(in_progress)
+                )
+
+            if disputes:
+                await callback.message.answer(
+                    "⚖️ Споры",
+                    reply_markup=deal_section_kb(disputes)
+                )
+
+            if finished:
+                await callback.message.answer(
+                    "✅ Завершённые сделки",
+                    reply_markup=deal_section_kb(finished)
+                )
 
     elif action == "new_posts":
-        posts = get_latest_posts()
 
-        await callback.message.answer(
-            "🆕 Новые объявления:",
-            reply_markup=new_posts_kb(posts)
-        )
+        posts = get_recent_posts(10)
+
+        if not posts:
+            await callback.message.answer("Новых объявлений пока нет.")
+        else:
+            await callback.message.answer("🆕 Новые объявления:")
+
+            for row in posts:
+                await callback.message.answer(
+                    post_text(row),
+                    reply_markup=public_post_kb(
+                        row["id"],
+                        row["user_id"],
+                        row["post_type"]
+                    )
+                )
 
     await callback.answer()
     
@@ -4567,6 +4629,20 @@ async def complaint_reason_input(message: Message, state: FSMContext):
     post_id = data["post_id"]
 
     with closing(connect_db()) as conn, conn:
+        # защита от повторной жалобы от одного и того же пользователя
+        existing = conn.execute(
+            "SELECT 1 FROM complaints WHERE post_id=? AND from_user_id=? LIMIT 1",
+            (post_id, message.from_user.id)
+        ).fetchone()
+
+        if existing:
+            await state.clear()
+            await message.answer(
+                "Вы уже отправляли жалобу на это объявление.",
+                reply_markup=main_menu(message.from_user.id)
+            )
+            return
+
         conn.execute(
             "INSERT INTO complaints (post_id, from_user_id, reason, created_at) VALUES (?, ?, ?, ?)",
             (post_id, message.from_user.id, reason[:1000], now_ts())

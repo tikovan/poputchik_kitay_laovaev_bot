@@ -233,7 +233,7 @@ MAIN_MENU_TEXTS = {
     "🔔 Подписки",
     "📊 Статистика",
     "💰 Поднять объявление",
-    "🚩 Пожаловаться",
+    "🚩 Жалоба / Баг / Поддержка",
     "ℹ️ Помощь",
     "👨‍💼 Админка",
 }
@@ -1551,7 +1551,7 @@ def main_menu(user_id: Optional[int] = None):
         [KeyboardButton(text="🤝 Мои сделки"), KeyboardButton(text="🔔 Подписки")],
         [KeyboardButton(text="🆕 Новые объявления"), KeyboardButton(text="🔥 Популярные маршруты")],
         [KeyboardButton(text="💰 Поднять объявление"), KeyboardButton(text="📊 Статистика")],
-        [KeyboardButton(text="🚩 Пожаловаться"), KeyboardButton(text="ℹ️ Помощь")],
+        [KeyboardButton(text="🚩 Жалоба / Баг / Поддержка"), KeyboardButton(text="ℹ️ Помощь")],
     ]
 
     if user_id is not None and is_admin(user_id):
@@ -1595,6 +1595,11 @@ class ComplaintFlow(StatesGroup):
 
 class AdminFlow(StatesGroup):
     user_lookup = State()
+
+
+class SupportFlow(StatesGroup):
+    bug_text = State()
+    help_text = State()
 
 
 class ContactFlow(StatesGroup):
@@ -1703,6 +1708,14 @@ def get_admin_posts(limit: int = 30):
             ORDER BY p.created_at DESC
             LIMIT ?
         """, (STATUS_DELETED, limit)).fetchall()
+
+
+def support_menu_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🚩 Пожаловаться на объявление", callback_data="support:complaint")],
+        [InlineKeyboardButton(text="🐞 Сообщить о баге", callback_data="support:bug")],
+        [InlineKeyboardButton(text="🆘 Связаться с поддержкой", callback_data="support:help")],
+    ])
 
 
 def get_user_profile(user_id: int):
@@ -2923,6 +2936,15 @@ async def inline_search_handler(inline_query: InlineQuery):
 # =========================
 
 
+@router.message(StateFilter("*"), F.text == "🚩 Жалоба / Баг / Поддержка")
+async def support_start(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer(
+        "Выберите, что хотите сделать:",
+        reply_markup=support_menu_kb()
+    )
+    
+
 @router.message(F.text.in_(MAIN_MENU_TEXTS))
 async def global_main_menu_router(message: Message, state: FSMContext):
     text = (message.text or "").strip()
@@ -3392,6 +3414,106 @@ async def create_back_handler(callback: CallbackQuery, state: FSMContext):
     await render_create_step(prev_step, callback.message, state)
     await callback.answer()
 
+
+@router.callback_query(F.data.startswith("support:"))
+async def support_router(callback: CallbackQuery, state: FSMContext):
+    action = callback.data.split(":")[1]
+
+    if action == "complaint":
+        await state.clear()
+        await state.set_state(ComplaintFlow.post_id)
+        await callback.message.answer(
+            "🚩 <b>Жалоба на объявление</b>\n\n"
+            "Введите <b>ID объявления</b>, на которое хотите пожаловаться.\n\n"
+            "ID указан внизу каждого объявления."
+        )
+        await callback.answer()
+        return
+
+    if action == "bug":
+        await state.clear()
+        await state.set_state(SupportFlow.bug_text)
+        await callback.message.answer(
+            "🐞 <b>Сообщение о баге</b>\n\n"
+            "Опишите проблему:\n"
+            "• что вы нажали\n"
+            "• что должно было произойти\n"
+            "• что произошло на самом деле\n\n"
+            "Можно одним сообщением."
+        )
+        await callback.answer()
+        return
+
+    if action == "help":
+        await state.clear()
+        await state.set_state(SupportFlow.help_text)
+        await callback.message.answer(
+            "🆘 <b>Связь с поддержкой</b>\n\n"
+            "Напишите ваш вопрос или проблему одним сообщением."
+        )
+        await callback.answer()
+        return
+
+    await callback.answer("Неизвестное действие", show_alert=True)
+
+
+@router.message(SupportFlow.bug_text)
+async def support_bug_input(message: Message, state: FSMContext):
+    text = (message.text or "").strip()
+    if len(text) < 3:
+        await message.answer("Опишите баг чуть подробнее.")
+        return
+
+    username = f"@{message.from_user.username}" if message.from_user.username else "без username"
+
+    admin_text = (
+        "🐞 <b>Новый баг-репорт</b>\n\n"
+        f"<b>Пользователь:</b> {username}\n"
+        f"<b>ID:</b> {message.from_user.id}\n\n"
+        f"<b>Описание:</b>\n{html.escape(text[:2000])}"
+    )
+
+    for admin_id in ADMIN_IDS:
+        try:
+            await message.bot.send_message(admin_id, admin_text)
+        except Exception as e:
+            print(f"BUG REPORT SEND ERROR: {e}")
+
+    await message.answer(
+        "✅ Сообщение о баге отправлено. Спасибо.",
+        reply_markup=main_menu(message.from_user.id)
+    )
+    await state.clear()
+
+
+@router.message(SupportFlow.help_text)
+async def support_help_input(message: Message, state: FSMContext):
+    text = (message.text or "").strip()
+    if len(text) < 3:
+        await message.answer("Опишите вопрос чуть подробнее.")
+        return
+
+    username = f"@{message.from_user.username}" if message.from_user.username else "без username"
+
+    admin_text = (
+        "🆘 <b>Новое обращение в поддержку</b>\n\n"
+        f"<b>Пользователь:</b> {username}\n"
+        f"<b>ID:</b> {message.from_user.id}\n\n"
+        f"<b>Сообщение:</b>\n{html.escape(text[:2000])}"
+    )
+
+    for admin_id in ADMIN_IDS:
+        try:
+            await message.bot.send_message(admin_id, admin_text)
+        except Exception as e:
+            print(f"SUPPORT SEND ERROR: {e}")
+
+    await message.answer(
+        "✅ Ваше сообщение отправлено в поддержку.",
+        reply_markup=main_menu(message.from_user.id)
+    )
+    await state.clear()
+    
 
 @router.callback_query(F.data.startswith("from_country_pick:"))
 async def pick_from_country(callback: CallbackQuery, state: FSMContext):

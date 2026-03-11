@@ -5566,33 +5566,46 @@ async def dispute_resolve_handler(callback: CallbackQuery):
         await callback.answer("Нет доступа", show_alert=True)
         return
 
+    deal = get_deal(dispute["deal_id"])
+    if not deal:
+        await callback.answer("Сделка не найдена", show_alert=True)
+        return
+
     with closing(connect_db()) as conn, conn:
         conn.execute(
             "UPDATE disputes SET status=?, updated_at=? WHERE id=?",
             (DISPUTE_RESOLVED, now_ts(), dispute_id)
         )
         conn.execute(
-            "UPDATE deals SET status=?, updated_at=? WHERE id=?",
-            (DEAL_ACCEPTED, now_ts(), dispute["deal_id"])
+            "UPDATE deals SET status=?, owner_confirmed=1, requester_confirmed=1, updated_at=?, completed_at=? WHERE id=?",
+            (DEAL_COMPLETED, now_ts(), now_ts(), dispute["deal_id"])
         )
 
+    completed_deal = get_deal(dispute["deal_id"])
     updated_dispute = get_dispute(dispute_id)
+
+    await callback.message.answer(
+        "✅ <b>Спор решен</b>\n\n"
+        "Сделка завершена по соглашению сторон.\n"
+        "Теперь вы можете оставить отзыв о второй стороне.",
+        reply_markup=deal_open_kb(completed_deal, callback.from_user.id)
+    )
 
     try:
         await callback.bot.send_message(
             dispute["against_user_id"],
-            "✅ Спор закрыт как решенный.\n\n"
-            f"{dispute_text(updated_dispute)}\n\n"
-            "Теперь сделка снова активна. Если передача состоялась — подтвердите завершение в разделе 'Мои сделки'."
+            "✅ <b>Спор по сделке решен</b>\n\n"
+            "Сделка завершена по соглашению сторон.\n"
+            "Теперь вы можете оставить отзыв о второй стороне.",
+            reply_markup=deal_open_kb(completed_deal, dispute["against_user_id"])
         )
     except Exception as e:
         print(f"DISPUTE RESOLVE NOTIFY ERROR: {e}")
 
     await callback.message.answer(
-        "✅ Спор отмечен как решенный.\n\n"
-        f"{dispute_text(updated_dispute)}\n\n"
-        "Сделка возвращена в активное состояние. Если все прошло успешно — подтвердите завершение."
+        f"✅ <b>Сделка завершена</b>\n\n{dispute_text(updated_dispute)}"
     )
+
     await callback.answer()
     
 

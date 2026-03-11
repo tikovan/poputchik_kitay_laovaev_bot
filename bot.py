@@ -2331,6 +2331,74 @@ async def inline_search_handler(inline_query: InlineQuery):
     await inline_query.answer(results, cache_time=1, is_personal=True)
 
 
+# =========================
+# ГЛОБАЛЬНОЕ МЕНЮ
+# =========================
+
+
+@router.message(F.text.in_(MAIN_MENU_TEXTS))
+async def global_main_menu_router(message: Message, state: FSMContext):
+    text = (message.text or "").strip()
+
+    if text == "👨‍💼 Админка" and not is_admin(message.from_user.id):
+        await message.answer("Нет доступа.")
+        return
+
+    await state.clear()
+
+    if text == "✈️ Взять посылку":
+        await add_trip(message, state)
+        return
+
+    if text == "📦 Отправить посылку":
+        await add_parcel(message, state)
+        return
+
+    if text == "🔎 Найти совпадения":
+        await find_start(message, state)
+        return
+
+    if text == "📋 Мои объявления":
+        await my_posts_handler(message)
+        return
+
+    if text == "🤝 Мои сделки":
+        await my_deals_menu(message)
+        return
+
+    if text == "🔥 Популярные маршруты":
+        await popular_routes_handler(message)
+        return
+
+    if text == "🆕 Новые объявления":
+        await recent_posts_handler(message)
+        return
+
+    if text == "🔔 Подписки":
+        await subscriptions_menu(message)
+        return
+
+    if text == "📊 Статистика":
+        await stats_handler(message)
+        return
+
+    if text == "💰 Поднять объявление":
+        await bump_info(message)
+        return
+
+    if text == "🚩 Пожаловаться":
+        await complaint_start(message, state)
+        return
+
+    if text == "ℹ️ Помощь":
+        await help_handler(message)
+        return
+
+    if text == "👨‍💼 Админка":
+        await admin_menu_handler(message)
+        return
+        
+
 @router.message(CommandStart())
 async def start_handler(message: Message, state: FSMContext):
     upsert_user(message)

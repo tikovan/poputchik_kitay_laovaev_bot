@@ -748,6 +748,11 @@ def ban_user(user_id: int):
         )
 
 
+def unban_user(user_id: int):
+    with closing(connect_db()) as conn, conn:
+        conn.execute("UPDATE users SET is_banned=0 WHERE user_id=?", (user_id,))
+
+
 def anti_spam_check(user_id: int) -> Optional[str]:
     with closing(connect_db()) as conn, conn:
         row = conn.execute("SELECT is_banned, last_action_at FROM users WHERE user_id=?", (user_id,)).fetchone()
@@ -1197,8 +1202,9 @@ def subscription_actions_kb():
 
 def admin_menu_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📋 Объявления на модерации", callback_data="admin:pending_posts")],
+        [InlineKeyboardButton(text="📚 Все объявления", callback_data="admin:all_posts")],
         [InlineKeyboardButton(text="🆘 Последние жалобы", callback_data="admin:complaints")],
+        [InlineKeyboardButton(text="👤 Пользователь", callback_data="admin:user_lookup")],
         [InlineKeyboardButton(text="💰 Заявки на поднятие", callback_data="admin:bump_orders")],
         [InlineKeyboardButton(text="📊 Статистика", callback_data="admin:stats")],
     ])
@@ -1312,6 +1318,10 @@ class ComplaintFlow(StatesGroup):
     reason = State()
 
 
+class AdminFlow(StatesGroup):
+    user_lookup = State()
+
+
 class ContactFlow(StatesGroup):
     message_text = State()
 
@@ -1402,6 +1412,111 @@ def get_pending_bump_orders(limit: int = 20):
             ORDER BY created_at DESC
             LIMIT ?
         """, (limit,)).fetchall()
+
+
+def get_admin_posts(limit: int = 30):
+    with closing(connect_db()) as conn:
+        return conn.execute("""
+            SELECT p.*, u.username, u.full_name
+            FROM posts p
+            LEFT JOIN users u ON u.user_id = p.user_id
+            WHERE p.status != ?
+            ORDER BY p.created_at DESC
+            LIMIT ?
+        """, (STATUS_DELETED, limit)).fetchall()
+
+
+def get_user_profile(user_id: int):
+    with closing(connect_db()) as conn:
+        user = conn.execute("""
+            SELECT *
+            FROM users
+            WHERE user_id=?
+        """, (user_id,)).fetchone()
+
+        posts_count = conn.execute("""
+            SELECT COUNT(*) AS c
+            FROM posts
+            WHERE user_id=? AND status != ?
+        """, (user_id, STATUS_DELETED)).fetchone()["c"]
+
+        active_posts = conn.execute("""
+            SELECT COUNT(*) AS c
+            FROM posts
+            WHERE user_id=? AND status=?
+        """, (user_id, STATUS_ACTIVE)).fetchone()["c"]
+
+        completed_deals = conn.execute("""
+            SELECT COUNT(*) AS c
+            FROM deals
+            WHERE status=? AND (owner_user_id=? OR requester_user_id=?)
+        """, (DEAL_COMPLETED, user_id, user_id)).fetchone()["c"]
+
+        complaints_received = conn.execute("""
+            SELECT COUNT(*) AS c
+            FROM complaints c
+            LEFT JOIN posts p ON p.id = c.post_id
+            WHERE p.user_id=?
+        """, (user_id,)).fetchone()["c"]
+
+        return {
+            "user": user,
+            "posts_count": int(posts_count or 0),
+            "active_posts": int(active_posts or 0),
+            "completed_deals": int(completed_deals or 0),
+            "complaints_received": int(complaints_received or 0),
+        }
+
+
+def admin_posts_kb(rows: List[sqlite3.Row]):
+    buttons = []
+    for row in rows:
+        icon = "✈️" if row["post_type"] == TYPE_TRIP else "📦"
+        status = row["status"]
+        label = f"{row['id']} • {icon} • {row['from_country']}→{row['to_country']} • {status}"
+        buttons.append([InlineKeyboardButton(text=label[:64], callback_data=f"adminpost:{row['id']}")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons or [[InlineKeyboardButton(text="Пусто", callback_data="noop")]])
+
+
+def admin_post_manage_kb(post_id: int, owner_user_id: int):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="❌ Скрыть", callback_data=f"admin_hide_post:{post_id}"),
+            InlineKeyboardButton(text="🗑 Удалить", callback_data=f"admin_delete_post:{post_id}")
+        ],
+        [
+            InlineKeyboardButton(text="🚫 Бан владельца", callback_data=f"admin_ban_user:{owner_user_id}"),
+            InlineKeyboardButton(text="👤 Профиль владельца", callback_data=f"admin_user:{owner_user_id}")
+        ]
+    ])
+
+
+def admin_bump_orders_kb(order_id: int, post_id: int):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Подтвердить", callback_data=f"admin_bump_confirm:{order_id}"),
+            InlineKeyboardButton(text="❌ Отклонить", callback_data=f"admin_bump_reject:{order_id}")
+        ],
+        [
+            InlineKeyboardButton(text="📄 Открыть объявление", callback_data=f"adminpost:{post_id}")
+        ]
+    ])
+
+
+def admin_user_actions_kb(user_id: int, is_verified: bool, is_banned: bool):
+    rows = []
+
+    if is_verified:
+        rows.append([InlineKeyboardButton(text="↩️ Снять верификацию", callback_data=f"admin_user_unverify:{user_id}")])
+    else:
+        rows.append([InlineKeyboardButton(text="✅ Верифицировать", callback_data=f"admin_user_verify:{user_id}")])
+
+    if is_banned:
+        rows.append([InlineKeyboardButton(text="♻️ Разбанить", callback_data=f"admin_user_unban:{user_id}")])
+    else:
+        rows.append([InlineKeyboardButton(text="🚫 Забанить", callback_data=f"admin_user_ban:{user_id}")])
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def admin_stats_text() -> str:
@@ -4033,28 +4148,274 @@ async def admin_stats_handler(callback: CallbackQuery):
     await callback.answer()
 
 
-@router.callback_query(F.data == "admin:pending_posts")
-async def admin_pending_posts_handler(callback: CallbackQuery):
+@router.callback_query(F.data == "admin:all_posts")
+async def admin_all_posts_handler(callback: CallbackQuery):
     if not is_admin(callback.from_user.id):
         await callback.answer("Нет доступа", show_alert=True)
         return
 
-    rows = get_pending_posts(20)
+    rows = get_admin_posts(30)
     if not rows:
-        await callback.message.answer("На модерации сейчас нет объявлений.")
+        await callback.message.answer("Объявлений пока нет.")
         await callback.answer()
         return
 
-    await callback.message.answer(f"⏳ Объявлений на модерации: {len(rows)}")
-
-    for row in rows:
-        await callback.message.answer(
-            post_text(row),
-            reply_markup=admin_post_actions_kb(row["id"])
-        )
-
+    await callback.message.answer(
+        f"📚 Всего показано объявлений: {len(rows)}",
+        reply_markup=admin_posts_kb(rows)
+    )
     await callback.answer()
 
+
+@router.callback_query(F.data.startswith("adminpost:"))
+async def admin_open_post(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    post_id = int(callback.data.split(":")[1])
+    row = get_post(post_id)
+
+    if not row:
+        await callback.answer("Объявление не найдено", show_alert=True)
+        return
+
+    text = post_text(row)
+    if len(text) > 4000:
+        text = text[:3900] + "\n\n..."
+
+    await callback.message.answer(
+        text,
+        reply_markup=admin_post_manage_kb(post_id, row["user_id"])
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admin_hide_post:"))
+async def admin_hide_post_direct(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    post_id = int(callback.data.split(":")[1])
+    row = get_post(post_id)
+
+    if not row:
+        await callback.answer("Объявление не найдено", show_alert=True)
+        return
+
+    await remove_post_from_channel(callback.bot, row)
+
+    with closing(connect_db()) as conn, conn:
+        conn.execute(
+            "UPDATE posts SET status=?, updated_at=? WHERE id=?",
+            (STATUS_INACTIVE, now_ts(), post_id)
+        )
+
+    try:
+        await callback.bot.send_message(
+            row["user_id"],
+            f"⚠️ Ваше объявление ID {post_id} скрыто администратором."
+        )
+    except Exception:
+        pass
+
+    await callback.message.answer(f"❌ Объявление {post_id} скрыто.")
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admin_delete_post:"))
+async def admin_delete_post_direct(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    post_id = int(callback.data.split(":")[1])
+    row = get_post(post_id)
+
+    if not row:
+        await callback.answer("Объявление не найдено", show_alert=True)
+        return
+
+    await remove_post_from_channel(callback.bot, row)
+
+    with closing(connect_db()) as conn, conn:
+        conn.execute(
+            "UPDATE posts SET status=?, updated_at=? WHERE id=?",
+            (STATUS_DELETED, now_ts(), post_id)
+        )
+
+    try:
+        await callback.bot.send_message(
+            row["user_id"],
+            f"🗑 Ваше объявление ID {post_id} удалено администратором."
+        )
+    except Exception:
+        pass
+
+    await callback.message.answer(f"🗑 Объявление {post_id} удалено.")
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admin_ban_user:"))
+async def admin_ban_user_direct(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    user_id = int(callback.data.split(":")[1])
+    ban_user(user_id)
+
+    try:
+        await callback.bot.send_message(
+            user_id,
+            "⛔ Ваш аккаунт ограничен администратором."
+        )
+    except Exception:
+        pass
+
+    await callback.message.answer(f"🚫 Пользователь {user_id} забанен.")
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin:user_lookup")
+async def admin_user_lookup_start(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    await state.clear()
+    await state.set_state(AdminFlow.user_lookup)
+    await callback.message.answer("Введите USER_ID пользователя:")
+    await callback.answer()
+
+
+@router.message(AdminFlow.user_lookup)
+async def admin_user_lookup_input(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        await state.clear()
+        return
+
+    text = (message.text or "").strip()
+    if not text.isdigit():
+        await message.answer("Введите корректный USER_ID числом.")
+        return
+
+    user_id = int(text)
+    profile = get_user_profile(user_id)
+    user = profile["user"]
+
+    if not user:
+        await message.answer("Пользователь не найден.")
+        await state.clear()
+        return
+
+    avg_rating, reviews_count = user_rating_summary(user_id)
+
+    text = (
+        f"👤 <b>Профиль пользователя</b>\n\n"
+        f"<b>USER_ID:</b> {user_id}\n"
+        f"<b>Username:</b> @{html.escape(user['username']) if user['username'] else 'нет'}\n"
+        f"<b>Имя:</b> {html.escape(user['full_name'] or 'не указано')}\n"
+        f"<b>Верификация:</b> {'да' if user['is_verified'] else 'нет'}\n"
+        f"<b>Бан:</b> {'да' if user['is_banned'] else 'нет'}\n"
+        f"<b>Объявлений всего:</b> {profile['posts_count']}\n"
+        f"<b>Активных объявлений:</b> {profile['active_posts']}\n"
+        f"<b>Завершенных сделок:</b> {profile['completed_deals']}\n"
+        f"<b>Жалоб на пользователя:</b> {profile['complaints_received']}\n"
+        f"<b>Рейтинг:</b> {avg_rating:.1f} ({reviews_count} {reviews_word(reviews_count)})\n"
+    )
+
+    await message.answer(
+        text,
+        reply_markup=admin_user_actions_kb(user_id, bool(user["is_verified"]), bool(user["is_banned"]))
+    )
+    await state.clear()
+
+
+@router.callback_query(F.data.startswith("admin_user:"))
+async def admin_open_user_profile(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    user_id = int(callback.data.split(":")[1])
+    profile = get_user_profile(user_id)
+    user = profile["user"]
+
+    if not user:
+        await callback.answer("Пользователь не найден", show_alert=True)
+        return
+
+    avg_rating, reviews_count = user_rating_summary(user_id)
+
+    text = (
+        f"👤 <b>Профиль пользователя</b>\n\n"
+        f"<b>USER_ID:</b> {user_id}\n"
+        f"<b>Username:</b> @{html.escape(user['username']) if user['username'] else 'нет'}\n"
+        f"<b>Имя:</b> {html.escape(user['full_name'] or 'не указано')}\n"
+        f"<b>Верификация:</b> {'да' if user['is_verified'] else 'нет'}\n"
+        f"<b>Бан:</b> {'да' if user['is_banned'] else 'нет'}\n"
+        f"<b>Объявлений всего:</b> {profile['posts_count']}\n"
+        f"<b>Активных объявлений:</b> {profile['active_posts']}\n"
+        f"<b>Завершенных сделок:</b> {profile['completed_deals']}\n"
+        f"<b>Жалоб на пользователя:</b> {profile['complaints_received']}\n"
+        f"<b>Рейтинг:</b> {avg_rating:.1f} ({reviews_count} {reviews_word(reviews_count)})\n"
+    )
+
+    await callback.message.answer(
+        text,
+        reply_markup=admin_user_actions_kb(user_id, bool(user["is_verified"]), bool(user["is_banned"]))
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admin_user_verify:"))
+async def admin_user_verify_btn(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    user_id = int(callback.data.split(":")[1])
+    verify_user(user_id)
+    await callback.message.answer(f"✅ Пользователь {user_id} верифицирован.")
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admin_user_unverify:"))
+async def admin_user_unverify_btn(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    user_id = int(callback.data.split(":")[1])
+    unverify_user(user_id)
+    await callback.message.answer(f"↩️ Верификация пользователя {user_id} снята.")
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admin_user_ban:"))
+async def admin_user_ban_btn(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    user_id = int(callback.data.split(":")[1])
+    ban_user(user_id)
+    await callback.message.answer(f"🚫 Пользователь {user_id} забанен.")
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admin_user_unban:"))
+async def admin_user_unban_btn(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    user_id = int(callback.data.split(":")[1])
+    unban_user(user_id)
+    await callback.message.answer(f"♻️ Пользователь {user_id} разбанен.")
+    await callback.answer()
 
 @router.callback_query(F.data == "admin:complaints")
 async def admin_complaints_handler(callback: CallbackQuery):
@@ -4223,8 +4584,81 @@ async def admin_bump_orders_handler(callback: CallbackQuery):
             f"<b>Сумма:</b> {order['amount']} {order['currency']}\n"
             f"<b>Статус:</b> {order['status']}"
         )
-        await callback.message.answer(text)
+        await callback.message.answer(
+            text,
+            reply_markup=admin_bump_orders_kb(order["id"], order["post_id"])
+        )
 
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admin_bump_confirm:"))
+async def admin_bump_confirm_btn(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    order_id = int(callback.data.split(":")[1])
+
+    with closing(connect_db()) as conn, conn:
+        order = conn.execute("SELECT * FROM bump_orders WHERE id=?", (order_id,)).fetchone()
+        if not order:
+            await callback.answer("Заказ не найден", show_alert=True)
+            return
+
+        if order["status"] == "paid":
+            await callback.answer("Уже подтверждено", show_alert=True)
+            return
+
+        conn.execute(
+            "UPDATE bump_orders SET status='paid', paid_at=? WHERE id=?",
+            (now_ts(), order_id)
+        )
+        conn.execute(
+            "UPDATE posts SET bumped_at=?, updated_at=? WHERE id=?",
+            (now_ts(), now_ts(), order["post_id"])
+        )
+
+    try:
+        await callback.bot.send_message(
+            order["user_id"],
+            f"✅ Оплата по заказу {order_id} подтверждена.\nВаше объявление поднято выше."
+        )
+    except Exception:
+        pass
+
+    await callback.message.answer(f"✅ Заказ {order_id} подтвержден.")
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admin_bump_reject:"))
+async def admin_bump_reject_btn(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    order_id = int(callback.data.split(":")[1])
+
+    with closing(connect_db()) as conn, conn:
+        order = conn.execute("SELECT * FROM bump_orders WHERE id=?", (order_id,)).fetchone()
+        if not order:
+            await callback.answer("Заказ не найден", show_alert=True)
+            return
+
+        conn.execute(
+            "UPDATE bump_orders SET status='rejected' WHERE id=?",
+            (order_id,)
+        )
+
+    try:
+        await callback.bot.send_message(
+            order["user_id"],
+            f"❌ Заявка на поднятие {order_id} отклонена."
+        )
+    except Exception:
+        pass
+
+    await callback.message.answer(f"❌ Заказ {order_id} отклонен.")
     await callback.answer()
 
 

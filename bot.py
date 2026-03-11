@@ -3772,22 +3772,28 @@ async def deal_confirm_handler(callback: CallbackQuery):
             requester_confirmed = 1
 
         if owner_confirmed and requester_confirmed:
-            conn.execute("""
-                UPDATE deals
-                SET owner_confirmed=1, requester_confirmed=1, status=?, updated_at=?, completed_at=?
-                WHERE id=?
-            """, (DEAL_COMPLETED, now_ts(), now_ts(), deal_id))
+    conn.execute("""
+        UPDATE deals
+        SET owner_confirmed=1, requester_confirmed=1, status=?, updated_at=?, completed_at=?
+        WHERE id=?
+    """, (DEAL_COMPLETED, now_ts(), now_ts(), deal_id))
 
-            await callback.message.answer("✅ Сделка завершена. Теперь можно оставить отзыв.")
+    completed_deal = get_deal(deal_id)
 
-            try:
-                await callback.bot.send_message(
-                    other_user_id,
-                    f"✅ Сделка #{deal_id} завершена обеими сторонами.\n"
-                    "Теперь вы можете открыть 'Мои сделки' и оставить отзыв."
-                )
-            except Exception as e:
-                print(f"DEAL COMPLETE NOTIFY ERROR: {e}")
+    await callback.message.answer(
+        "✅ Сделка завершена. Теперь можно оставить отзыв.",
+        reply_markup=deal_open_kb(completed_deal, callback.from_user.id)
+    )
+
+    try:
+        await callback.bot.send_message(
+            other_user_id,
+            f"✅ Сделка #{deal_id} завершена обеими сторонами.\n"
+            "Теперь вы можете открыть 'Мои сделки' и оставить отзыв.",
+            reply_markup=deal_open_kb(completed_deal, other_user_id)
+        )
+    except Exception as e:
+        print(f"DEAL COMPLETE NOTIFY ERROR: {e}")
 
         else:
             new_status = DEAL_COMPLETED_BY_OWNER if user_id == deal["owner_user_id"] else DEAL_COMPLETED_BY_REQUESTER

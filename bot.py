@@ -41,6 +41,10 @@ if db_dir:
 CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME", "")
 BOT_USERNAME = os.getenv("BOT_USERNAME", "Poputchik_china_bot").lstrip("@")
 ADMIN_IDS = {474671704}
+MODERATION_ENABLED = False
+
+POST_TTL_DAYS = 30
+AUTO_HIDE_COMPLAINTS_THRESHOLD = 3
 
 BUMP_PRICE_TEXT = os.getenv(
     "BUMP_PRICE_TEXT",
@@ -1534,7 +1538,7 @@ def create_post_record(data: dict, user_id: int) -> int:
             data["description"],
             data.get("contact_note"),
             data.get("photo_file_id"),
-            STATUS_PENDING if ADMIN_IDS else STATUS_ACTIVE,
+            STATUS_PENDING if MODERATION_ENABLED else STATUS_ACTIVE,
             1,
             ts,
             ts,
@@ -3175,7 +3179,7 @@ async def finalize_post(message: Message, state: FSMContext, bot: Bot):
 
         await message.answer(post_text(row), reply_markup=post_actions_kb(post_id, row["status"]))
 
-        if ADMIN_IDS and row["status"] == STATUS_PENDING:
+        if MODERATION_ENABLED and row["status"] == STATUS_PENDING:
             for admin_id in ADMIN_IDS:
                 try:
                     await bot.send_message(
@@ -3455,7 +3459,7 @@ async def activate_post(callback: CallbackQuery, bot: Bot):
         await callback.answer("Ваш аккаунт ограничен", show_alert=True)
         return
 
-    new_status = STATUS_PENDING if ADMIN_IDS else STATUS_ACTIVE
+    new_status = STATUS_PENDING if MODERATION_ENABLED else STATUS_ACTIVE
     expires_at = calculate_post_expires_at(now_ts(), row["travel_date"], POST_TTL_DAYS)
 
     with closing(connect_db()) as conn, conn:

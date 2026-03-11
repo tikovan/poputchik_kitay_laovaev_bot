@@ -1444,6 +1444,25 @@ def deal_open_kb(deal: sqlite3.Row, user_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def get_active_deal_by_post(post_id: int) -> Optional[sqlite3.Row]:
+    with closing(connect_db()) as conn:
+        return conn.execute("""
+            SELECT *
+            FROM deals
+            WHERE post_id=?
+              AND status IN (?, ?, ?, ?, ?)
+            ORDER BY id DESC
+            LIMIT 1
+        """, (
+            post_id,
+            DEAL_ACCEPTED,
+            DEAL_COMPLETED_BY_OWNER,
+            DEAL_COMPLETED_BY_REQUESTER,
+            DEAL_DISPUTE_OPEN,
+            DEAL_DISPUTE_WAITING
+        )).fetchone()
+        
+
 def dispute_actions_kb(dispute: sqlite3.Row, viewer_user_id: int) -> InlineKeyboardMarkup:
     rows = []
 
@@ -4971,7 +4990,49 @@ async def deal_request_accept_handler(callback: CallbackQuery):
         await callback.answer("Объявление не найдено", show_alert=True)
         return
 
+    # если по объявлению уже есть активная сделка — вторую создавать нельзя
+    existing_deal = get_active_deal_by_post(req["post_id"])
+    if existing_deal:
+        await callback.answer("По этому объявлению уже есть активная сделка", show_alert=True)
+        return
+
     with closing(connect_db()) as conn, conn:
+        # повторно читаем заявку внутри транзакции
+        req_db = conn.execute("""
+            SELECT *
+            FROM deal_requests
+            WHERE id=?
+        """, (request_id,)).fetchone()
+
+        if not req_db:
+            await callback.answer("Заявка не найдена", show_alert=True)
+            return
+
+        if req_db["status"] != DEAL_REQUEST_PENDING:
+            await callback.answer("Эта заявка уже обработана", show_alert=True)
+            return
+
+        # ещё раз проверяем сделку внутри транзакции
+        existing_deal_db = conn.execute("""
+            SELECT id
+            FROM deals
+            WHERE post_id=?
+              AND status IN (?, ?, ?, ?, ?)
+            ORDER BY id DESC
+            LIMIT 1
+        """, (
+            req["post_id"],
+            DEAL_ACCEPTED,
+            DEAL_COMPLETED_BY_OWNER,
+            DEAL_COMPLETED_BY_REQUESTER,
+            DEAL_DISPUTE_OPEN,
+            DEAL_DISPUTE_WAITING
+        )).fetchone()
+
+        if existing_deal_db:
+            await callback.answer("По этому объявлению уже есть активная сделка", show_alert=True)
+            return
+
         conn.execute("""
             UPDATE deal_requests
             SET status=?, updated_at=?
@@ -5000,6 +5061,19 @@ async def deal_request_accept_handler(callback: CallbackQuery):
             SET status=?, updated_at=?
             WHERE id=?
         """, (STATUS_INACTIVE, now_ts(), req["post_id"]))
+
+        # все остальные pending-заявки по этому объявлению автоматически закрываем
+        conn.execute("""
+            UPDATE deal_requests
+            SET status=?, updated_at=?
+            WHERE post_id=? AND id != ? AND status=?
+        """, (
+            DEAL_REQUEST_DECLINED,
+            now_ts(),
+            req["post_id"],
+            request_id,
+            DEAL_REQUEST_PENDING
+        ))
 
     await remove_post_from_channel(callback.bot, row)
 

@@ -84,6 +84,11 @@ DEAL_DISPUTE_OPEN = "dispute_open"
 DEAL_DISPUTE_WAITING = "dispute_waiting"
 DEAL_DISPUTE_RESOLVED = "dispute_resolved"
 
+# заявки на сделку (ещё НЕ сделка)
+DEAL_REQUEST_PENDING = "pending"
+DEAL_REQUEST_ACCEPTED = "accepted"
+DEAL_REQUEST_DECLINED = "declined"
+
 DISPUTE_OPEN = "open"
 DISPUTE_WAITING_RESPONSE = "waiting_response"
 DISPUTE_RESPONDED = "responded"
@@ -2750,34 +2755,27 @@ async def start_handler(message: Message, state: FSMContext):
         return
 
     if start_arg.startswith("contact_"):
-        post_id_str = start_arg.replace("contact_", "", 1)
-        if post_id_str.isdigit():
-            row = get_post(int(post_id_str))
-            if row and row["status"] == STATUS_ACTIVE:
-                if row["user_id"] == message.from_user.id:
-                    await message.answer("Это ваше объявление.", reply_markup=main_menu(message.from_user.id))
-                    return
-
-                deal_id = ensure_deal(
-                    post_id=row["id"],
-                    owner_user_id=row["user_id"],
-                    requester_user_id=message.from_user.id,
-                    initiator_user_id=message.from_user.id
-                )
-
-                await state.set_state(ContactFlow.message_text)
-                await state.update_data(
-                    post_id=row["id"],
-                    target_user_id=row["user_id"],
-                    deal_id=deal_id
-                )
-                await message.answer(
-                    "✉️ Вы открыли связь с владельцем объявления:\n\n"
-                    f"{post_text(row)}\n\n"
-                    "Напишите сообщение, и я перешлю его владельцу."
-                )
+    post_id_str = start_arg.replace("contact_", "", 1)
+    if post_id_str.isdigit():
+        row = get_post(int(post_id_str))
+        if row and row["status"] == STATUS_ACTIVE:
+            if row["user_id"] == message.from_user.id:
+                await message.answer("Это ваше объявление.", reply_markup=main_menu(message.from_user.id))
                 return
 
+            await state.set_state(ContactFlow.message_text)
+            await state.update_data(
+                post_id=row["id"],
+                target_user_id=row["user_id"],
+                deal_id=None
+            )
+            await message.answer(
+                "✉️ Вы открыли связь с владельцем объявления:\n\n"
+                f"{post_text(row)}\n\n"
+                "Напишите сообщение, и я перешлю его владельцу."
+            )
+            return
+            
     if start_arg.startswith("post_"):
         post_id_str = start_arg.replace("post_", "", 1)
         if post_id_str.isdigit():
@@ -3487,7 +3485,7 @@ async def finalize_post(message: Message, state: FSMContext, bot: Bot):
             return
 
         await message.answer(
-            "✅ Объявление создано.\n" + ("Оно отправлено на модерацию." if ADMIN_IDS else "Оно уже активно."),
+    "✅ Объявление создано.\n" + ("Оно отправлено на модерацию." if MODERATION_ENABLED else "Оно уже активно."),
             reply_markup=main_menu(message.from_user.id)
         )
 
@@ -3782,16 +3780,16 @@ async def activate_post(callback: CallbackQuery, bot: Bot):
             (new_status, now_ts(), expires_at, post_id)
         )
 
-    await callback.message.answer(
-        f"Объявление {post_id} " + ("отправлено на повторную модерацию." if ADMIN_IDS else "активировано.")
-    )
+await callback.message.answer(
+    f"Объявление {post_id} " + ("отправлено на повторную модерацию." if MODERATION_ENABLED else "активировано.")
+)
 
-    if not ADMIN_IDS:
-        await safe_publish(bot, post_id)
-        await notify_coincidence_users(bot, post_id)
-        await notify_subscribers(bot, post_id)
+if not MODERATION_ENABLED:
+    await safe_publish(bot, post_id)
+    await notify_coincidence_users(bot, post_id)
+    await notify_subscribers(bot, post_id)
 
-    await callback.answer()
+await callback.answer()
 
 @router.callback_query(F.data.startswith("bump:"))
 async def bump_post(callback: CallbackQuery):
@@ -4308,27 +4306,18 @@ async def contact_owner(callback: CallbackQuery, state: FSMContext):
         await callback.answer("Это ваше объявление", show_alert=True)
         return
 
-    deal_id = ensure_deal(
-        post_id=post_id,
-        owner_user_id=owner_id,
-        requester_user_id=callback.from_user.id,
-        initiator_user_id=callback.from_user.id
-    )
-
     await state.set_state(ContactFlow.message_text)
     await state.update_data(
         post_id=post_id,
         target_user_id=owner_id,
-        deal_id=deal_id
+        deal_id=None
     )
 
     await callback.message.answer(
         "✉️ <b>Напишите сообщение владельцу объявления.</b>\n"
         "Я перешлю его через бота.\n\n"
-
         "🔒 <b>Важно:</b>\n"
         "Никогда не переводите предоплату незнакомым людям.\n\n"
-
         "Перед сделкой рекомендуем проверить:\n"
         "• WeChat второго пользователя\n"
         "• историю аккаунта\n"
@@ -4336,7 +4325,6 @@ async def contact_owner(callback: CallbackQuery, state: FSMContext):
     )
 
     await callback.answer()
-
 @router.callback_query(F.data == "admin:stats")
 async def admin_stats_handler(callback: CallbackQuery):
     if not is_admin(callback.from_user.id):

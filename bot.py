@@ -1551,14 +1551,14 @@ def deal_open_kb(deal: sqlite3.Row, user_id: int) -> InlineKeyboardMarkup:
     viewer_is_owner = user_id == deal["owner_user_id"]
     other_user_id = deal["requester_user_id"] if viewer_is_owner else deal["owner_user_id"]
 
-    user_already_confirmed = (
-        bool(deal["owner_confirmed"]) if viewer_is_owner else bool(deal["requester_confirmed"])
-    )
+    owner_confirmed = int(deal["owner_confirmed"] or 0)
+    requester_confirmed = int(deal["requester_confirmed"] or 0)
 
-    both_confirmed = bool(deal["owner_confirmed"]) and bool(deal["requester_confirmed"])
+    user_confirmed = owner_confirmed if viewer_is_owner else requester_confirmed
+    both_confirmed = owner_confirmed == 1 and requester_confirmed == 1
 
-    # Если оба подтвердили — сразу показываем отзыв
-    if deal["status"] == DEAL_COMPLETED or both_confirmed:
+    # Если обе стороны подтвердили — только отзыв и назад
+    if both_confirmed or deal["status"] == DEAL_COMPLETED:
         if not has_user_left_review_for_deal(deal, user_id):
             rows.append([
                 InlineKeyboardButton(
@@ -1567,45 +1567,67 @@ def deal_open_kb(deal: sqlite3.Row, user_id: int) -> InlineKeyboardMarkup:
                 )
             ])
 
-    elif deal["status"] in (DEAL_ACCEPTED, DEAL_COMPLETED_BY_OWNER, DEAL_COMPLETED_BY_REQUESTER):
-        # Кнопку подтверждения показываем только если этот пользователь ЕЩЁ не подтвердил
-        if not user_already_confirmed:
+        rows.append([
+            InlineKeyboardButton(
+                text="⬅️ Назад",
+                callback_data="back:my_deals"
+            )
+        ])
+        return InlineKeyboardMarkup(inline_keyboard=rows)
+
+    # Если спор
+    if deal["status"] in (DEAL_DISPUTE_OPEN, DEAL_DISPUTE_WAITING):
+        dispute = get_open_dispute_by_deal(deal["id"])
+        if dispute:
+            rows.extend(dispute_actions_kb(dispute, user_id).inline_keyboard)
+
+        rows.append([
+            InlineKeyboardButton(
+                text="⬅️ Назад",
+                callback_data="back:my_deals"
+            )
+        ])
+        return InlineKeyboardMarkup(inline_keyboard=rows)
+
+    # Если сделка неуспешна / отменена
+    if deal["status"] in (DEAL_FAILED, DEAL_CANCELLED):
+        if not has_user_left_review_for_deal(deal, user_id):
             rows.append([
                 InlineKeyboardButton(
-                    text="✅ Подтвердить завершение",
-                    callback_data=f"deal_confirm:{deal['id']}"
+                    text="⭐ Оставить отзыв",
+                    callback_data=f"deal_review:{deal['id']}"
                 )
             ])
 
+        rows.append([
+            InlineKeyboardButton(
+                text="⬅️ Назад",
+                callback_data="back:my_deals"
+            )
+        ])
+        return InlineKeyboardMarkup(inline_keyboard=rows)
+
+    # Активная сделка
+    if not user_confirmed:
+        rows.append([
+            InlineKeyboardButton(
+                text="✅ Подтвердить завершение",
+                callback_data=f"deal_confirm:{deal['id']}"
+            )
+        ])
         rows.append([
             InlineKeyboardButton(
                 text="📦 Посылка не доставлена",
                 callback_data=f"deal_dispute_open:{deal['id']}"
             )
         ])
-        rows.append([
-            InlineKeyboardButton(
-                text="💬 Написать в чат через бота",
-                callback_data=f"reply_contact:{deal['post_id']}:{other_user_id}:{deal['id']}"
-            )
-        ])
 
-    elif deal["status"] in (DEAL_DISPUTE_OPEN, DEAL_DISPUTE_WAITING):
-        dispute = get_open_dispute_by_deal(deal["id"])
-
-        if dispute:
-            dispute_kb = dispute_actions_kb(dispute, user_id)
-            rows.extend(dispute_kb.inline_keyboard)
-
-    elif deal["status"] in (DEAL_FAILED, DEAL_CANCELLED):
-        if not has_user_left_review_for_deal(deal, user_id):
-            rows.append([
-                InlineKeyboardButton(
-                    text="⭐ Оставить отзыв",
-                    callback_data=f"deal_review:{deal['id']}"
-                )
-            ])
-
+    rows.append([
+        InlineKeyboardButton(
+            text="💬 Написать в чат через бота",
+            callback_data=f"reply_contact:{deal['post_id']}:{other_user_id}:{deal['id']}"
+        )
+    ])
     rows.append([
         InlineKeyboardButton(
             text="⬅️ Назад",
@@ -4330,161 +4352,137 @@ async def open_my_post(callback: CallbackQuery):
 @router.callback_query(F.data.startswith("deal_confirm:"))
 async def deal_confirm_handler(callback: CallbackQuery):
     deal_id = int(callback.data.split(":")[1])
-    deal = get_deal(deal_id)
 
-    if not deal:
-        await callback.answer("Сделка не найдена", show_alert=True)
-        return
+    with closing(connect_db()) as conn, conn:
+        deal = conn.execute("SELECT * FROM deals WHERE id=?", (deal_id,)).fetchone()
 
-    user_id = callback.from_user.id
-    if user_id not in (deal["owner_user_id"], deal["requester_user_id"]):
-        await callback.answer("Нет доступа", show_alert=True)
-        return
+        if not deal:
+            await callback.answer("Сделка не найдена", show_alert=True)
+            return
 
-    if deal["status"] == DEAL_COMPLETED:
-        route = deal_title(deal)
-        role = "владелец объявления" if user_id == deal["owner_user_id"] else "откликнувшийся пользователь"
+        user_id = callback.from_user.id
+        if user_id not in (deal["owner_user_id"], deal["requester_user_id"]):
+            await callback.answer("Нет доступа", show_alert=True)
+            return
+
+        owner_confirmed = int(deal["owner_confirmed"] or 0)
+        requester_confirmed = int(deal["requester_confirmed"] or 0)
+
+        # если этот пользователь уже подтвердил — просто обновляем кнопки и выходим
+        if user_id == deal["owner_user_id"] and owner_confirmed == 1:
+            fresh_deal = conn.execute("SELECT * FROM deals WHERE id=?", (deal_id,)).fetchone()
+            try:
+                await callback.message.edit_reply_markup(
+                    reply_markup=deal_open_kb(fresh_deal, user_id)
+                )
+            except Exception as e:
+                print(f"DEAL ALREADY CONFIRMED OWNER MARKUP ERROR: {e}")
+            await callback.answer("Вы уже подтвердили завершение")
+            return
+
+        if user_id == deal["requester_user_id"] and requester_confirmed == 1:
+            fresh_deal = conn.execute("SELECT * FROM deals WHERE id=?", (deal_id,)).fetchone()
+            try:
+                await callback.message.edit_reply_markup(
+                    reply_markup=deal_open_kb(fresh_deal, user_id)
+                )
+            except Exception as e:
+                print(f"DEAL ALREADY CONFIRMED REQUESTER MARKUP ERROR: {e}")
+            await callback.answer("Вы уже подтвердили завершение")
+            return
+
+        # ставим подтверждение текущего пользователя
+        if user_id == deal["owner_user_id"]:
+            owner_confirmed = 1
+        else:
+            requester_confirmed = 1
+
+        both_confirmed = owner_confirmed == 1 and requester_confirmed == 1
+
+        if both_confirmed:
+            new_status = DEAL_COMPLETED
+            completed_at = now_ts()
+        elif user_id == deal["owner_user_id"]:
+            new_status = DEAL_COMPLETED_BY_OWNER
+            completed_at = deal["completed_at"]
+        else:
+            new_status = DEAL_COMPLETED_BY_REQUESTER
+            completed_at = deal["completed_at"]
+
+        conn.execute("""
+            UPDATE deals
+            SET owner_confirmed=?,
+                requester_confirmed=?,
+                status=?,
+                updated_at=?,
+                completed_at=?
+            WHERE id=?
+        """, (
+            owner_confirmed,
+            requester_confirmed,
+            new_status,
+            now_ts(),
+            completed_at,
+            deal_id
+        ))
+
+        fresh_deal = conn.execute("SELECT * FROM deals WHERE id=?", (deal_id,)).fetchone()
+
+    # СРАЗУ обновляем кнопки текущего сообщения
+    try:
+        await callback.message.edit_reply_markup(
+            reply_markup=deal_open_kb(fresh_deal, callback.from_user.id)
+        )
+    except Exception as e:
+        print(f"DEAL CONFIRM EDIT MARKUP ERROR: {e}")
+
+    # При желании можно обновить и текст
+    try:
+        route = deal_title(fresh_deal)
+        role = "владелец объявления" if callback.from_user.id == fresh_deal["owner_user_id"] else "откликнувшийся пользователь"
 
         text = (
             f"🤝 <b>{html.escape(route)}</b>\n\n"
-            f"<b>ID сделки:</b> {deal['id']}\n"
-            f"<b>ID объявления:</b> {deal['post_id']}\n"
+            f"<b>ID сделки:</b> {fresh_deal['id']}\n"
+            f"<b>ID объявления:</b> {fresh_deal['post_id']}\n"
             f"<b>Ваша роль:</b> {role}\n"
-            f"<b>Статус:</b> {format_deal_status(deal['status'])}\n\n"
-            "✅ Сделка уже завершена.\n"
-            "Теперь можно оставить отзыв."
+            f"<b>Статус:</b> {format_deal_status(fresh_deal['status'])}"
         )
 
-        try:
-            await callback.message.edit_text(
-                text,
-                reply_markup=deal_open_kb(deal, user_id)
-            )
-        except Exception as e:
-            print(f"DEAL COMPLETED EDIT TEXT ERROR: {e}")
-            try:
-                await callback.message.edit_reply_markup(
-                    reply_markup=deal_open_kb(deal, user_id)
-                )
-            except Exception as e2:
-                print(f"DEAL COMPLETED EDIT MARKUP ERROR: {e2}")
-
-        await callback.answer()
-        return
-
-    other_user_id = deal["requester_user_id"] if user_id == deal["owner_user_id"] else deal["owner_user_id"]
-
-    with closing(connect_db()) as conn, conn:
-        if user_id == deal["owner_user_id"]:
-            owner_confirmed = 1
-            requester_confirmed = deal["requester_confirmed"]
+        if int(fresh_deal["owner_confirmed"] or 0) == 1 and int(fresh_deal["requester_confirmed"] or 0) == 1:
+            text += "\n\n✅ Сделка завершена обеими сторонами.\nТеперь можно оставить отзыв."
         else:
-            owner_confirmed = deal["owner_confirmed"]
-            requester_confirmed = 1
+            text += "\n\n✅ Ваше подтверждение сохранено.\nЖдем подтверждение второй стороны."
 
-        if owner_confirmed and requester_confirmed:
-            conn.execute("""
-                UPDATE deals
-                SET owner_confirmed=1, requester_confirmed=1, status=?, updated_at=?, completed_at=?
-                WHERE id=?
-            """, (DEAL_COMPLETED, now_ts(), now_ts(), deal_id))
+        await callback.message.edit_text(
+            text,
+            reply_markup=deal_open_kb(fresh_deal, callback.from_user.id)
+        )
+    except Exception as e:
+        print(f"DEAL CONFIRM EDIT TEXT ERROR: {e}")
 
-            completed_deal = get_deal(deal_id)
+    # уведомление второй стороне
+    other_user_id = fresh_deal["requester_user_id"] if callback.from_user.id == fresh_deal["owner_user_id"] else fresh_deal["owner_user_id"]
 
-            route = deal_title(completed_deal)
-            role = "владелец объявления" if user_id == completed_deal["owner_user_id"] else "откликнувшийся пользователь"
+    try:
+        both_confirmed = int(fresh_deal["owner_confirmed"] or 0) == 1 and int(fresh_deal["requester_confirmed"] or 0) == 1
 
-            text = (
-                f"🤝 <b>{html.escape(route)}</b>\n\n"
-                f"<b>ID сделки:</b> {completed_deal['id']}\n"
-                f"<b>ID объявления:</b> {completed_deal['post_id']}\n"
-                f"<b>Ваша роль:</b> {role}\n"
-                f"<b>Статус:</b> {format_deal_status(completed_deal['status'])}\n\n"
-                "✅ Сделка завершена.\n"
-                "Теперь можно оставить отзыв."
+        if both_confirmed:
+            await callback.bot.send_message(
+                other_user_id,
+                "✅ Сделка завершена обеими сторонами.\nТеперь можно оставить отзыв.",
+                reply_markup=deal_open_kb(fresh_deal, other_user_id)
             )
-
-            try:
-                await callback.message.edit_text(
-                    text,
-                    reply_markup=deal_open_kb(completed_deal, callback.from_user.id)
-                )
-            except Exception as e:
-                print(f"DEAL COMPLETE EDIT TEXT ERROR: {e}")
-                try:
-                    await callback.message.edit_reply_markup(
-                        reply_markup=deal_open_kb(completed_deal, callback.from_user.id)
-                    )
-                except Exception as e2:
-                    print(f"DEAL COMPLETE EDIT MARKUP ERROR: {e2}")
-
-            try:
-                other_role = "владелец объявления" if other_user_id == completed_deal["owner_user_id"] else "откликнувшийся пользователь"
-                other_text = (
-                    f"🤝 <b>{html.escape(route)}</b>\n\n"
-                    f"<b>ID сделки:</b> {completed_deal['id']}\n"
-                    f"<b>ID объявления:</b> {completed_deal['post_id']}\n"
-                    f"<b>Ваша роль:</b> {other_role}\n"
-                    f"<b>Статус:</b> {format_deal_status(completed_deal['status'])}\n\n"
-                    "✅ Сделка завершена обеими сторонами.\n"
-                    "Теперь можно оставить отзыв."
-                )
-
-                await callback.bot.send_message(
-                    other_user_id,
-                    other_text,
-                    reply_markup=deal_open_kb(completed_deal, other_user_id)
-                )
-            except Exception as e:
-                print(f"DEAL COMPLETE NOTIFY ERROR: {e}")
-
         else:
-            new_status = DEAL_COMPLETED_BY_OWNER if user_id == deal["owner_user_id"] else DEAL_COMPLETED_BY_REQUESTER
-            conn.execute("""
-                UPDATE deals
-                SET owner_confirmed=?, requester_confirmed=?, status=?, updated_at=?
-                WHERE id=?
-            """, (owner_confirmed, requester_confirmed, new_status, now_ts(), deal_id))
-
-            updated_deal = get_deal(deal_id)
-
-            route = deal_title(updated_deal)
-            role = "владелец объявления" if user_id == updated_deal["owner_user_id"] else "откликнувшийся пользователь"
-
-            text = (
-                f"🤝 <b>{html.escape(route)}</b>\n\n"
-                f"<b>ID сделки:</b> {updated_deal['id']}\n"
-                f"<b>ID объявления:</b> {updated_deal['post_id']}\n"
-                f"<b>Ваша роль:</b> {role}\n"
-                f"<b>Статус:</b> {format_deal_status(updated_deal['status'])}\n\n"
-                "✅ Ваше подтверждение сохранено.\n"
-                "Ждем подтверждение второй стороны."
+            await callback.bot.send_message(
+                other_user_id,
+                f"📦 Пользователь подтвердил завершение сделки #{deal_id}.\n"
+                "Откройте 'Мои сделки', чтобы подтвердить завершение со своей стороны."
             )
+    except Exception as e:
+        print(f"DEAL CONFIRM NOTIFY ERROR: {e}")
 
-            try:
-                await callback.message.edit_text(
-                    text,
-                    reply_markup=deal_open_kb(updated_deal, callback.from_user.id)
-                )
-            except Exception as e:
-                print(f"DEAL PARTIAL EDIT TEXT ERROR: {e}")
-                try:
-                    await callback.message.edit_reply_markup(
-                        reply_markup=deal_open_kb(updated_deal, callback.from_user.id)
-                    )
-                except Exception as e2:
-                    print(f"DEAL PARTIAL EDIT MARKUP ERROR: {e2}")
-
-            try:
-                await callback.bot.send_message(
-                    other_user_id,
-                    f"📦 Пользователь подтвердил завершение сделки #{deal_id}.\n"
-                    "Откройте 'Мои сделки', чтобы подтвердить завершение со своей стороны."
-                )
-            except Exception as e:
-                print(f"DEAL PARTIAL CONFIRM NOTIFY ERROR: {e}")
-
-    await callback.answer()
+    await callback.answer("Подтверждение сохранено")
     
 
 @router.callback_query(F.data.startswith("delete:"))

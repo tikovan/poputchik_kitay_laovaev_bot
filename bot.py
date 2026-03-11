@@ -1551,13 +1551,32 @@ def deal_open_kb(deal: sqlite3.Row, user_id: int) -> InlineKeyboardMarkup:
     viewer_is_owner = user_id == deal["owner_user_id"]
     other_user_id = deal["requester_user_id"] if viewer_is_owner else deal["owner_user_id"]
 
-    if deal["status"] in (DEAL_ACCEPTED, DEAL_COMPLETED_BY_OWNER, DEAL_COMPLETED_BY_REQUESTER):
-        rows.append([
-            InlineKeyboardButton(
-                text="✅ Подтвердить завершение",
-                callback_data=f"deal_confirm:{deal['id']}"
-            )
-        ])
+    user_already_confirmed = (
+        bool(deal["owner_confirmed"]) if viewer_is_owner else bool(deal["requester_confirmed"])
+    )
+
+    both_confirmed = bool(deal["owner_confirmed"]) and bool(deal["requester_confirmed"])
+
+    # Если оба подтвердили — сразу показываем отзыв
+    if deal["status"] == DEAL_COMPLETED or both_confirmed:
+        if not has_user_left_review_for_deal(deal, user_id):
+            rows.append([
+                InlineKeyboardButton(
+                    text="⭐ Оставить отзыв",
+                    callback_data=f"deal_review:{deal['id']}"
+                )
+            ])
+
+    elif deal["status"] in (DEAL_ACCEPTED, DEAL_COMPLETED_BY_OWNER, DEAL_COMPLETED_BY_REQUESTER):
+        # Кнопку подтверждения показываем только если этот пользователь ЕЩЁ не подтвердил
+        if not user_already_confirmed:
+            rows.append([
+                InlineKeyboardButton(
+                    text="✅ Подтвердить завершение",
+                    callback_data=f"deal_confirm:{deal['id']}"
+                )
+            ])
+
         rows.append([
             InlineKeyboardButton(
                 text="📦 Посылка не доставлена",
@@ -1570,15 +1589,6 @@ def deal_open_kb(deal: sqlite3.Row, user_id: int) -> InlineKeyboardMarkup:
                 callback_data=f"reply_contact:{deal['post_id']}:{other_user_id}:{deal['id']}"
             )
         ])
-
-    elif deal["status"] == DEAL_COMPLETED:
-        if not has_user_left_review_for_deal(deal, user_id):
-            rows.append([
-                InlineKeyboardButton(
-                    text="⭐ Оставить отзыв",
-                    callback_data=f"deal_review:{deal['id']}"
-                )
-            ])
 
     elif deal["status"] in (DEAL_DISPUTE_OPEN, DEAL_DISPUTE_WAITING):
         dispute = get_open_dispute_by_deal(deal["id"])

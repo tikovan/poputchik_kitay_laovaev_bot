@@ -3553,6 +3553,7 @@ async def support_router(callback: CallbackQuery, state: FSMContext):
 
 
 @router.message(SupportFlow.bug_text)
+@router.message(SupportFlow.bug_text)
 async def support_bug_input(message: Message, state: FSMContext):
     text = (message.text or "").strip()
     if len(text) < 3:
@@ -3564,7 +3565,8 @@ async def support_bug_input(message: Message, state: FSMContext):
     admin_text = (
         "🐞 <b>Новый баг-репорт</b>\n\n"
         f"<b>Пользователь:</b> {username}\n"
-        f"<b>ID:</b> {message.from_user.id}\n\n"
+        f"<b>ID:</b> {message.from_user.id}\n"
+        f"<b>Имя:</b> {html.escape(message.from_user.full_name or 'Без имени')}\n\n"
         f"<b>Описание:</b>\n{html.escape(text[:2000])}"
     )
 
@@ -3575,7 +3577,7 @@ async def support_bug_input(message: Message, state: FSMContext):
             print(f"BUG REPORT SEND ERROR: {e}")
 
     await message.answer(
-        "✅ Сообщение о баге отправлено. Спасибо.",
+        "✅ Сообщение о баге отправлено.",
         reply_markup=main_menu(message.from_user.id)
     )
     await state.clear()
@@ -3593,7 +3595,8 @@ async def support_help_input(message: Message, state: FSMContext):
     admin_text = (
         "🆘 <b>Новое обращение в поддержку</b>\n\n"
         f"<b>Пользователь:</b> {username}\n"
-        f"<b>ID:</b> {message.from_user.id}\n\n"
+        f"<b>ID:</b> {message.from_user.id}\n"
+        f"<b>Имя:</b> {html.escape(message.from_user.full_name or 'Без имени')}\n\n"
         f"<b>Сообщение:</b>\n{html.escape(text[:2000])}"
     )
 
@@ -3678,12 +3681,16 @@ async def pick_from_city(callback: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith("back:"))
 async def back_router(callback: CallbackQuery):
-
     action = callback.data.split(":")[1]
 
     if action == "my_posts":
-
-        posts = get_user_posts(callback.from_user.id)
+        with closing(connect_db()) as conn:
+            posts = conn.execute("""
+                SELECT * FROM posts
+                WHERE user_id=? AND status != 'deleted'
+                ORDER BY created_at DESC
+                LIMIT 30
+            """, (callback.from_user.id,)).fetchall()
 
         if not posts:
             await callback.message.answer("У вас пока нет объявлений.")
@@ -3694,7 +3701,6 @@ async def back_router(callback: CallbackQuery):
             )
 
     elif action == "my_deals":
-
         deals = list_user_deals(callback.from_user.id)
 
         if not deals:
@@ -3704,24 +3710,23 @@ async def back_router(callback: CallbackQuery):
 
             if in_progress:
                 await callback.message.answer(
-                    "🟢 Сделки в процессе",
+                    "🟢 <b>Сделки в процессе</b>",
                     reply_markup=deal_section_kb(in_progress)
                 )
 
             if disputes:
                 await callback.message.answer(
-                    "⚖️ Споры",
+                    "⚖️ <b>Споры</b>",
                     reply_markup=deal_section_kb(disputes)
                 )
 
             if finished:
                 await callback.message.answer(
-                    "✅ Завершённые сделки",
+                    "✅ <b>Завершённые и закрытые</b>",
                     reply_markup=deal_section_kb(finished)
                 )
 
     elif action == "new_posts":
-
         posts = get_recent_posts(10)
 
         if not posts:
@@ -3731,7 +3736,7 @@ async def back_router(callback: CallbackQuery):
 
             for row in posts:
                 await callback.message.answer(
-                    post_text(row),
+                    f"{post_text(row)}\n\n<b>Добавлено:</b> {format_age(row['created_at'])}",
                     reply_markup=public_post_kb(
                         row["id"],
                         row["user_id"],

@@ -4350,11 +4350,14 @@ async def deal_confirm_handler(callback: CallbackQuery):
                 text,
                 reply_markup=deal_open_kb(deal, user_id)
             )
-        except Exception:
-            await callback.message.answer(
-                text,
-                reply_markup=deal_open_kb(deal, user_id)
-            )
+        except Exception as e:
+            print(f"DEAL COMPLETED EDIT TEXT ERROR: {e}")
+            try:
+                await callback.message.edit_reply_markup(
+                    reply_markup=deal_open_kb(deal, user_id)
+                )
+            except Exception as e2:
+                print(f"DEAL COMPLETED EDIT MARKUP ERROR: {e2}")
 
         await callback.answer()
         return
@@ -4396,11 +4399,14 @@ async def deal_confirm_handler(callback: CallbackQuery):
                     text,
                     reply_markup=deal_open_kb(completed_deal, callback.from_user.id)
                 )
-            except Exception:
-                await callback.message.answer(
-                    text,
-                    reply_markup=deal_open_kb(completed_deal, callback.from_user.id)
-                )
+            except Exception as e:
+                print(f"DEAL COMPLETE EDIT TEXT ERROR: {e}")
+                try:
+                    await callback.message.edit_reply_markup(
+                        reply_markup=deal_open_kb(completed_deal, callback.from_user.id)
+                    )
+                except Exception as e2:
+                    print(f"DEAL COMPLETE EDIT MARKUP ERROR: {e2}")
 
             try:
                 other_role = "владелец объявления" if other_user_id == completed_deal["owner_user_id"] else "откликнувшийся пользователь"
@@ -4450,8 +4456,14 @@ async def deal_confirm_handler(callback: CallbackQuery):
                     text,
                     reply_markup=deal_open_kb(updated_deal, callback.from_user.id)
                 )
-            except Exception:
-                await callback.message.answer(text)
+            except Exception as e:
+                print(f"DEAL PARTIAL EDIT TEXT ERROR: {e}")
+                try:
+                    await callback.message.edit_reply_markup(
+                        reply_markup=deal_open_kb(updated_deal, callback.from_user.id)
+                    )
+                except Exception as e2:
+                    print(f"DEAL PARTIAL EDIT MARKUP ERROR: {e2}")
 
             try:
                 await callback.bot.send_message(

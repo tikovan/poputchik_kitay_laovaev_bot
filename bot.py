@@ -4464,7 +4464,7 @@ async def deal_confirm_handler(callback: CallbackQuery):
     # уведомление второй стороне
     other_user_id = fresh_deal["requester_user_id"] if callback.from_user.id == fresh_deal["owner_user_id"] else fresh_deal["owner_user_id"]
 
-    try:
+        try:
         both_confirmed = int(fresh_deal["owner_confirmed"] or 0) == 1 and int(fresh_deal["requester_confirmed"] or 0) == 1
 
         if both_confirmed:
@@ -4477,12 +4477,20 @@ async def deal_confirm_handler(callback: CallbackQuery):
             await callback.bot.send_message(
                 other_user_id,
                 f"📦 Пользователь подтвердил завершение сделки #{deal_id}.\n"
-                "Откройте 'Мои сделки', чтобы подтвердить завершение со своей стороны."
+                "Откройте 'Мои сделки', чтобы подтвердить завершение со своей стороны.",
+                reply_markup=InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [
+                            InlineKeyboardButton(
+                                text="🤝 Мои сделки",
+                                callback_data="back:my_deals"
+                            )
+                        ]
+                    ]
+                )
             )
     except Exception as e:
         print(f"DEAL CONFIRM NOTIFY ERROR: {e}")
-
-    await callback.answer("Подтверждение сохранено")
     
 
 @router.callback_query(F.data.startswith("delete:"))

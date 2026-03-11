@@ -2831,6 +2831,7 @@ async def start_handler(message: Message, state: FSMContext):
         row = get_post(int(post_id_str))
 
         if row and row["status"] == STATUS_ACTIVE:
+
             if row["user_id"] == message.from_user.id:
                 await message.answer(
                     "Это ваше объявление.",
@@ -2839,6 +2840,7 @@ async def start_handler(message: Message, state: FSMContext):
                 return
 
             await state.set_state(ContactFlow.message_text)
+
             await state.update_data(
                 post_id=row["id"],
                 target_user_id=row["user_id"],
@@ -2850,6 +2852,7 @@ async def start_handler(message: Message, state: FSMContext):
                 f"{post_text(row)}\n\n"
                 "Напишите сообщение, и я перешлю его владельцу."
             )
+
             return
             
     if start_arg.startswith("post_"):

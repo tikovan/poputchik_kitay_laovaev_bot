@@ -635,6 +635,22 @@ def init_db():
             UNIQUE(post_a_id, post_b_id)
         );
 
+CREATE TABLE IF NOT EXISTS deal_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    post_id INTEGER NOT NULL,
+    owner_user_id INTEGER NOT NULL,
+    requester_user_id INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_deal_requests_owner
+ON deal_requests(owner_user_id, status, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_deal_requests_requester
+ON deal_requests(requester_user_id, status, created_at);
+
         CREATE TABLE IF NOT EXISTS deals (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             post_id INTEGER NOT NULL,
@@ -925,6 +941,40 @@ def short_post_type(post_type: str) -> str:
     return "✈️ Попутчик" if post_type == TYPE_TRIP else "📦 Посылка"
 
 
+def ensure_deal_request(post_id: int, owner_user_id: int, requester_user_id: int) -> int:
+    with closing(connect_db()) as conn, conn:
+        row = conn.execute("""
+            SELECT id
+            FROM deal_requests
+            WHERE post_id=? AND owner_user_id=? AND requester_user_id=? AND status=?
+            ORDER BY id DESC
+            LIMIT 1
+        """, (post_id, owner_user_id, requester_user_id, DEAL_REQUEST_PENDING)).fetchone()
+
+        if row:
+            return int(row["id"])
+
+        cur = conn.execute("""
+            INSERT INTO deal_requests (
+                post_id, owner_user_id, requester_user_id, status, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (
+            post_id, owner_user_id, requester_user_id,
+            DEAL_REQUEST_PENDING, now_ts(), now_ts()
+        ))
+        return int(cur.lastrowid)
+
+
+def get_deal_request(request_id: int) -> Optional[sqlite3.Row]:
+    with closing(connect_db()) as conn:
+        return conn.execute("""
+            SELECT *
+            FROM deal_requests
+            WHERE id=?
+        """, (request_id,)).fetchone()
+        
+
 def format_deal_status(status: str) -> str:
     mapping = {
         DEAL_CONTACTED: "контакт начат",
@@ -938,6 +988,9 @@ def format_deal_status(status: str) -> str:
         DEAL_DISPUTE_OPEN: "спор активен",
         DEAL_DISPUTE_WAITING: "ожидается ответ по спору",
         DEAL_DISPUTE_RESOLVED: "спор решен",
+        DEAL_REQUEST_PENDING = "pending",
+        DEAL_REQUEST_ACCEPTED = "accepted",
+        DEAL_REQUEST_DECLINED = "declined",
     }
     return mapping.get(status, status)
 
@@ -4886,38 +4939,125 @@ async def offer_deal_handler(callback: CallbackQuery):
         await callback.answer("Объявление не найдено или неактивно", show_alert=True)
         return
 
-    deal_id = ensure_deal(
+    request_id = ensure_deal_request(
         post_id=post_id,
         owner_user_id=owner_id,
-        requester_user_id=requester_id,
-        initiator_user_id=requester_id
+        requester_user_id=requester_id
     )
-
-    with closing(connect_db()) as conn, conn:
-        conn.execute("""
-            UPDATE deals
-            SET status=?, updated_at=?
-            WHERE id=?
-        """, (DEAL_OFFERED, now_ts(), deal_id))
 
     try:
         await callback.bot.send_message(
             owner_id,
-            f"🤝 Вам предложили сделку по объявлению ID {post_id}.\n\n"
+            f"🤝 Пользователь предложил перейти в сделку по объявлению ID {post_id}.\n\n"
             f"Пользователь: {html.escape(callback.from_user.full_name or 'Пользователь')}"
             + (f" (@{html.escape(callback.from_user.username)})" if callback.from_user.username else ""),
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [
-                    InlineKeyboardButton(text="✅ Принять сделку", callback_data=f"deal_accept:{deal_id}"),
-                    InlineKeyboardButton(text="❌ Отклонить", callback_data=f"deal_reject:{deal_id}")
+                    InlineKeyboardButton(text="✅ Принять", callback_data=f"deal_request_accept:{request_id}"),
+                    InlineKeyboardButton(text="❌ Отклонить", callback_data=f"deal_request_decline:{request_id}")
                 ]
             ])
         )
     except Exception:
         pass
 
-    await callback.message.answer("Предложение сделки отправлено владельцу.")
+    await callback.message.answer("Заявка на сделку отправлена владельцу.")
     await callback.answer("Готово")
+
+
+@router.callback_query(F.data.startswith("deal_request_accept:"))
+async def deal_request_accept_handler(callback: CallbackQuery):
+    request_id = int(callback.data.split(":")[1])
+    req = get_deal_request(request_id)
+
+    if not req or req["owner_user_id"] != callback.from_user.id:
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    row = get_post(req["post_id"])
+    if not row:
+        await callback.answer("Объявление не найдено", show_alert=True)
+        return
+
+    with closing(connect_db()) as conn, conn:
+        conn.execute("""
+            UPDATE deal_requests
+            SET status=?, updated_at=?
+            WHERE id=?
+        """, (DEAL_REQUEST_ACCEPTED, now_ts(), request_id))
+
+        cur = conn.execute("""
+            INSERT INTO deals (
+                post_id, owner_user_id, requester_user_id, initiator_user_id,
+                status, owner_confirmed, requester_confirmed, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, 0, 0, ?, ?)
+        """, (
+            req["post_id"],
+            req["owner_user_id"],
+            req["requester_user_id"],
+            req["requester_user_id"],
+            DEAL_ACCEPTED,
+            now_ts(),
+            now_ts()
+        ))
+        deal_id = int(cur.lastrowid)
+
+        conn.execute("""
+            UPDATE posts
+            SET status=?, updated_at=?
+            WHERE id=?
+        """, (STATUS_INACTIVE, now_ts(), req["post_id"]))
+
+    await remove_post_from_channel(callback.bot, row)
+
+    try:
+        await callback.bot.send_message(
+            req["requester_user_id"],
+            f"✅ Ваша заявка принята. Сделка создана по объявлению ID {req['post_id']}.\n\n"
+            "Теперь она доступна во вкладке '🤝 Мои сделки'."
+        )
+    except Exception:
+        pass
+
+    await callback.message.answer(
+        f"✅ Сделка создана.\n"
+        f"Объявление #{req['post_id']} снято из канала и переведено в процесс сделки.\n"
+        f"ID сделки: {deal_id}"
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("deal_request_decline:"))
+async def deal_request_decline_handler(callback: CallbackQuery):
+    request_id = int(callback.data.split(":")[1])
+    req = get_deal_request(request_id)
+
+    if not req or req["owner_user_id"] != callback.from_user.id:
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    with closing(connect_db()) as conn, conn:
+        conn.execute("""
+            UPDATE deal_requests
+            SET status=?, updated_at=?
+            WHERE id=?
+        """, (DEAL_REQUEST_DECLINED, now_ts(), request_id))
+
+    try:
+        await callback.bot.send_message(
+            req["requester_user_id"],
+            f"❌ Ваша заявка на сделку по объявлению ID {req['post_id']} отклонена.\n"
+            "Само объявление остается активным."
+        )
+    except Exception:
+        pass
+
+    await callback.message.answer(
+        "❌ Заявка отклонена.\n"
+        "Объявление остается активным."
+    )
+    await callback.answer()
 
 
 @router.callback_query(F.data.startswith("deal_accept:"))

@@ -995,6 +995,7 @@ def format_deal_status(status: str) -> str:
 }
 return mapping.get(status, status)
 
+
 def deal_status_explanation(status: str, viewer_is_owner: bool) -> str:
     if status == DEAL_CONTACTED:
         return (

@@ -725,6 +725,9 @@ ON deal_requests(requester_user_id, status, created_at);
         ensure_column(conn, "deals", "requester_confirmed", "requester_confirmed INTEGER DEFAULT 0")
         ensure_column(conn, "deals", "updated_at", "updated_at INTEGER DEFAULT 0")
         ensure_column(conn, "users", "onboarding_completed", "onboarding_completed INTEGER DEFAULT 0")
+        ensure_column(conn, "users", "active_chat_target_user_id", "active_chat_target_user_id INTEGER")
+        ensure_column(conn, "users", "active_chat_post_id", "active_chat_post_id INTEGER")
+        ensure_column(conn, "users", "active_chat_deal_id", "active_chat_deal_id INTEGER")
 
         conn.execute("UPDATE deals SET updated_at = created_at WHERE updated_at IS NULL OR updated_at = 0")
         conn.execute("UPDATE deals SET status='contacted' WHERE status='pending'")
@@ -1043,6 +1046,37 @@ def format_post_status(status: str) -> str:
     return mapping.get(status, status)
 
 
+def set_active_chat(user_id: int, target_user_id: int, post_id: int, deal_id: Optional[int] = None):
+    with closing(connect_db()) as conn, conn:
+        conn.execute("""
+            UPDATE users
+            SET active_chat_target_user_id=?,
+                active_chat_post_id=?,
+                active_chat_deal_id=?
+            WHERE user_id=?
+        """, (target_user_id, post_id, deal_id, user_id))
+
+
+def get_active_chat(user_id: int) -> Optional[sqlite3.Row]:
+    with closing(connect_db()) as conn:
+        return conn.execute("""
+            SELECT active_chat_target_user_id, active_chat_post_id, active_chat_deal_id
+            FROM users
+            WHERE user_id=?
+        """, (user_id,)).fetchone()
+
+
+def clear_active_chat(user_id: int):
+    with closing(connect_db()) as conn, conn:
+        conn.execute("""
+            UPDATE users
+            SET active_chat_target_user_id=NULL,
+                active_chat_post_id=NULL,
+                active_chat_deal_id=NULL
+            WHERE user_id=?
+        """, (user_id,))
+
+
 def deal_status_explanation(status: str, viewer_is_owner: bool) -> str:
     if status == DEAL_CONTACTED:
         return (
@@ -1125,14 +1159,15 @@ def post_text(row, for_channel: bool = False) -> str:
         route += f", {html.escape(row['to_city'])}"
 
     owner_user_id = row["user_id"]
-    verified_badge = " ✅ Проверенный" if is_user_verified(owner_user_id) else ""
-    warning_badge = " ⚠️ Были спорные сделки" if user_has_warning_badge(owner_user_id) else ""
+    is_verified = is_user_verified(owner_user_id)
+    has_warning = user_has_warning_badge(owner_user_id)
+
     rating_line = format_rating_line(owner_user_id)
     completed_deals = user_completed_deals_count(owner_user_id)
     service_text = user_service_text(owner_user_id)
 
     lines = [
-        f"<b>{short_post_type(row['post_type'])}{verified_badge}{warning_badge}</b>",
+        f"<b>{short_post_type(row['post_type'])}</b>",
         f"<b>Маршрут:</b> {route}",
     ]
 
@@ -1152,6 +1187,15 @@ def post_text(row, for_channel: bool = False) -> str:
     lines.append("")
     lines.append("<b>👤 Профиль пользователя</b>")
 
+    status_parts = []
+    if is_verified:
+        status_parts.append("✅ Проверенный")
+    if has_warning:
+        status_parts.append("⚠️ Были спорные сделки")
+
+    if status_parts:
+        lines.append(f"🏷 <b>Статус:</b> {' | '.join(status_parts)}")
+
     if rating_line:
         lines.append(f"⭐ <b>Рейтинг:</b> {rating_line}")
     else:
@@ -1163,16 +1207,17 @@ def post_text(row, for_channel: bool = False) -> str:
     lines.append(f"<b>ID объявления:</b> {row['id']}")
 
     if for_channel:
-       lines.append(
-        "Откройте объявление и напишите пользователю.\n"
-        "Возможно, ваша посылка уже почти в пути ✈️📦."
-    )
+        lines.append(
+            "Откройте объявление и напишите пользователю.\n"
+            "Возможно, ваша посылка уже почти в пути ✈️📦."
+        )
     else:
         owner = row["username"] if "username" in row.keys() else None
         if owner:
             lines.append(f"<b>Telegram:</b> @{html.escape(owner)}")
 
     return "\n".join(lines)
+    
 
 async def show_onboarding_screen(target, screen: int):
     text = ONBOARDING_TEXTS[screen]
@@ -4964,12 +5009,18 @@ async def contact_owner(callback: CallbackQuery, state: FSMContext):
         deal_id=None
     )
 
+    set_active_chat(
+        user_id=callback.from_user.id,
+        target_user_id=owner_id,
+        post_id=post_id,
+        deal_id=None
+    )
+
     await callback.message.answer(
-        "✉️ <b>Чат с владельцем объявления открыт.</b>\n\n"
-        "Напишите первое сообщение — я отправлю его через бота.\n"
-        "Дальше вы сможете просто продолжать переписку здесь.\n\n"
-        "🔒 <b>Важно:</b>\n"
-        "Никогда не переводите предоплату незнакомым людям."
+        "💬 <b>Чат с владельцем объявления открыт.</b>\n\n"
+        "Просто напишите сообщение — я отправлю его через бота.\n"
+        "Дальше вы можете продолжать переписку здесь без повторных нажатий.\n\n"
+        "⚠️ Никогда не переводите предоплату незнакомым людям."
     )
 
     await callback.answer()
@@ -5510,9 +5561,16 @@ async def reply_contact_handler(callback: CallbackQuery, state: FSMContext):
             deal_id=deal_id
         )
 
+        set_active_chat(
+            user_id=callback.from_user.id,
+            target_user_id=target_user_id,
+            post_id=post_id,
+            deal_id=deal_id
+        )
+
         await callback.message.answer(
-            "💬 Напишите сообщение — я отправлю его собеседнику через бота.\n"
-            "Дальше вы можете просто продолжать писать в этот чат без повторного нажатия кнопки."
+            "💬 Чат открыт.\n"
+            "Теперь просто пишите сообщения сюда — я буду пересылать их собеседнику."
         )
         await callback.answer()
 
@@ -5537,6 +5595,7 @@ async def relay_message(message: Message, state: FSMContext):
             reply_markup=main_menu(message.from_user.id)
         )
         await state.clear()
+        clear_active_chat(message.from_user.id)
         return
 
     if not text:
@@ -5552,29 +5611,45 @@ async def relay_message(message: Message, state: FSMContext):
         username_part = f" (@{html.escape(message.from_user.username)})" if message.from_user.username else ""
         safe_text = html.escape(text)
 
-        chat_ref = f"chat_ref:{post_id}:{message.from_user.id}:{deal_id or 0}"
+        reply_kb = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="💬 Ответить через бота",
+                    callback_data=f"reply_contact:{post_id}:{message.from_user.id}:{deal_id or 0}"
+                )
+            ]
+        ])
 
         await message.bot.send_message(
             target_user_id,
             f"💬 <b>Новое сообщение по объявлению ID {post_id}</b>\n\n"
             f"<b>От:</b> {from_name}{username_part}\n\n"
-            f"{safe_text}\n\n"
-            f"<i>Чтобы ответить, просто нажмите «Ответить» на это сообщение в Telegram.</i>\n"
-            f"<code>{chat_ref}</code>"
+            f"{safe_text}",
+            reply_markup=reply_kb
         )
 
         with closing(connect_db()) as conn, conn:
-            conn.execute(
-                """
+            conn.execute("""
                 INSERT INTO dialogs (post_id, owner_user_id, requester_user_id, created_at)
                 VALUES (?, ?, ?, ?)
-                """,
-                (post_id, target_user_id, message.from_user.id, now_ts())
-            )
+            """, (post_id, target_user_id, message.from_user.id, now_ts()))
+
+        # чат сохраняем ОБОИМ сторонам
+        set_active_chat(
+            user_id=message.from_user.id,
+            target_user_id=target_user_id,
+            post_id=post_id,
+            deal_id=deal_id
+        )
+
+        set_active_chat(
+            user_id=target_user_id,
+            target_user_id=message.from_user.id,
+            post_id=post_id,
+            deal_id=deal_id
+        )
 
         await message.answer("✅ Сообщение отправлено.")
-
-        # state НЕ очищаем — пользователь может писать дальше подряд
 
     except Exception as e:
         print(f"RELAY MESSAGE ERROR: {e}")
@@ -5583,6 +5658,7 @@ async def relay_message(message: Message, state: FSMContext):
             reply_markup=main_menu(message.from_user.id)
         )
         await state.clear()
+        clear_active_chat(message.from_user.id)
 
 
 @router.message(F.reply_to_message)
@@ -5603,6 +5679,39 @@ async def reply_to_contact_message(message: Message, state: FSMContext):
     await state.update_data(
         post_id=post_id,
         target_user_id=target_user_id,
+        deal_id=deal_id
+    )
+
+    await relay_message(message, state)
+
+
+@router.message(StateFilter(None))
+async def active_chat_fallback(message: Message, state: FSMContext):
+    text = (message.text or "").strip()
+
+    if not text:
+        return
+
+    if is_main_menu_text(text):
+        clear_active_chat(message.from_user.id)
+        return
+
+    active_chat = get_active_chat(message.from_user.id)
+    if not active_chat:
+        return
+
+    target_user_id = active_chat["active_chat_target_user_id"]
+    post_id = active_chat["active_chat_post_id"]
+    deal_id = active_chat["active_chat_deal_id"]
+
+    if not target_user_id or not post_id:
+        clear_active_chat(message.from_user.id)
+        return
+
+    await state.set_state(ContactFlow.message_text)
+    await state.update_data(
+        target_user_id=target_user_id,
+        post_id=post_id,
         deal_id=deal_id
     )
 
@@ -5659,128 +5768,138 @@ async def offer_deal_handler(callback: CallbackQuery):
 
 @router.callback_query(F.data.startswith("deal_request_accept:"))
 async def deal_request_accept_handler(callback: CallbackQuery):
-    request_id = int(callback.data.split(":")[1])
-    req = get_deal_request(request_id)
+    try:
+        request_id = int(callback.data.split(":")[1])
+        req = get_deal_request(request_id)
 
-    if not req or req["owner_user_id"] != callback.from_user.id:
-        await callback.answer("Нет доступа", show_alert=True)
-        return
-
-    row = get_post(req["post_id"])
-    if not row:
-        await callback.answer("Объявление не найдено", show_alert=True)
-        return
-
-    # если по объявлению уже есть активная сделка — вторую создавать нельзя
-    existing_deal = get_active_deal_by_post(req["post_id"])
-    if existing_deal:
-        await callback.answer("По этому объявлению уже есть активная сделка", show_alert=True)
-        return
-
-    with closing(connect_db()) as conn, conn:
-        # повторно читаем заявку внутри транзакции
-        req_db = conn.execute("""
-            SELECT *
-            FROM deal_requests
-            WHERE id=?
-        """, (request_id,)).fetchone()
-
-        if not req_db:
-            await callback.answer("Заявка не найдена", show_alert=True)
+        if not req or req["owner_user_id"] != callback.from_user.id:
+            await callback.answer("Нет доступа", show_alert=True)
             return
 
-        if req_db["status"] != DEAL_REQUEST_PENDING:
-            await callback.answer("Эта заявка уже обработана", show_alert=True)
+        row = get_post(req["post_id"])
+        if not row:
+            await callback.answer("Объявление не найдено", show_alert=True)
             return
 
-        # ещё раз проверяем сделку внутри транзакции
-        existing_deal_db = conn.execute("""
-            SELECT id
-            FROM deals
-            WHERE post_id=?
-              AND status IN (?, ?, ?, ?, ?)
-            ORDER BY id DESC
-            LIMIT 1
-        """, (
-            req["post_id"],
-            DEAL_ACCEPTED,
-            DEAL_COMPLETED_BY_OWNER,
-            DEAL_COMPLETED_BY_REQUESTER,
-            DEAL_DISPUTE_OPEN,
-            DEAL_DISPUTE_WAITING
-        )).fetchone()
-
-        if existing_deal_db:
+        existing_deal = get_active_deal_by_post(req["post_id"])
+        if existing_deal:
             await callback.answer("По этому объявлению уже есть активная сделка", show_alert=True)
             return
 
-        conn.execute("""
-            UPDATE deal_requests
-            SET status=?, updated_at=?
-            WHERE id=?
-        """, (DEAL_REQUEST_ACCEPTED, now_ts(), request_id))
+        with closing(connect_db()) as conn, conn:
+            req_db = conn.execute("""
+                SELECT *
+                FROM deal_requests
+                WHERE id=?
+            """, (request_id,)).fetchone()
 
-        cur = conn.execute("""
-            INSERT INTO deals (
-                post_id, owner_user_id, requester_user_id, initiator_user_id,
-                status, owner_confirmed, requester_confirmed, created_at, updated_at
+            if not req_db:
+                await callback.answer("Заявка не найдена", show_alert=True)
+                return
+
+            if req_db["status"] != DEAL_REQUEST_PENDING:
+                await callback.answer("Эта заявка уже обработана", show_alert=True)
+                return
+
+            existing_deal_db = conn.execute("""
+                SELECT id
+                FROM deals
+                WHERE post_id=?
+                  AND status IN (?, ?, ?, ?, ?)
+                ORDER BY id DESC
+                LIMIT 1
+            """, (
+                req["post_id"],
+                DEAL_ACCEPTED,
+                DEAL_COMPLETED_BY_OWNER,
+                DEAL_COMPLETED_BY_REQUESTER,
+                DEAL_DISPUTE_OPEN,
+                DEAL_DISPUTE_WAITING
+            )).fetchone()
+
+            if existing_deal_db:
+                await callback.answer("По этому объявлению уже есть активная сделка", show_alert=True)
+                return
+
+            conn.execute("""
+                UPDATE deal_requests
+                SET status=?, updated_at=?
+                WHERE id=?
+            """, (DEAL_REQUEST_ACCEPTED, now_ts(), request_id))
+
+            cur = conn.execute("""
+                INSERT INTO deals (
+                    post_id, owner_user_id, requester_user_id, initiator_user_id,
+                    status, owner_confirmed, requester_confirmed, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, 0, 0, ?, ?)
+            """, (
+                req["post_id"],
+                req["owner_user_id"],
+                req["requester_user_id"],
+                req["requester_user_id"],
+                DEAL_ACCEPTED,
+                now_ts(),
+                now_ts()
+            ))
+            deal_id = int(cur.lastrowid)
+
+            conn.execute("""
+                UPDATE posts
+                SET status=?, updated_at=?
+                WHERE id=?
+            """, (STATUS_INACTIVE, now_ts(), req["post_id"]))
+
+            conn.execute("""
+                UPDATE deal_requests
+                SET status=?, updated_at=?
+                WHERE post_id=? AND id != ? AND status=?
+            """, (
+                DEAL_REQUEST_DECLINED,
+                now_ts(),
+                req["post_id"],
+                request_id,
+                DEAL_REQUEST_PENDING
+            ))
+
+        await remove_post_from_channel(callback.bot, row)
+
+        route = post_route_title(row)
+
+        try:
+            await callback.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+
+        try:
+            await callback.bot.send_message(
+                req["requester_user_id"],
+                f"✅ Ваша заявка принята.\n\n"
+                f"Вы успешно открыли сделку по объявлению <b>{html.escape(route)}</b> (ID {req['post_id']}).\n"
+                f"Объявление перенесено в раздел <b>🤝 МОИ СДЕЛКИ</b> — перейдите туда для управления сделкой.\n\n"
+                f"ID сделки: <b>{deal_id}</b>",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="🤝 Мои сделки", callback_data="back:my_deals")]
+                ])
             )
-            VALUES (?, ?, ?, ?, ?, 0, 0, ?, ?)
-        """, (
-            req["post_id"],
-            req["owner_user_id"],
-            req["requester_user_id"],
-            req["requester_user_id"],
-            DEAL_ACCEPTED,
-            now_ts(),
-            now_ts()
-        ))
-        deal_id = int(cur.lastrowid)
-
-        conn.execute("""
-            UPDATE posts
-            SET status=?, updated_at=?
-            WHERE id=?
-        """, (STATUS_INACTIVE, now_ts(), req["post_id"]))
-
-        # все остальные pending-заявки по этому объявлению автоматически закрываем
-        conn.execute("""
-            UPDATE deal_requests
-            SET status=?, updated_at=?
-            WHERE post_id=? AND id != ? AND status=?
-        """, (
-            DEAL_REQUEST_DECLINED,
-            now_ts(),
-            req["post_id"],
-            request_id,
-            DEAL_REQUEST_PENDING
-        ))
-
-    await remove_post_from_channel(callback.bot, row)
-
-    route = post_route_title(row)
-
-    try:
-        await callback.bot.send_message(
-            req["requester_user_id"],
-            f"✅ Ваша заявка принята.\n\n"
-            f"Вы успешно открыли сделку по объявлению <b>{html.escape(route)}</b> (ID {req['post_id']}).\n"
-            f"Объявление перенесено в раздел <b>🤝 МОИ СДЕЛКИ</b> — перейдите туда для управления сделкой.\n\n"
-            f"ID сделки: <b>{deal_id}</b>",
-            reply_markup=go_my_deals_kb()
-        )
-    except Exception as e:
-        print(f"DEAL ACCEPT NOTIFY REQUESTER ERROR: {e}")
+        except Exception as e:
+            print(f"DEAL ACCEPT NOTIFY REQUESTER ERROR: {e}")
 
         await callback.message.answer(
-        f"✅ Сделка открыта.\n\n"
-        f"Ваше объявление <b>{html.escape(route)}</b> (ID {req['post_id']}) перенесено из канала "
-        f"в раздел <b>🤝 МОИ СДЕЛКИ</b> — перейдите туда для управления сделкой.\n\n"
-        f"ID сделки: <b>{deal_id}</b>",
-        reply_markup=go_my_deals_kb()
-    )
-        
-    await callback.answer()
+            f"✅ Сделка открыта.\n\n"
+            f"Ваше объявление <b>{html.escape(route)}</b> (ID {req['post_id']}) перенесено из канала "
+            f"в раздел <b>🤝 МОИ СДЕЛКИ</b> — перейдите туда для управления сделкой.\n\n"
+            f"ID сделки: <b>{deal_id}</b>",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🤝 Мои сделки", callback_data="back:my_deals")]
+            ])
+        )
+
+        await callback.answer("Сделка открыта")
+
+    except Exception as e:
+        print(f"DEAL_REQUEST_ACCEPT_HANDLER ERROR: {e}")
+        await callback.answer("Ошибка при подтверждении сделки", show_alert=True)
     
 
 @router.callback_query(F.data.startswith("deal_request_decline:"))

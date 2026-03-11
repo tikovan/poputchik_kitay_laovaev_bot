@@ -977,23 +977,25 @@ def get_deal_request(request_id: int) -> Optional[sqlite3.Row]:
 
 def format_deal_status(status: str) -> str:
     mapping = {
-    DEAL_CONTACTED: "контакт начат",
-    DEAL_OFFERED: "предложена",
-    DEAL_ACCEPTED: "принята",
-    DEAL_COMPLETED_BY_OWNER: "подтвердил владелец",
-    DEAL_COMPLETED_BY_REQUESTER: "подтвердил откликнувшийся",
-    DEAL_COMPLETED: "завершена",
-    DEAL_FAILED: "неуспешна",
-    DEAL_CANCELLED: "отменена",
-    DEAL_DISPUTE_OPEN: "спор активен",
-    DEAL_DISPUTE_WAITING: "ожидается ответ по спору",
-    DEAL_DISPUTE_RESOLVED: "спор решен",
 
-    DEAL_REQUEST_PENDING: "в процессе",
-    DEAL_REQUEST_ACCEPTED: "принята",
-    DEAL_REQUEST_DECLINED: "отменена",
-}
-return mapping.get(status, status)
+        # реальные статусы сделки
+        DEAL_ACCEPTED: "сделка принята",
+        DEAL_COMPLETED_BY_OWNER: "подтвердил владелец",
+        DEAL_COMPLETED_BY_REQUESTER: "подтвердил откликнувшийся",
+        DEAL_COMPLETED: "сделка завершена",
+        DEAL_FAILED: "сделка неуспешна",
+        DEAL_CANCELLED: "сделка отменена",
+        DEAL_DISPUTE_OPEN: "спор активен",
+        DEAL_DISPUTE_WAITING: "ожидается ответ по спору",
+        DEAL_DISPUTE_RESOLVED: "спор решен",
+
+        # статусы заявок на сделку (ещё НЕ сделка)
+        DEAL_REQUEST_PENDING: "заявка на сделку",
+        DEAL_REQUEST_ACCEPTED: "заявка принята",
+        DEAL_REQUEST_DECLINED: "заявка отклонена",
+    }
+
+    return mapping.get(status, status)
 
 
 def deal_status_explanation(status: str, viewer_is_owner: bool) -> str:

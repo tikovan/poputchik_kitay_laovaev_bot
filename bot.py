@@ -1335,6 +1335,11 @@ def post_actions_kb(post_id: int, status: str):
             InlineKeyboardButton(text="🗑 Удалить", callback_data=f"delete:{post_id}")
         ])
 
+    # ⬅️ КНОПКА НАЗАД
+    rows.append([
+        InlineKeyboardButton(text="⬅️ Назад", callback_data="back:my_posts")
+    ])
+
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -1348,7 +1353,12 @@ def admin_post_actions_kb(post_id: int):
     ])
 
 
-def public_post_kb(post_id: int, owner_id: int, post_type: Optional[str] = None):
+def public_post_kb(
+    post_id: int,
+    owner_id: int,
+    post_type: Optional[str] = None,
+    back_target: Optional[str] = None
+):
     _, reviews_count = user_rating_summary(owner_id)
     row = get_post(post_id)
 
@@ -1358,16 +1368,31 @@ def public_post_kb(post_id: int, owner_id: int, post_type: Optional[str] = None)
     ]
 
     if row and row["photo_file_id"]:
-        rows.append([InlineKeyboardButton(text="🖼 Посмотреть фото посылки", callback_data=f"viewphoto:{post_id}")])
+        rows.append([
+            InlineKeyboardButton(text="🖼 Посмотреть фото посылки", callback_data=f"viewphoto:{post_id}")
+        ])
 
     if reviews_count > 0:
-        rows.append([InlineKeyboardButton(
-            text=f"⭐ {reviews_count} {reviews_word(reviews_count)}",
-            callback_data=f"user_reviews:{owner_id}"
-        )])
+        rows.append([
+            InlineKeyboardButton(
+                text=f"⭐ {reviews_count} {reviews_word(reviews_count)}",
+                callback_data=f"user_reviews:{owner_id}"
+            )
+        ])
 
-    rows.append([InlineKeyboardButton(text="⚠️ Пожаловаться", callback_data=f"complain:{post_id}")])
-    rows.append([InlineKeyboardButton(text="📤 Поделиться", url=f"https://t.me/share/url?url={post_deeplink(post_id)}")])
+    rows.append([
+        InlineKeyboardButton(text="⚠️ Пожаловаться", callback_data=f"complain:{post_id}")
+    ])
+
+    rows.append([
+        InlineKeyboardButton(text="📤 Поделиться", url=f"https://t.me/share/url?url={post_deeplink(post_id)}")
+    ])
+
+    if back_target:
+        rows.append([
+            InlineKeyboardButton(text="⬅️ Назад", callback_data=f"back:{back_target}")
+        ])
+
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -1455,11 +1480,14 @@ def deal_open_kb(deal: sqlite3.Row, user_id: int) -> InlineKeyboardMarkup:
 
     elif deal["status"] in (DEAL_DISPUTE_OPEN, DEAL_DISPUTE_WAITING):
         dispute = get_open_dispute_by_deal(deal["id"])
+
         if dispute:
-            return dispute_actions_kb(dispute, user_id)
-        rows.append([
-            InlineKeyboardButton(text="Ок", callback_data="noop")
-        ])
+            dispute_kb = dispute_actions_kb(dispute, user_id)
+            rows.extend(dispute_kb.inline_keyboard)
+        else:
+            rows.append([
+                InlineKeyboardButton(text="Ок", callback_data="noop")
+            ])
 
     elif deal["status"] in (DEAL_FAILED, DEAL_CANCELLED):
         rows.append([
@@ -1471,27 +1499,10 @@ def deal_open_kb(deal: sqlite3.Row, user_id: int) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="Ок", callback_data="noop")
         ])
 
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-def dispute_failed_opened_by_kb(deal_id: int):
-    rows = [
-        [
-            InlineKeyboardButton(
-                text="⭐ Оставить отзыв",
-                callback_data=f"deal_review:{deal_id}"
-            )
-        ]
-    ]
-
-    for admin_id in ADMIN_IDS:
-        rows.append([
-            InlineKeyboardButton(
-                text="🆘 Связаться с администратором",
-                url=f"tg://user?id={admin_id}"
-            )
-        ])
-        break
+    # ⬅️ НАЗАД
+    rows.append([
+        InlineKeyboardButton(text="⬅️ Назад", callback_data="back:my_deals")
+    ])
 
     return InlineKeyboardMarkup(inline_keyboard=rows)
     
@@ -3591,6 +3602,38 @@ async def pick_from_city(callback: CallbackQuery, state: FSMContext):
     )
     await callback.answer()
 
+
+@router.callback_query(F.data.startswith("back:"))
+async def back_router(callback: CallbackQuery):
+
+    action = callback.data.split(":")[1]
+
+    if action == "my_posts":
+        posts = get_user_posts(callback.from_user.id)
+
+        await callback.message.answer(
+            "📋 Ваши объявления:",
+            reply_markup=my_posts_kb(posts)
+        )
+
+    elif action == "my_deals":
+        deals = get_user_deals(callback.from_user.id)
+
+        await callback.message.answer(
+            "🤝 Ваши сделки:",
+            reply_markup=deal_list_kb(deals)
+        )
+
+    elif action == "new_posts":
+        posts = get_latest_posts()
+
+        await callback.message.answer(
+            "🆕 Новые объявления:",
+            reply_markup=new_posts_kb(posts)
+        )
+
+    await callback.answer()
+    
 
 @router.message(CreatePost.from_city_manual)
 async def from_city_manual_input(message: Message, state: FSMContext):

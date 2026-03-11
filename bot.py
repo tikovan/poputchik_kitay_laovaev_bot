@@ -5397,27 +5397,59 @@ async def admin_bump_reject_btn(callback: CallbackQuery):
 
 @router.callback_query(F.data.startswith("reply_contact:"))
 async def reply_contact_handler(callback: CallbackQuery, state: FSMContext):
-    _, post_id, target_user_id, deal_id = callback.data.split(":")
-    await state.set_state(ContactFlow.message_text)
-    await state.update_data(
-        post_id=int(post_id),
-        target_user_id=int(target_user_id),
-        deal_id=None if deal_id == "0" else int(deal_id),
-    )
-    await callback.message.answer("Напишите ответ — я отправлю его через бота.")
-    await callback.answer()
+    try:
+        _, post_id, target_user_id, deal_id = callback.data.split(":")
+
+        post_id = int(post_id)
+        target_user_id = int(target_user_id)
+        deal_id = None if deal_id == "0" else int(deal_id)
+
+        if target_user_id == callback.from_user.id:
+            await callback.answer("Нельзя ответить самому себе", show_alert=True)
+            return
+
+        await state.clear()
+        await state.set_state(ContactFlow.message_text)
+        await state.update_data(
+            post_id=post_id,
+            target_user_id=target_user_id,
+            deal_id=deal_id
+        )
+
+        await callback.message.answer(
+            "💬 Напишите сообщение — я отправлю его собеседнику через бота."
+        )
+        await callback.answer()
+
+    except Exception as e:
+        print(f"REPLY_CONTACT_HANDLER ERROR: {e}")
+        await callback.answer("Ошибка ответа", show_alert=True)
 
 
 @router.message(ContactFlow.message_text)
 async def relay_message(message: Message, state: FSMContext):
     data = await state.get_data()
-    target_user_id = data["target_user_id"]
-    post_id = data["post_id"]
+
+    target_user_id = data.get("target_user_id")
+    post_id = data.get("post_id")
     deal_id = data.get("deal_id")
+
     text = (message.text or "").strip()
+
+    if not target_user_id or not post_id:
+        await message.answer(
+            "Ошибка диалога. Откройте объявление заново и начните переписку снова.",
+            reply_markup=main_menu(message.from_user.id)
+        )
+        await state.clear()
+        return
 
     if not text:
         await message.answer("Сообщение не должно быть пустым.")
+        return
+
+    if target_user_id == message.from_user.id:
+        await message.answer("Нельзя отправить сообщение самому себе.")
         return
 
     try:
@@ -5426,37 +5458,43 @@ async def relay_message(message: Message, state: FSMContext):
         safe_text = html.escape(text)
 
         reply_kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(
-                text="💬 Ответить через бота",
-                callback_data=f"reply_contact:{post_id}:{message.from_user.id}:{deal_id or 0}"
-            )]
+            [
+                InlineKeyboardButton(
+                    text="💬 Ответить через бота",
+                    callback_data=f"reply_contact:{post_id}:{message.from_user.id}:{deal_id or 0}"
+                )
+            ]
         ])
 
         await message.bot.send_message(
             target_user_id,
-            f"💬 Новое сообщение по объявлению ID {post_id}:\n\n"
-            f"От: {from_name}{username_part}\n\n{safe_text}",
+            f"💬 <b>Новое сообщение по объявлению ID {post_id}</b>\n\n"
+            f"<b>От:</b> {from_name}{username_part}\n\n"
+            f"{safe_text}",
             reply_markup=reply_kb
         )
 
         with closing(connect_db()) as conn, conn:
+            # просто логируем факт сообщения
             conn.execute(
-                "INSERT INTO dialogs (post_id, owner_user_id, requester_user_id, created_at) VALUES (?, ?, ?, ?)",
+                """
+                INSERT INTO dialogs (post_id, owner_user_id, requester_user_id, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
                 (post_id, target_user_id, message.from_user.id, now_ts())
             )
 
-            if deal_id:
-                conn.execute("""
-                    UPDATE deals
-                    SET status=?, updated_at=?
-                    WHERE id=? AND status NOT IN (?, ?, ?)
-                """, (DEAL_CONTACTED, now_ts(), deal_id, DEAL_COMPLETED, DEAL_FAILED, DEAL_CANCELLED))
-
-        await message.answer("✅ Сообщение отправлено через бота.", reply_markup=main_menu(message.from_user.id))
+        await message.answer(
+            "✅ Сообщение отправлено.",
+            reply_markup=main_menu(message.from_user.id)
+        )
 
     except Exception as e:
         print(f"RELAY MESSAGE ERROR: {e}")
-        await message.answer("Не удалось отправить сообщение. Возможно, пользователь еще не запускал бота.")
+        await message.answer(
+            "Не удалось отправить сообщение. Возможно, пользователь ещё не запускал бот.",
+            reply_markup=main_menu(message.from_user.id)
+        )
 
     await state.clear()
 

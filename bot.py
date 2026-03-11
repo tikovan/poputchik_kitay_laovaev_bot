@@ -1232,9 +1232,7 @@ def deal_list_kb(deals: List[sqlite3.Row]):
     rows = []
 
     for d in deals:
-        if d["status"] == DEAL_OFFERED:
-            status_icon = "🟡"
-        elif d["status"] == DEAL_ACCEPTED:
+        if d["status"] == DEAL_ACCEPTED:
             status_icon = "🟢"
         elif d["status"] in (DEAL_COMPLETED_BY_OWNER, DEAL_COMPLETED_BY_REQUESTER):
             status_icon = "🟦"
@@ -1247,7 +1245,7 @@ def deal_list_kb(deals: List[sqlite3.Row]):
         else:
             status_icon = "🤝"
 
-        label = f"{status_icon} Сделка #{d['id']} • объявление {d['post_id']}"
+        label = f"{status_icon} {deal_title(d)}"
         rows.append([
             InlineKeyboardButton(
                 text=label[:64],
@@ -1362,47 +1360,7 @@ def deal_open_kb(deal: sqlite3.Row, user_id: int) -> InlineKeyboardMarkup:
     viewer_is_owner = user_id == deal["owner_user_id"]
     other_user_id = deal["requester_user_id"] if viewer_is_owner else deal["owner_user_id"]
 
-    if deal["status"] == DEAL_CONTACTED:
-        rows.append([
-            InlineKeyboardButton(
-                text="💬 Написать в чат через бота",
-                callback_data=f"reply_contact:{deal['post_id']}:{other_user_id}:{deal['id']}"
-            )
-        ])
-
-        if viewer_is_owner:
-            rows.append([
-                InlineKeyboardButton(
-                    text="✅ Принять сделку",
-                    callback_data=f"deal_accept:{deal['id']}"
-                ),
-                InlineKeyboardButton(
-                    text="❌ Отклонить",
-                    callback_data=f"deal_reject:{deal['id']}"
-                )
-            ])
-
-    elif deal["status"] == DEAL_OFFERED:
-        if viewer_is_owner:
-            rows.append([
-                InlineKeyboardButton(
-                    text="✅ Принять сделку",
-                    callback_data=f"deal_accept:{deal['id']}"
-                ),
-                InlineKeyboardButton(
-                    text="❌ Отклонить",
-                    callback_data=f"deal_reject:{deal['id']}"
-                )
-            ])
-        else:
-            rows.append([
-                InlineKeyboardButton(
-                    text="💬 Написать в чат через бота",
-                    callback_data=f"reply_contact:{deal['post_id']}:{other_user_id}:{deal['id']}"
-                )
-            ])
-
-    elif deal["status"] in (DEAL_ACCEPTED, DEAL_COMPLETED_BY_OWNER, DEAL_COMPLETED_BY_REQUESTER):
+    if deal["status"] in (DEAL_ACCEPTED, DEAL_COMPLETED_BY_OWNER, DEAL_COMPLETED_BY_REQUESTER):
         rows.append([
             InlineKeyboardButton(
                 text="✅ Подтвердить завершение",
@@ -1430,6 +1388,17 @@ def deal_open_kb(deal: sqlite3.Row, user_id: int) -> InlineKeyboardMarkup:
                     callback_data=f"deal_review:{deal['id']}"
                 )
             ])
+        rows.append([
+            InlineKeyboardButton(text="Ок", callback_data="noop")
+        ])
+
+    elif deal["status"] in (DEAL_DISPUTE_OPEN, DEAL_DISPUTE_WAITING):
+        dispute = get_open_dispute_by_deal(deal["id"])
+        if dispute:
+            return dispute_actions_kb(dispute, user_id)
+        rows.append([
+            InlineKeyboardButton(text="Ок", callback_data="noop")
+        ])
 
     elif deal["status"] in (DEAL_FAILED, DEAL_CANCELLED):
         rows.append([
@@ -2114,6 +2083,88 @@ def list_user_deals(user_id: int) -> List[sqlite3.Row]:
             ORDER BY updated_at DESC, created_at DESC
             LIMIT 30
         """, (user_id, user_id)).fetchall()
+
+
+def deal_title(deal: sqlite3.Row) -> str:
+    post = get_post(deal["post_id"])
+
+    if not post:
+        return f"Сделка #{deal['id']}"
+
+    route = post["from_country"] or ""
+
+    if post["from_city"]:
+        route += f", {post['from_city']}"
+
+    route += " → "
+
+    route += post["to_country"] or ""
+
+    if post["to_city"]:
+        route += f", {post['to_city']}"
+
+    return route if route.strip() else f"Сделка #{deal['id']}"
+
+
+def split_deals_by_sections(deals: List[sqlite3.Row]):
+    in_progress = []
+    disputes = []
+    finished = []
+
+    for d in deals:
+        status = d["status"]
+
+        if status in (
+            DEAL_ACCEPTED,
+            DEAL_COMPLETED_BY_OWNER,
+            DEAL_COMPLETED_BY_REQUESTER,
+        ):
+            in_progress.append(d)
+
+        elif status in (
+            DEAL_DISPUTE_OPEN,
+            DEAL_DISPUTE_WAITING,
+            DEAL_DISPUTE_RESOLVED,
+        ):
+            disputes.append(d)
+
+        elif status in (
+            DEAL_COMPLETED,
+            DEAL_FAILED,
+            DEAL_CANCELLED,
+        ):
+            finished.append(d)
+
+    return in_progress, disputes, finished
+
+
+def deal_section_kb(deals: List[sqlite3.Row]) -> InlineKeyboardMarkup:
+    rows = []
+
+    for d in deals:
+        if d["status"] == DEAL_ACCEPTED:
+            icon = "🟢"
+        elif d["status"] in (DEAL_COMPLETED_BY_OWNER, DEAL_COMPLETED_BY_REQUESTER):
+            icon = "🟦"
+        elif d["status"] in (DEAL_DISPUTE_OPEN, DEAL_DISPUTE_WAITING, DEAL_DISPUTE_RESOLVED):
+            icon = "⚖️"
+        elif d["status"] == DEAL_COMPLETED:
+            icon = "✅"
+        else:
+            icon = "❌"
+
+        label = f"{icon} {deal_title(d)}"
+        rows.append([
+            InlineKeyboardButton(
+                text=label[:64],
+                callback_data=f"mydeal:{d['id']}"
+            )
+        ])
+
+    if not rows:
+        rows = [[InlineKeyboardButton(text="Пусто", callback_data="noop")]]
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def mark_deal_failed(post_id: int, user_id: int) -> bool:
@@ -3027,23 +3078,35 @@ async def add_parcel(message: Message, state: FSMContext):
 async def my_deals_menu(message: Message):
     upsert_user(message)
     await message.answer(MENU_TEXTS["deals"], reply_markup=main_menu(message.from_user.id))
+
     deals = list_user_deals(message.from_user.id)
     if not deals:
         await message.answer("У вас пока нет сделок.", reply_markup=main_menu(message.from_user.id))
         return
-    await message.answer("Ваши сделки:", reply_markup=deal_list_kb(deals))
 
+    in_progress, disputes, finished = split_deals_by_sections(deals)
 
-@router.message(F.text == "🚩 Пожаловаться")
-async def complaint_start(message: Message, state: FSMContext):
-    await state.clear()
-    await state.set_state(ComplaintFlow.post_id)
-    await message.answer(
-        "🚩 <b>Пожаловаться</b>\n\n"
-        "Введите <b>ID объявления</b>, на которое хотите пожаловаться.\n\n"
-        "ID указан внизу каждого объявления." 
-    )
-    
+    if in_progress:
+        await message.answer(
+            "🟢 <b>Сделки в процессе</b>\n"
+            "Здесь сделки, по которым сейчас идёт передача или ожидание подтверждения.",
+            reply_markup=deal_section_kb(in_progress)
+        )
+
+    if disputes:
+        await message.answer(
+            "⚖️ <b>Споры</b>\n"
+            "Здесь сделки, по которым открыт спор или ожидается решение.",
+            reply_markup=deal_section_kb(disputes)
+        )
+
+    if finished:
+        await message.answer(
+            "✅ <b>Завершённые и закрытые</b>\n"
+            "Здесь завершённые, неуспешные и отменённые сделки.",
+            reply_markup=deal_section_kb(finished)
+        )
+        
 
 @router.message(F.text == "ℹ️ Помощь")
 async def help_handler(message: Message):
@@ -5456,22 +5519,29 @@ async def open_my_deal(callback: CallbackQuery):
             await callback.answer("Нет доступа", show_alert=True)
             return
 
+        route = deal_title(deal)
         role = "владелец объявления" if callback.from_user.id == deal["owner_user_id"] else "откликнувшийся пользователь"
 
         text = (
-            f"🤝 <b>Сделка #{deal['id']}</b>\n\n"
+            f"🤝 <b>{html.escape(route)}</b>\n\n"
+            f"<b>ID сделки:</b> {deal['id']}\n"
             f"<b>ID объявления:</b> {deal['post_id']}\n"
             f"<b>Ваша роль:</b> {role}\n"
             f"<b>Статус:</b> {format_deal_status(deal['status'])}"
         )
 
-        kb = deal_open_kb(deal, callback.from_user.id)
+        dispute = get_open_dispute_by_deal(deal_id)
+        if dispute:
+            text += "\n\n" + dispute_text(dispute)
+            kb = dispute_actions_kb(dispute, callback.from_user.id)
+        else:
+            kb = deal_open_kb(deal, callback.from_user.id)
 
         await callback.message.answer(text, reply_markup=kb)
         await callback.answer()
 
     except Exception as e:
-        print("DEAL OPEN ERROR:", e)
+        print(f"DEAL OPEN ERROR: {e}")
         await callback.answer("Ошибка открытия сделки", show_alert=True)
     
 

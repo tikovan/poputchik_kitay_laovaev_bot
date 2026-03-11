@@ -3862,16 +3862,17 @@ async def activate_post(callback: CallbackQuery, bot: Bot):
             (new_status, now_ts(), expires_at, post_id)
         )
 
-await callback.message.answer(
-    f"Объявление {post_id} " + ("отправлено на повторную модерацию." if MODERATION_ENABLED else "активировано.")
-)
+    await callback.message.answer(
+        f"Объявление {post_id} " + ("отправлено на повторную модерацию." if MODERATION_ENABLED else "активировано.")
+    )
 
-if not MODERATION_ENABLED:
-    await safe_publish(bot, post_id)
-    await notify_coincidence_users(bot, post_id)
-    await notify_subscribers(bot, post_id)
+    if not MODERATION_ENABLED:
+        await safe_publish(bot, post_id)
+        await notify_coincidence_users(bot, post_id)
+        await notify_subscribers(bot, post_id)
 
-await callback.answer()
+    await callback.answer()
+
 
 @router.callback_query(F.data.startswith("bump:"))
 async def bump_post(callback: CallbackQuery):

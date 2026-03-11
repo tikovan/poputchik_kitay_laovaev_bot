@@ -7,7 +7,6 @@ import time
 from contextlib import closing
 from datetime import datetime, timedelta
 from typing import List, Optional, Tuple
-
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
@@ -1020,6 +1019,18 @@ def format_deal_status(status: str) -> str:
     return mapping.get(status, status)
 
 
+def format_post_status(status: str) -> str:
+    mapping = {
+        STATUS_ACTIVE: "активно",
+        STATUS_INACTIVE: "неактивно",
+        STATUS_PENDING: "на модерации",
+        STATUS_REJECTED: "отклонено",
+        STATUS_EXPIRED: "истекло",
+        STATUS_DELETED: "удалено",
+    }
+    return mapping.get(status, status)
+
+
 def deal_status_explanation(status: str, viewer_is_owner: bool) -> str:
     if status == DEAL_CONTACTED:
         return (
@@ -1239,11 +1250,22 @@ def photo_choice_kb():
 
 def my_posts_kb(posts: List[sqlite3.Row]):
     rows = []
+
     for index, p in enumerate(posts, start=1):
         icon = "✈️" if p["post_type"] == TYPE_TRIP else "📦"
-        label = f"{index}. {icon} • {p['from_country']}→{p['to_country']} • {p['status']}"
-        rows.append([InlineKeyboardButton(text=label[:64], callback_data=f"mypost:{p['id']}")])
-    return InlineKeyboardMarkup(inline_keyboard=rows or [[InlineKeyboardButton(text="Нет объявлений", callback_data="noop")]])
+        status_text = format_post_status(p["status"])
+        label = f"{index}. {icon} {p['from_country']} → {p['to_country']} • {status_text}"
+
+        rows.append([
+            InlineKeyboardButton(
+                text=label[:64],
+                callback_data=f"mypost:{p['id']}"
+            )
+        ])
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=rows or [[InlineKeyboardButton(text="Нет объявлений", callback_data="noop")]]
+    )
 
 
 def deal_list_kb(deals: List[sqlite3.Row]):
@@ -1279,19 +1301,40 @@ def deal_list_kb(deals: List[sqlite3.Row]):
 
 def post_actions_kb(post_id: int, status: str):
     share_url = f"https://t.me/share/url?url={post_deeplink(post_id)}"
-    rows = [
-        [
-            InlineKeyboardButton(text="🗑 Удалить", callback_data=f"delete:{post_id}"),
-            InlineKeyboardButton(text="⏸ Деактивировать", callback_data=f"deactivate:{post_id}")
-        ],
-        [
+    rows = []
+
+    if status == STATUS_ACTIVE:
+        rows.append([
+            InlineKeyboardButton(text="⏸ Деактивировать", callback_data=f"deactivate:{post_id}"),
+            InlineKeyboardButton(text="🗑 Удалить", callback_data=f"delete:{post_id}")
+        ])
+        rows.append([
             InlineKeyboardButton(text="🔼 Поднять", callback_data=f"bump:{post_id}"),
             InlineKeyboardButton(text="👀 Совпадения", callback_data=f"coincidences:{post_id}")
-        ],
-        [InlineKeyboardButton(text="📤 Поделиться", url=share_url)]
-    ]
-    if status != STATUS_ACTIVE:
-        rows.append([InlineKeyboardButton(text="▶️ Активировать", callback_data=f"activate:{post_id}")])
+        ])
+        rows.append([
+            InlineKeyboardButton(text="📤 Поделиться", url=share_url)
+        ])
+
+    elif status in (STATUS_INACTIVE, STATUS_EXPIRED, STATUS_REJECTED):
+        rows.append([
+            InlineKeyboardButton(text="▶️ Активировать", callback_data=f"activate:{post_id}"),
+            InlineKeyboardButton(text="🗑 Удалить", callback_data=f"delete:{post_id}")
+        ])
+        rows.append([
+            InlineKeyboardButton(text="👀 Совпадения", callback_data=f"coincidences:{post_id}")
+        ])
+
+    elif status == STATUS_PENDING:
+        rows.append([
+            InlineKeyboardButton(text="🗑 Удалить", callback_data=f"delete:{post_id}")
+        ])
+
+    else:
+        rows.append([
+            InlineKeyboardButton(text="🗑 Удалить", callback_data=f"delete:{post_id}")
+        ])
+
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -3879,23 +3922,35 @@ async def review_text_input(message: Message, state: FSMContext):
 
 @router.callback_query(F.data.startswith("mypost:"))
 async def open_my_post(callback: CallbackQuery):
-    await callback.answer()
     try:
         post_id = int(callback.data.split(":")[1])
         row = get_post(post_id)
 
-        if not row or row["user_id"] != callback.from_user.id or row["status"] == STATUS_DELETED:
-            await callback.message.answer("Объявление не найдено.")
+        if not row:
+            await callback.answer("Объявление не найдено", show_alert=True)
+            return
+
+        if row["user_id"] != callback.from_user.id:
+            await callback.answer("Нет доступа", show_alert=True)
+            return
+
+        if row["status"] == STATUS_DELETED:
+            await callback.answer("Объявление уже удалено", show_alert=True)
             return
 
         text = post_text(row)
         if len(text) > 4000:
             text = text[:3900] + "\n\n..."
 
-        await callback.message.answer(text, reply_markup=post_actions_kb(post_id, row["status"]))
+        await callback.message.answer(
+            text,
+            reply_markup=post_actions_kb(post_id, row["status"])
+        )
+        await callback.answer()
+
     except Exception as e:
         print(f"OPEN_MY_POST ERROR: {e}")
-        await callback.message.answer("Не удалось открыть объявление.")
+        await callback.answer("Не удалось открыть объявление", show_alert=True)
 
 
 @router.callback_query(F.data.startswith("deal_confirm:"))

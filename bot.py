@@ -2825,8 +2825,8 @@ async def start_handler(message: Message, state: FSMContext):
         return
 
     if start_arg.startswith("contact_"):
-    post_id_str = start_arg.replace("contact_", "", 1)
-    if post_id_str.isdigit():
+       post_id_str = start_arg.replace("contact_", "", 1)
+    if  post_id_str.isdigit():
         row = get_post(int(post_id_str))
         if row and row["status"] == STATUS_ACTIVE:
             if row["user_id"] == message.from_user.id:

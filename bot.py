@@ -941,6 +941,57 @@ def format_deal_status(status: str) -> str:
     }
     return mapping.get(status, status)
 
+def deal_status_explanation(status: str, viewer_is_owner: bool) -> str:
+    if status == DEAL_CONTACTED:
+        return (
+            "Контакт начат. Один из пользователей начал общение по объявлению.\n"
+            "Теперь вы можете обсудить детали и договориться о передаче посылки."
+        )
+
+    if status == DEAL_OFFERED:
+        return (
+            "Сделка предложена и ожидает решения второй стороны.\n"
+            "Когда она будет принята, появятся кнопки завершения сделки."
+        )
+
+    if status == DEAL_ACCEPTED:
+        return (
+            "Сделка принята обеими сторонами.\n"
+            "После передачи посылки подтвердите завершение сделки."
+        )
+
+    if status == DEAL_COMPLETED_BY_OWNER:
+        return (
+            "Владелец объявления подтвердил завершение сделки.\n"
+            "Ожидается подтверждение второй стороны."
+        )
+
+    if status == DEAL_COMPLETED_BY_REQUESTER:
+        return (
+            "Откликнувшийся пользователь подтвердил завершение.\n"
+            "Ожидается подтверждение владельца объявления."
+        )
+
+    if status == DEAL_COMPLETED:
+        return "Сделка завершена. Теперь можно оставить отзыв."
+
+    if status == DEAL_FAILED:
+        return "Сделка завершилась без результата."
+
+    if status == DEAL_CANCELLED:
+        return "Сделка была отменена."
+
+    if status == DEAL_DISPUTE_WAITING:
+        return "Открыт спор. Сейчас ожидается ответ второй стороны."
+
+    if status == DEAL_DISPUTE_OPEN:
+        return "Спор активен. Ожидается решение первой стороны."
+
+    if status == DEAL_DISPUTE_RESOLVED:
+        return "Спор решен."
+
+    return "Статус сделки обновлен."
+    
 
 def format_coincidence_badges(score: int, notes: List[str]) -> str:
     if score >= 75:
@@ -1117,11 +1168,36 @@ def my_posts_kb(posts: List[sqlite3.Row]):
 
 def deal_list_kb(deals: List[sqlite3.Row]):
     rows = []
-    for d in deals:
-        label = f"{d['id']} • post {d['post_id']} • {format_deal_status(d['status'])}"
-        rows.append([InlineKeyboardButton(text=label[:64], callback_data=f"mydeal:{d['id']}")])
-    return InlineKeyboardMarkup(inline_keyboard=rows or [[InlineKeyboardButton(text="Нет сделок", callback_data="noop")]])
 
+    for d in deals:
+        if d["status"] == DEAL_OFFERED:
+            status_icon = "🟡"
+        elif d["status"] == DEAL_ACCEPTED:
+            status_icon = "🟢"
+        elif d["status"] in (DEAL_COMPLETED_BY_OWNER, DEAL_COMPLETED_BY_REQUESTER):
+            status_icon = "🟦"
+        elif d["status"] == DEAL_COMPLETED:
+            status_icon = "✅"
+        elif d["status"] in (DEAL_FAILED, DEAL_CANCELLED):
+            status_icon = "❌"
+        elif d["status"] in (DEAL_DISPUTE_OPEN, DEAL_DISPUTE_WAITING, DEAL_DISPUTE_RESOLVED):
+            status_icon = "⚖️"
+        else:
+            status_icon = "🤝"
+
+        label = f"{status_icon} Сделка #{d['id']} • объявление {d['post_id']}"
+        rows.append([
+            InlineKeyboardButton(
+                text=label[:64],
+                callback_data=f"mydeal:{d['id']}"
+            )
+        ])
+
+    if not rows:
+        rows = [[InlineKeyboardButton(text="Нет сделок", callback_data="noop")]]
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+    
 
 def post_actions_kb(post_id: int, status: str):
     share_url = f"https://t.me/share/url?url={post_deeplink(post_id)}"
@@ -1221,21 +1297,87 @@ def popular_routes_kb(rows: List[sqlite3.Row]):
 def deal_open_kb(deal: sqlite3.Row, user_id: int) -> InlineKeyboardMarkup:
     rows = []
 
-    if deal["status"] in (DEAL_ACCEPTED, DEAL_COMPLETED_BY_OWNER, DEAL_COMPLETED_BY_REQUESTER):
-        rows.append([InlineKeyboardButton(text="✅ Подтвердить завершение", callback_data=f"deal_confirm:{deal['id']}")])
+    viewer_is_owner = user_id == deal["owner_user_id"]
+    other_user_id = deal["requester_user_id"] if viewer_is_owner else deal["owner_user_id"]
 
-    if deal["status"] == DEAL_COMPLETED and not has_user_left_review_for_deal(deal, user_id):
-        rows.append([InlineKeyboardButton(text="⭐ Оставить отзыв", callback_data=f"deal_review:{deal['id']}")])
+    if deal["status"] == DEAL_CONTACTED:
+        rows.append([
+            InlineKeyboardButton(
+                text="💬 Написать в чат через бота",
+                callback_data=f"reply_contact:{deal['post_id']}:{other_user_id}:{deal['id']}"
+            )
+        ])
 
-    if deal["status"] in (
-    DEAL_ACCEPTED,
-    DEAL_COMPLETED_BY_OWNER,
-    DEAL_COMPLETED_BY_REQUESTER,
-):
-        rows.append([InlineKeyboardButton(text="📦 Посылка не доставлена", callback_data=f"deal_dispute_open:{deal['id']}")])
+        if viewer_is_owner:
+            rows.append([
+                InlineKeyboardButton(
+                    text="✅ Принять сделку",
+                    callback_data=f"deal_accept:{deal['id']}"
+                ),
+                InlineKeyboardButton(
+                    text="❌ Отклонить",
+                    callback_data=f"deal_reject:{deal['id']}"
+                )
+            ])
 
-    if not rows:
-        rows = [[InlineKeyboardButton(text="Ок", callback_data="noop")]]
+    elif deal["status"] == DEAL_OFFERED:
+        if viewer_is_owner:
+            rows.append([
+                InlineKeyboardButton(
+                    text="✅ Принять сделку",
+                    callback_data=f"deal_accept:{deal['id']}"
+                ),
+                InlineKeyboardButton(
+                    text="❌ Отклонить",
+                    callback_data=f"deal_reject:{deal['id']}"
+                )
+            ])
+        else:
+            rows.append([
+                InlineKeyboardButton(
+                    text="💬 Написать в чат через бота",
+                    callback_data=f"reply_contact:{deal['post_id']}:{other_user_id}:{deal['id']}"
+                )
+            ])
+
+    elif deal["status"] in (DEAL_ACCEPTED, DEAL_COMPLETED_BY_OWNER, DEAL_COMPLETED_BY_REQUESTER):
+        rows.append([
+            InlineKeyboardButton(
+                text="✅ Подтвердить завершение",
+                callback_data=f"deal_confirm:{deal['id']}"
+            )
+        ])
+        rows.append([
+            InlineKeyboardButton(
+                text="📦 Посылка не доставлена",
+                callback_data=f"deal_dispute_open:{deal['id']}"
+            )
+        ])
+        rows.append([
+            InlineKeyboardButton(
+                text="💬 Написать в чат через бота",
+                callback_data=f"reply_contact:{deal['post_id']}:{other_user_id}:{deal['id']}"
+            )
+        ])
+
+    elif deal["status"] == DEAL_COMPLETED:
+        if not has_user_left_review_for_deal(deal, user_id):
+            rows.append([
+                InlineKeyboardButton(
+                    text="⭐ Оставить отзыв",
+                    callback_data=f"deal_review:{deal['id']}"
+                )
+            ])
+
+    elif deal["status"] in (DEAL_FAILED, DEAL_CANCELLED):
+        rows.append([
+            InlineKeyboardButton(text="Ок", callback_data="noop")
+        ])
+
+    else:
+        rows.append([
+            InlineKeyboardButton(text="Ок", callback_data="noop")
+        ])
 
     return InlineKeyboardMarkup(inline_keyboard=rows)
 

@@ -5379,35 +5379,38 @@ async def deal_reject_handler(callback: CallbackQuery):
 
 @router.callback_query(F.data.startswith("mydeal:"))
 async def open_my_deal(callback: CallbackQuery):
-    deal_id = int(callback.data.split(":")[1])
-    deal = get_deal(deal_id)
+    try:
+        deal_id = int(callback.data.split(":")[1])
+        deal = get_deal(deal_id)
 
-    if not deal:
-        await callback.answer("Сделка не найдена", show_alert=True)
-        return
+        if not deal:
+            await callback.answer("Сделка не найдена", show_alert=True)
+            return
 
-    if callback.from_user.id not in (deal["owner_user_id"], deal["requester_user_id"]):
-        await callback.answer("Нет доступа", show_alert=True)
-        return
+        if callback.from_user.id not in (
+            deal["owner_user_id"],
+            deal["requester_user_id"]
+        ):
+            await callback.answer("Нет доступа", show_alert=True)
+            return
 
-    role = "владелец объявления" if callback.from_user.id == deal["owner_user_id"] else "откликнувшийся пользователь"
+        role = "владелец объявления" if callback.from_user.id == deal["owner_user_id"] else "откликнувшийся пользователь"
 
-    text = (
-        f"🤝 <b>Сделка #{deal['id']}</b>\n\n"
-        f"<b>ID объявления:</b> {deal['post_id']}\n"
-        f"<b>Ваш статус:</b> {role}\n"
-        f"<b>Состояние сделки:</b> {format_deal_status(deal['status'])}"
-    )
+        text = (
+            f"🤝 <b>Сделка #{deal['id']}</b>\n\n"
+            f"<b>ID объявления:</b> {deal['post_id']}\n"
+            f"<b>Ваша роль:</b> {role}\n"
+            f"<b>Статус:</b> {format_deal_status(deal['status'])}"
+        )
 
-    dispute = get_open_dispute_by_deal(deal_id)
-    if dispute:
-        text += "\n\n" + dispute_text(dispute)
-        kb = dispute_actions_kb(dispute, callback.from_user.id)
-    else:
         kb = deal_open_kb(deal, callback.from_user.id)
 
-    await callback.message.answer(text, reply_markup=kb)
-    await callback.answer()
+        await callback.message.answer(text, reply_markup=kb)
+        await callback.answer()
+
+    except Exception as e:
+        print("DEAL OPEN ERROR:", e)
+        await callback.answer("Ошибка открытия сделки", show_alert=True)
     
 
 @router.callback_query(F.data == "noop")

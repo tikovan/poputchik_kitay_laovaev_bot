@@ -4806,26 +4806,19 @@ async def deal_accept_handler(callback: CallbackQuery):
         pass
 
     await callback.message.answer(
-    (
         "✅ <b>Сделка принята.</b>\n\n"
-
         "🤝 Теперь вы можете договориться о передаче посылки.\n\n"
-
         "📱 <b>Управление сделками</b> происходит во вкладке:\n"
         "🤝 <b>Мои сделки</b>\n\n"
-
         "Там вы сможете:\n"
         "• посмотреть информацию по сделке\n"
         "• завершить сделку\n"
         "• оставить отзыв\n\n"
-
         "⚠️ <b>Важно</b>\n"
         "Никогда не переводите предоплату незнакомым людям."
-    ),
-    parse_mode="HTML"
-)
-await callback.answer()
+    )
 
+    await callback.answer()
 
 @router.callback_query(F.data.startswith("deal_dispute_open:"))
 async def deal_dispute_open_handler(callback: CallbackQuery, state: FSMContext):

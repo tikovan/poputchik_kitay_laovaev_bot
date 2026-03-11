@@ -835,6 +835,23 @@ def user_completed_deals_count(user_id: int) -> int:
         return int(row["cnt"] or 0)
 
 
+def user_has_warning_badge(user_id: int) -> bool:
+    with closing(connect_db()) as conn:
+        row = conn.execute("""
+            SELECT failed_dispute_count, dispute_no_response_count
+            FROM users
+            WHERE user_id=?
+        """, (user_id,)).fetchone()
+
+    if not row:
+        return False
+
+    return (
+        int(row["failed_dispute_count"] or 0) > 0
+        or int(row["dispute_no_response_count"] or 0) > 0
+    )
+
+
 def is_user_verified(user_id: int) -> bool:
     with closing(connect_db()) as conn:
         row = conn.execute("SELECT is_verified FROM users WHERE user_id=?", (user_id,)).fetchone()
@@ -1086,12 +1103,13 @@ def post_text(row, for_channel: bool = False) -> str:
 
     owner_user_id = row["user_id"]
     verified_badge = " ✅ Проверенный" if is_user_verified(owner_user_id) else ""
+    warning_badge = " ⚠️ Были спорные сделки" if user_has_warning_badge(owner_user_id) else ""
     rating_line = format_rating_line(owner_user_id)
     completed_deals = user_completed_deals_count(owner_user_id)
     service_text = user_service_text(owner_user_id)
 
     lines = [
-        f"<b>{short_post_type(row['post_type'])}{verified_badge}</b>",
+        f"<b>{short_post_type(row['post_type'])}{verified_badge}{warning_badge}</b>",
         f"<b>Маршрут:</b> {route}",
     ]
 
@@ -1413,6 +1431,28 @@ def deal_open_kb(deal: sqlite3.Row, user_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def dispute_failed_opened_by_kb(deal_id: int):
+    rows = [
+        [
+            InlineKeyboardButton(
+                text="⭐ Оставить отзыв",
+                callback_data=f"deal_review:{deal_id}"
+            )
+        ]
+    ]
+
+    for admin_id in ADMIN_IDS:
+        rows.append([
+            InlineKeyboardButton(
+                text="🆘 Связаться с администратором",
+                url=f"tg://user?id={admin_id}"
+            )
+        ])
+        break
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+    
+
 def get_active_deal_by_post(post_id: int) -> Optional[sqlite3.Row]:
     with closing(connect_db()) as conn:
         return conn.execute("""
@@ -1545,6 +1585,10 @@ class OnboardingFlow(StatesGroup):
     screen_5 = State()
     screen_6 = State()
 
+
+class AdminContactFlow(StatesGroup):
+    message = State()
+    
 
 def is_main_menu_text(text: str) -> bool:
     return (text or "").strip() in MAIN_MENU_TEXTS
@@ -2188,6 +2232,19 @@ def mark_deal_failed(post_id: int, user_id: int) -> bool:
         return True
 
 
+def contact_admin_kb(deal_id: int):
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🆘 Связаться с администратором",
+                    callback_data=f"contact_admin:{deal_id}"
+                )
+            ]
+        ]
+    )
+
+
 def create_bump_order(user_id: int, post_id: int, amount: int = BUMP_PRICE_AMOUNT, currency: str = BUMP_PRICE_CURRENCY) -> int:
     with closing(connect_db()) as conn, conn:
         cur = conn.execute("""
@@ -2524,6 +2581,23 @@ def format_dispute_status(status: str) -> str:
     return mapping.get(status, status)
 
 
+def admin_contact_kb():
+    rows = []
+
+    for admin_id in ADMIN_IDS:
+        rows.append([
+            InlineKeyboardButton(
+                text="🆘 Связаться с администратором",
+                url=f"tg://user?id={admin_id}"
+            )
+        ])
+        break
+
+    return InlineKeyboardMarkup(inline_keyboard=rows or [[
+        InlineKeyboardButton(text="Ок", callback_data="noop")
+    ]])
+    
+
 def dispute_text(dispute: sqlite3.Row) -> str:
     lines = [
         f"⚖️ <b>Спор по сделке #{dispute['deal_id']}</b>",
@@ -2669,6 +2743,83 @@ async def render_create_step(target_step: str, target_message: Message, state: F
         )
         return
         
+
+@router.callback_query(F.data.startswith("contact_admin:"))
+async def contact_admin_handler(callback: CallbackQuery, state: FSMContext):
+    deal_id = int(callback.data.split(":")[1])
+
+    deal = get_deal(deal_id)
+    if not deal:
+        await callback.answer("Сделка не найдена", show_alert=True)
+        return
+
+    await state.set_state(AdminContactFlow.message)
+    await state.update_data(deal_id=deal_id)
+
+    await callback.message.answer(
+        "✉️ Напишите сообщение администратору.\n\n"
+        "Опишите проблему по сделке."
+    )
+
+    await callback.answer()
+
+
+@router.message(AdminContactFlow.message)
+async def admin_contact_message(message: Message, state: FSMContext):
+    data = await state.get_data()
+    deal_id = data.get("deal_id")
+
+    deal = get_deal(deal_id)
+    post = get_post(deal["post_id"]) if deal else None
+
+    route = ""
+    if post:
+        route = f"{post['from_country']}"
+        if post["from_city"]:
+            route += f", {post['from_city']}"
+        route += " → "
+        route += f"{post['to_country']}"
+        if post["to_city"]:
+            route += f", {post['to_city']}"
+
+    username = f"@{message.from_user.username}" if message.from_user.username else "без username"
+
+    text = (
+        "⚠️ <b>Запрос администратору по сделке</b>\n\n"
+        f"<b>Пользователь:</b> {username}\n"
+        f"<b>ID пользователя:</b> {message.from_user.id}\n\n"
+        f"<b>ID сделки:</b> {deal_id}\n"
+        f"<b>ID объявления:</b> {deal['post_id']}\n"
+        f"<b>Маршрут:</b> {route}\n\n"
+        f"<b>Сообщение:</b>\n{message.text}"
+    )
+
+    for admin_id in ADMIN_IDS:
+        try:
+            await message.bot.send_message(
+                admin_id,
+                text,
+                reply_markup=InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [
+                            InlineKeyboardButton(
+                                text="💬 Написать пользователю",
+                                url=f"tg://user?id={message.from_user.id}"
+                            )
+                        ]
+                    ]
+                )
+            )
+        except Exception as e:
+            print(f"ADMIN CONTACT ERROR: {e}")
+
+    await message.answer(
+        "📩 Ваше сообщение отправлено администратору.\n"
+        "Он свяжется с вами напрямую в Telegram."
+    )
+
+    await state.clear()
+
 
 @router.inline_query()
 async def inline_search_handler(inline_query: InlineQuery):
@@ -3635,8 +3786,8 @@ async def deal_review_start(callback: CallbackQuery, state: FSMContext):
         await callback.answer("Нет доступа", show_alert=True)
         return
 
-    if deal["status"] != DEAL_COMPLETED:
-        await callback.answer("Отзыв можно оставить только по завершенной сделке", show_alert=True)
+    if deal["status"] not in (DEAL_COMPLETED, DEAL_FAILED):
+        await callback.answer("Отзыв можно оставить только по завершенной или неуспешной сделке", show_alert=True)
         return
 
     if has_user_left_review_for_deal(deal, callback.from_user.id):
@@ -5458,32 +5609,71 @@ async def dispute_unresolved_handler(callback: CallbackQuery):
         await callback.answer("Нет доступа", show_alert=True)
         return
 
+    deal = get_deal(dispute["deal_id"])
+    if not deal:
+        await callback.answer("Сделка не найдена", show_alert=True)
+        return
+
     with closing(connect_db()) as conn, conn:
         conn.execute(
             "UPDATE disputes SET status=?, updated_at=? WHERE id=?",
             (DISPUTE_CLOSED_UNRESOLVED, now_ts(), dispute_id)
         )
+
         conn.execute(
             "UPDATE deals SET status=?, updated_at=? WHERE id=?",
             (DEAL_FAILED, now_ts(), dispute["deal_id"])
         )
 
+        # Санкция только стороне, против которой был спор
+        conn.execute("""
+            UPDATE users
+            SET failed_dispute_count = COALESCE(failed_dispute_count, 0) + 1
+            WHERE user_id=?
+        """, (dispute["against_user_id"],))
+
     updated_dispute = get_dispute(dispute_id)
 
+    # Уведомление потерпевшему / открывшему спор
+    await callback.message.answer(
+        "❌ <b>Спор закрыт без решения</b>\n\n"
+        "Сделка признана неуспешной и завершена внутри бота.\n\n"
+        "<b>Как сервис реагирует на такую ситуацию:</b>\n"
+        "• пользователю, против которого спор закрыт без решения, в профиле добавляется отметка "
+        "<b>«⚠️ Были спорные сделки»</b>\n"
+        "• это влияет на доверие других пользователей к его профилю\n"
+        "• если пользователь системно игнорирует споры и не отвечает в срок — сервис ограничивает его аккаунт\n\n"
+        "Что можно сделать дальше:\n"
+        "• оставить отзыв о второй стороне\n"
+        "• сохранить переписку и детали ситуации\n"
+        "• при необходимости связаться с администратором\n"
+        "• если отправка или получение всё ещё актуальны — создать новое объявление",
+        reply_markup=dispute_failed_opened_by_kb(deal["id"])
+    )
+
+    # Уведомление второй стороне / стороне, против которой был спор
     try:
         await callback.bot.send_message(
             dispute["against_user_id"],
-            "❌ Спор закрыт без решения.\n\n"
-            f"{dispute_text(updated_dispute)}"
+            "❌ <b>Спор по сделке закрыт без решения</b>\n\n"
+            "Сделка признана неуспешной и завершена внутри бота.\n\n"
+            "В вашем профиле будет отображаться отметка "
+            "<b>«⚠️ Были спорные сделки»</b>, так как спор был закрыт без решения не в вашу пользу.\n"
+            "Если пользователь системно игнорирует споры и не отвечает в срок — сервис ограничивает аккаунт.\n\n"
+            "Что можно сделать дальше:\n"
+            "• оставить отзыв о второй стороне\n"
+            "• при необходимости связаться с администратором",
+            reply_markup=dispute_failed_against_kb(deal["id"])
         )
     except Exception as e:
         print(f"DISPUTE UNRESOLVED NOTIFY ERROR: {e}")
 
     await callback.message.answer(
-        "❌ Спор закрыт без решения.\n\n"
-        f"{dispute_text(updated_dispute)}"
+        f"❌ <b>Сделка завершилась неуспешно</b>\n\n{dispute_text(updated_dispute)}"
     )
+
     await callback.answer()
+    
 
 @router.callback_query(F.data.startswith("deal_reject:"))
 async def deal_reject_handler(callback: CallbackQuery):

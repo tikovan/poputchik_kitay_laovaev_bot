@@ -3013,11 +3013,6 @@ async def start_handler(message: Message, state: FSMContext):
     upsert_user(message)
     await state.clear()
 
-    if not is_onboarding_completed(message.from_user.id):
-        await state.set_state(OnboardingFlow.screen_1)
-        await show_onboarding_screen(message, 1)
-        return
-
     if is_user_banned(message.from_user.id):
         await message.answer(
             "⛔ Ваш аккаунт ограничен из-за жалоб пользователей.\nЕсли это ошибка — свяжитесь с администратором."
@@ -3027,6 +3022,8 @@ async def start_handler(message: Message, state: FSMContext):
     start_arg = ""
     if message.text and " " in message.text:
         start_arg = message.text.split(" ", 1)[1].strip()
+
+    # ---------- deep links сначала ----------
 
     if start_arg == "parcel":
         await message.answer(MENU_TEXTS["parcel"], reply_markup=main_menu(message.from_user.id))
@@ -3053,6 +3050,7 @@ async def start_handler(message: Message, state: FSMContext):
                     return
 
                 await state.set_state(ContactFlow.message_text)
+
                 await state.update_data(
                     post_id=row["id"],
                     target_user_id=row["user_id"],
@@ -3068,8 +3066,10 @@ async def start_handler(message: Message, state: FSMContext):
 
     if start_arg.startswith("post_"):
         post_id_str = start_arg.replace("post_", "", 1)
+
         if post_id_str.isdigit():
             row = get_post(int(post_id_str))
+
             if row and row["status"] == STATUS_ACTIVE:
                 await message.answer(
                     "📤 Открыто объявление по ссылке:\n\n" + post_text(row),
@@ -3077,10 +3077,21 @@ async def start_handler(message: Message, state: FSMContext):
                 )
             else:
                 await message.answer("Объявление не найдено или уже неактивно.")
+
             return
 
-    await message.answer(WELCOME_TEXT, reply_markup=main_menu(message.from_user.id))
+    # ---------- только теперь онбординг ----------
 
+    if not is_onboarding_completed(message.from_user.id):
+        await state.set_state(OnboardingFlow.screen_1)
+        await show_onboarding_screen(message, 1)
+        return
+
+    await message.answer(
+        WELCOME_TEXT,
+        reply_markup=main_menu(message.from_user.id)
+    )
+    
 
 @router.callback_query(F.data.startswith("onboarding_next:"))
 async def onboarding_next_handler(callback: CallbackQuery, state: FSMContext):

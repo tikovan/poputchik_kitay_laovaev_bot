@@ -4318,7 +4318,7 @@ async def open_my_post(callback: CallbackQuery):
             await callback.answer("Объявление уже удалено", show_alert=True)
             return
 
-        text = (row)
+        text = post_text(row)
         if len(text) > 4000:
             text = text[:3900] + "\n\n..."
 
@@ -4331,7 +4331,7 @@ async def open_my_post(callback: CallbackQuery):
     except Exception as e:
         print(f"OPEN_MY_POST ERROR: {e}")
         await callback.answer("Не удалось открыть объявление", show_alert=True)
-
+        
 
 @router.callback_query(F.data.startswith("deal_confirm:"))
 async def deal_confirm_handler(callback: CallbackQuery):
@@ -4692,8 +4692,9 @@ async def find_to(callback: CallbackQuery, state: FSMContext):
             score = item["score"]
             notes = item["notes"]
             intro = format_coincidence_badges(score, notes)
+
             await callback.message.answer(
-                f"{intro}\n\n{(row)}",
+                f"{intro}\n\n{post_text(row)}",
                 reply_markup=public_post_kb(row["id"], row["user_id"], row["post_type"])
             )
 
@@ -4741,8 +4742,9 @@ async def coincidences_for_post(callback: CallbackQuery):
             score = item["score"]
             notes = item["notes"]
             intro = format_coincidence_badges(score, notes)
+
             await callback.message.answer(
-                f"{intro}\n\n{(found_row)}",
+                f"{intro}\n\n{post_text(found_row)}",
                 reply_markup=public_post_kb(found_row["id"], found_row["user_id"], found_row["post_type"])
             )
 
@@ -4782,9 +4784,10 @@ async def popular_route_open(callback: CallbackQuery):
 
         for row in rows:
             try:
-                text = (row)
+                text = post_text(row)
                 if len(text) > 4000:
                     text = text[:3900] + "\n\n..."
+
                 await callback.message.answer(
                     text,
                     reply_markup=public_post_kb(row["id"], row["user_id"], row["post_type"])

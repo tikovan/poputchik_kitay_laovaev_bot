@@ -838,6 +838,67 @@ def user_service_text(user_id: int) -> str:
     return f"{max(1, days // 365)} г"
 
 
+def get_user_profile_short(user_id: int) -> dict:
+    with closing(connect_db()) as conn:
+        row = conn.execute("""
+            SELECT
+                u.is_verified,
+                u.failed_dispute_count,
+                u.dispute_no_response_count,
+                u.created_at,
+                AVG(r.rating) AS avg_rating,
+                COUNT(r.id) AS reviews_count,
+                (
+                    SELECT COUNT(*)
+                    FROM deals d
+                    WHERE d.status='completed'
+                      AND (d.owner_user_id=u.user_id OR d.requester_user_id=u.user_id)
+                ) AS completed_deals
+            FROM users u
+            LEFT JOIN reviews r ON r.reviewed_user_id = u.user_id
+            WHERE u.user_id=?
+            GROUP BY u.user_id
+        """, (user_id,)).fetchone()
+
+    if not row:
+        return {
+            "verified": False,
+            "has_warning": False,
+            "rating_line": None,
+            "completed_deals": 0,
+            "service_text": "0 дн",
+        }
+
+    avg_rating = float(row["avg_rating"] or 0)
+    reviews_count = int(row["reviews_count"] or 0)
+
+    rating_line = None
+    if reviews_count > 0:
+        stars = "⭐" * max(1, min(5, round(avg_rating)))
+        rating_line = f"{stars} {avg_rating:.1f} ({reviews_count} {reviews_word(reviews_count)})"
+
+    created_at = int(row["created_at"] or now_ts())
+    days = max(0, (now_ts() - created_at) // 86400)
+
+    if days < 30:
+        service_text = f"{days} дн"
+    elif days < 365:
+        service_text = f"{max(1, days // 30)} мес"
+    else:
+        service_text = f"{max(1, days // 365)} г"
+
+    return {
+        "verified": bool(row["is_verified"]),
+        "has_warning": (
+            int(row["failed_dispute_count"] or 0) > 0
+            or int(row["dispute_no_response_count"] or 0) > 0
+        ),
+        "rating_line": rating_line,
+        "completed_deals": int(row["completed_deals"] or 0),
+        "service_text": service_text,
+    }
+    
+
 def user_completed_deals_count(user_id: int) -> int:
     with closing(connect_db()) as conn:
         row = conn.execute("""
@@ -1151,6 +1212,15 @@ def form_text(post_type: str, step: int, prompt: str, total_steps: int = 9) -> s
 
 
 def post_text(row, for_channel: bool = False) -> str:
+    if row is None:
+        raise ValueError("post_text получил None вместо объявления")
+
+    if not hasattr(row, "keys"):
+        raise ValueError("post_text получил неправильный объект: нет keys()")
+
+    if "id" not in row.keys():
+        raise ValueError("post_text получил неправильный объект: отсутствует id")
+
     route = html.escape(row["from_country"])
     if row["from_city"]:
         route += f", {html.escape(row['from_city'])}"
@@ -1159,13 +1229,7 @@ def post_text(row, for_channel: bool = False) -> str:
         route += f", {html.escape(row['to_city'])}"
 
     owner_user_id = row["user_id"]
-
-    is_verified = is_user_verified(owner_user_id)
-    has_warning = user_has_warning_badge(owner_user_id)
-
-    rating_line = format_rating_line(owner_user_id)
-    completed_deals = user_completed_deals_count(owner_user_id)
-    service_text = user_service_text(owner_user_id)
+    profile = get_user_profile_short(owner_user_id)
 
     owner_username = row["username"] if "username" in row.keys() else None
     owner_full_name = row["full_name"] if "full_name" in row.keys() else None
@@ -1192,29 +1256,28 @@ def post_text(row, for_channel: bool = False) -> str:
     lines.append("")
     lines.append("<b>👤 Профиль пользователя</b>")
 
-    # показываем только имя без фамилии
     if owner_full_name:
         short_name = owner_full_name.strip().split()[0]
         lines.append(f"🪪 <b>Имя:</b> {html.escape(short_name)}")
 
     status_parts = []
 
-    if is_verified:
+    if profile["verified"]:
         status_parts.append("✅ Проверенный")
 
-    if has_warning:
+    if profile["has_warning"]:
         status_parts.append("⚠️ Были спорные сделки")
 
     if status_parts:
         lines.append(f"🏷 <b>Статус:</b> {' | '.join(status_parts)}")
 
-    if rating_line:
-        lines.append(f"⭐ <b>Рейтинг:</b> {rating_line}")
+    if profile["rating_line"]:
+        lines.append(f"⭐ <b>Рейтинг:</b> {profile['rating_line']}")
     else:
         lines.append("⭐ <b>Рейтинг:</b> пока нет отзывов")
 
-    lines.append(f"📦 <b>Передач:</b> {completed_deals}")
-    lines.append(f"📅 <b>В сервисе:</b> {service_text}")
+    lines.append(f"📦 <b>Передач:</b> {profile['completed_deals']}")
+    lines.append(f"📅 <b>В сервисе:</b> {profile['service_text']}")
 
     lines.append("")
     lines.append(f"<b>ID объявления:</b> {row['id']}")
@@ -1230,6 +1293,75 @@ def post_text(row, for_channel: bool = False) -> str:
 
     return "\n".join(lines)
 
+
+async def send_post_card(
+    target,
+    row,
+    *,
+    with_age: bool = False,
+    prefix_text: Optional[str] = None,
+    reply_markup=None
+):
+    text = post_text(row)
+
+    if prefix_text:
+        text = f"{prefix_text}\n\n{text}"
+
+    if with_age:
+        text += f"\n\n<b>Добавлено:</b> {format_age(row['created_at'])}"
+
+    if len(text) > 4000:
+        text = text[:3900] + "\n\n..."
+
+    kb = reply_markup if reply_markup is not None else public_post_kb(
+        row["id"],
+        row["user_id"],
+        row["post_type"]
+    )
+
+    if hasattr(target, "answer"):
+        await target.answer(text, reply_markup=kb)
+        return
+
+    if hasattr(target, "message") and hasattr(target.message, "answer"):
+        await target.message.answer(text, reply_markup=kb)
+        return
+
+    raise ValueError("send_post_card получил неподдерживаемый target")
+
+
+async def send_post_card_to_user(
+    bot: Bot,
+    user_id: int,
+    row,
+    *,
+    with_age: bool = False,
+    prefix_text: Optional[str] = None,
+    reply_markup=None
+):
+    text = post_text(row)
+
+    if prefix_text:
+        text = f"{prefix_text}\n\n{text}"
+
+    if with_age:
+        text += f"\n\n<b>Добавлено:</b> {format_age(row['created_at'])}"
+
+    if len(text) > 4000:
+        text = text[:3900] + "\n\n..."
+
+    kb = reply_markup if reply_markup is not None else public_post_kb(
+        row["id"],
+        row["user_id"],
+        row["post_type"]
+    )
+
+    await bot.send_message(
+        user_id,
+        text,
+        reply_markup=kb
+    )
+    
 
 async def show_onboarding_screen(target, screen: int):
     text = ONBOARDING_TEXTS[screen]
@@ -2571,19 +2703,21 @@ async def notify_coincidence_users(bot: Bot, new_post_id: int):
         intro = format_coincidence_badges(score, notes)
 
         try:
-            await bot.send_message(
+            await send_post_card_to_user(
+                bot,
                 new_row["user_id"],
-                f"🔔 Найдено новое совпадение!\n\n{intro}\n\n{post_text(row)}",
-                reply_markup=public_post_kb(row["id"], row["user_id"], row["post_type"])
+                row,
+                prefix_text=f"🔔 Найдено новое совпадение!\n\n{intro}"
             )
         except Exception as e:
             print(f"COINCIDENCE SEND A ERROR: {e}")
 
         try:
-            await bot.send_message(
+            await send_post_card_to_user(
+                bot,
                 row["user_id"],
-                f"🔔 Найдено новое совпадение!\n\n{intro}\n\n{post_text(new_row)}",
-                reply_markup=public_post_kb(new_row["id"], new_row["user_id"], new_row["post_type"])
+                new_row,
+                prefix_text=f"🔔 Найдено новое совпадение!\n\n{intro}"
             )
         except Exception as e:
             print(f"COINCIDENCE SEND B ERROR: {e}")
@@ -2604,10 +2738,11 @@ async def notify_subscribers(bot: Bot, post_id: int):
 
     for sub in subscribers:
         try:
-            await bot.send_message(
+            await send_post_card_to_user(
+                bot,
                 sub["user_id"],
-                "🔔 По вашей подписке появилось новое объявление:\n\n" + post_text(row),
-                reply_markup=public_post_kb(row["id"], row["user_id"], row["post_type"])
+                row,
+                prefix_text="🔔 По вашей подписке появилось новое объявление:"
             )
         except Exception as e:
             print(f"SUBSCRIBER SEND ERROR: {e}")
@@ -2647,19 +2782,21 @@ async def run_global_coincidence_scan(bot: Bot):
                 intro = format_coincidence_badges(score, notes)
 
                 try:
-                    await bot.send_message(
+                    await send_post_card_to_user(
+                        bot,
                         row["user_id"],
-                        f"🔔 Найдено новое совпадение!\n\n{intro}\n\n{post_text(target)}",
-                        reply_markup=public_post_kb(target["id"], target["user_id"], target["post_type"])
+                        target,
+                        prefix_text=f"🔔 Найдено новое совпадение!\n\n{intro}"
                     )
                 except Exception as e:
                     print(f"GLOBAL COINCIDENCE SEND A ERROR: {e}")
 
                 try:
-                    await bot.send_message(
+                    await send_post_card_to_user(
+                        bot,
                         target["user_id"],
-                        f"🔔 Найдено новое совпадение!\n\n{intro}\n\n{post_text(row)}",
-                        reply_markup=public_post_kb(row["id"], row["user_id"], row["post_type"])
+                        row,
+                        prefix_text=f"🔔 Найдено новое совпадение!\n\n{intro}"
                     )
                 except Exception as e:
                     print(f"GLOBAL COINCIDENCE SEND B ERROR: {e}")
@@ -3240,12 +3377,18 @@ async def start_handler(message: Message, state: FSMContext):
     # ---------- deep links сначала ----------
 
     if start_arg == "parcel":
-        await message.answer(MENU_TEXTS["parcel"], reply_markup=main_menu(message.from_user.id))
+        await message.answer(
+            MENU_TEXTS["parcel"],
+            reply_markup=main_menu(message.from_user.id)
+        )
         await begin_create(message, state, TYPE_PARCEL)
         return
 
     if start_arg == "trip":
-        await message.answer(MENU_TEXTS["trip"], reply_markup=main_menu(message.from_user.id))
+        await message.answer(
+            MENU_TEXTS["trip"],
+            reply_markup=main_menu(message.from_user.id)
+        )
         await begin_create(message, state, TYPE_TRIP)
         return
 
@@ -3256,6 +3399,7 @@ async def start_handler(message: Message, state: FSMContext):
             row = get_post(int(post_id_str))
 
             if row and row["status"] == STATUS_ACTIVE:
+
                 if row["user_id"] == message.from_user.id:
                     await message.answer(
                         "Это ваше объявление.",
@@ -3272,10 +3416,15 @@ async def start_handler(message: Message, state: FSMContext):
                 )
 
                 await message.answer(
-                    "✉️ Вы открыли связь с владельцем объявления:\n\n"
-                    f"{post_text(row)}\n\n"
+                    "✉️ Вы открыли связь с владельцем объявления:"
+                )
+
+                await send_post_card(message, row)
+
+                await message.answer(
                     "Напишите сообщение, и я перешлю его владельцу."
                 )
+
                 return
 
     if start_arg.startswith("post_"):
@@ -3285,12 +3434,15 @@ async def start_handler(message: Message, state: FSMContext):
             row = get_post(int(post_id_str))
 
             if row and row["status"] == STATUS_ACTIVE:
-                await message.answer(
-                    "📤 Открыто объявление по ссылке:\n\n" + post_text(row),
-                    reply_markup=public_post_kb(row["id"], row["user_id"], row["post_type"])
+                await send_post_card(
+                    message,
+                    row,
+                    prefix_text="📤 Открыто объявление по ссылке:"
                 )
             else:
-                await message.answer("Объявление не найдено или уже неактивно.")
+                await message.answer(
+                    "Объявление не найдено или уже неактивно."
+                )
 
             return
 
@@ -3492,10 +3644,7 @@ async def onboarding_action_handler(callback: CallbackQuery, state: FSMContext):
                 reply_markup=main_menu(callback.from_user.id)
             )
             for row in rows:
-                await callback.message.answer(
-                    f"{post_text(row)}\n\n<b>Добавлено:</b> {format_age(row['created_at'])}",
-                    reply_markup=public_post_kb(row["id"], row["user_id"], row["post_type"])
-                )
+                await send_post_card(callback.message, row, with_age=True)
 
         await callback.answer()
         return
@@ -3865,14 +4014,7 @@ async def back_router(callback: CallbackQuery):
             await callback.message.answer("🆕 Новые объявления:")
 
             for row in posts:
-                await callback.message.answer(
-                    f"{post_text(row)}\n\n<b>Добавлено:</b> {format_age(row['created_at'])}",
-                    reply_markup=public_post_kb(
-                        row["id"],
-                        row["user_id"],
-                        row["post_type"]
-                    )
-                )
+                await send_post_card(callback.message, row, with_age=True)
 
     await callback.answer()
     
@@ -4166,7 +4308,10 @@ async def finalize_post(message: Message, state: FSMContext, bot: Bot):
         upsert_user(message)
 
         if is_user_banned(message.from_user.id):
-            await message.answer("⛔ Ваш аккаунт ограничен.", reply_markup=main_menu(message.from_user.id))
+            await message.answer(
+                "⛔ Ваш аккаунт ограничен.",
+                reply_markup=main_menu(message.from_user.id)
+            )
             await state.clear()
             return
 
@@ -4179,22 +4324,33 @@ async def finalize_post(message: Message, state: FSMContext, bot: Bot):
         await state.clear()
 
         if not row:
-            await message.answer("Ошибка: объявление создалось некорректно. Попробуйте ещё раз.", reply_markup=main_menu(message.from_user.id))
+            await message.answer(
+                "Ошибка: объявление создалось некорректно. Попробуйте ещё раз.",
+                reply_markup=main_menu(message.from_user.id)
+            )
             return
 
         await message.answer(
-    "✅ Объявление создано.\n" + ("Оно отправлено на модерацию." if MODERATION_ENABLED else "Оно уже активно."),
+            "✅ Объявление создано.\n" +
+            ("Оно отправлено на модерацию." if MODERATION_ENABLED else "Оно уже активно."),
             reply_markup=main_menu(message.from_user.id)
         )
 
-        await message.answer(post_text(row), reply_markup=post_actions_kb(post_id, row["status"]))
+        # ⬇️ ЕДИНЫЙ РЕНДЕР КАРТОЧКИ
+        await send_post_card(
+            message,
+            row,
+            reply_markup=post_actions_kb(post_id, row["status"])
+        )
 
         if MODERATION_ENABLED and row["status"] == STATUS_PENDING:
             for admin_id in ADMIN_IDS:
                 try:
-                    await bot.send_message(
+                    await send_post_card_to_user(
+                        bot,
                         admin_id,
-                        "Новое объявление на модерации:\n\n" + post_text(row),
+                        row,
+                        prefix_text="Новое объявление на модерации:",
                         reply_markup=admin_post_actions_kb(post_id)
                     )
                 except Exception as e:
@@ -4356,14 +4512,12 @@ async def open_my_post(callback: CallbackQuery):
             await callback.answer("Объявление уже удалено", show_alert=True)
             return
 
-        text = post_text(row)
-        if len(text) > 4000:
-            text = text[:3900] + "\n\n..."
-
-        await callback.message.answer(
-            text,
+        await send_post_card(
+            callback.message,
+            row,
             reply_markup=post_actions_kb(post_id, row["status"])
         )
+
         await callback.answer()
 
     except Exception as e:
@@ -4731,10 +4885,7 @@ async def find_to(callback: CallbackQuery, state: FSMContext):
             notes = item["notes"]
             intro = format_coincidence_badges(score, notes)
 
-            await callback.message.answer(
-                f"{intro}\n\n{post_text(row)}",
-                reply_markup=public_post_kb(row["id"], row["user_id"], row["post_type"])
-            )
+            await send_post_card(callback.message, row, prefix_text=intro)
 
     await callback.answer()
 
@@ -4781,10 +4932,7 @@ async def coincidences_for_post(callback: CallbackQuery):
             notes = item["notes"]
             intro = format_coincidence_badges(score, notes)
 
-            await callback.message.answer(
-                f"{intro}\n\n{post_text(found_row)}",
-                reply_markup=public_post_kb(found_row["id"], found_row["user_id"], found_row["post_type"])
-            )
+            await send_post_card(callback.message, found_row, prefix_text=intro)
 
     await callback.answer()
 
@@ -4822,14 +4970,7 @@ async def popular_route_open(callback: CallbackQuery):
 
         for row in rows:
             try:
-                text = post_text(row)
-                if len(text) > 4000:
-                    text = text[:3900] + "\n\n..."
-
-                await callback.message.answer(
-                    text,
-                    reply_markup=public_post_kb(row["id"], row["user_id"], row["post_type"])
-                )
+                await send_post_card(callback.message, row)
             except Exception as inner_e:
                 print(f"POPULAR_ROUTE_SEND_ROW ERROR: {inner_e}")
 
@@ -4846,10 +4987,7 @@ async def recent_posts_handler(message: Message):
         return
     await message.answer("🆕 Последние объявления:")
     for row in rows:
-        await message.answer(
-            f"{post_text(row)}\n\n<b>Добавлено:</b> {format_age(row['created_at'])}",
-            reply_markup=public_post_kb(row["id"], row["user_id"], row["post_type"])
-        )
+        await send_post_card(message, row, with_age=True)
 
 
 @router.message(ComplaintFlow.post_id)
@@ -5170,14 +5308,11 @@ async def admin_open_post(callback: CallbackQuery):
         await callback.answer("Объявление не найдено", show_alert=True)
         return
 
-    text = post_text(row)
-    if len(text) > 4000:
-        text = text[:3900] + "\n\n..."
-
-    await callback.message.answer(
-        text,
-        reply_markup=admin_post_manage_kb(post_id, row["user_id"])
-    )
+    await send_post_card(
+    callback.message,
+    row,
+    reply_markup=admin_post_manage_kb(post_id, row["user_id"])
+)
     await callback.answer()
 
 
@@ -5454,10 +5589,12 @@ async def admin_complaint_open_post(callback: CallbackQuery):
             await callback.answer("Объявление не найдено", show_alert=True)
             return
 
-        await callback.message.answer(
-            post_text(row),
+        await send_post_card(
+            callback.message,
+            row,
             reply_markup=admin_post_actions_kb(post_id)
         )
+
         await callback.answer()
 
     except Exception as e:

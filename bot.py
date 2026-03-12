@@ -1230,6 +1230,44 @@ def post_text(row, for_channel: bool = False) -> str:
 
     return "\n".join(lines)
 
+
+async def show_onboarding_screen(target, screen: int):
+    text = ONBOARDING_TEXTS[screen]
+    kb = onboarding_finish_kb() if screen == 6 else onboarding_next_kb(screen)
+
+    try:
+        if hasattr(target, "edit_text"):
+            await target.edit_text(text, reply_markup=kb)
+        else:
+            await target.answer(text, reply_markup=kb)
+    except Exception as e:
+        print(f"SHOW_ONBOARDING_SCREEN ERROR: {e}")
+        if hasattr(target, "answer"):
+            await target.answer(text, reply_markup=kb)
+
+
+def chunk_buttons(items: List[tuple], prefix: str, per_row: int = 2):
+    rows = []
+    row = []
+
+    for label, value in items:
+        row.append(
+            InlineKeyboardButton(
+                text=label,
+                callback_data=f"{prefix}:{value}"
+            )
+        )
+
+        if len(row) == per_row:
+            rows.append(row)
+            row = []
+
+    if row:
+        rows.append(row)
+
+    return rows
+
+
 def with_back(rows: List[List[InlineKeyboardButton]], include_back: bool = True):
     if include_back:
         rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="create_back")])

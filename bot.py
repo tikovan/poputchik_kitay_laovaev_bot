@@ -1159,12 +1159,16 @@ def post_text(row, for_channel: bool = False) -> str:
         route += f", {html.escape(row['to_city'])}"
 
     owner_user_id = row["user_id"]
+
     is_verified = is_user_verified(owner_user_id)
     has_warning = user_has_warning_badge(owner_user_id)
 
     rating_line = format_rating_line(owner_user_id)
     completed_deals = user_completed_deals_count(owner_user_id)
     service_text = user_service_text(owner_user_id)
+
+    owner_username = row["username"] if "username" in row.keys() else None
+    owner_full_name = row["full_name"] if "full_name" in row.keys() else None
 
     lines = [
         f"<b>{short_post_type(row['post_type'])}</b>",
@@ -1173,6 +1177,7 @@ def post_text(row, for_channel: bool = False) -> str:
 
     if row["travel_date"]:
         lines.append(f"<b>Дата:</b> {html.escape(row['travel_date'])}")
+
     if row["weight_kg"]:
         lines.append(f"<b>Вес/объем:</b> {html.escape(row['weight_kg'])}")
 
@@ -1187,9 +1192,16 @@ def post_text(row, for_channel: bool = False) -> str:
     lines.append("")
     lines.append("<b>👤 Профиль пользователя</b>")
 
+    # показываем только имя без фамилии
+    if owner_full_name:
+        short_name = owner_full_name.strip().split()[0]
+        lines.append(f"🪪 <b>Имя:</b> {html.escape(short_name)}")
+
     status_parts = []
+
     if is_verified:
         status_parts.append("✅ Проверенный")
+
     if has_warning:
         status_parts.append("⚠️ Были спорные сделки")
 
@@ -1203,6 +1215,7 @@ def post_text(row, for_channel: bool = False) -> str:
 
     lines.append(f"📦 <b>Передач:</b> {completed_deals}")
     lines.append(f"📅 <b>В сервисе:</b> {service_text}")
+
     lines.append("")
     lines.append(f"<b>ID объявления:</b> {row['id']}")
 
@@ -1212,39 +1225,10 @@ def post_text(row, for_channel: bool = False) -> str:
             "Возможно, ваша посылка уже почти в пути ✈️📦."
         )
     else:
-        owner = row["username"] if "username" in row.keys() else None
-        if owner:
-            lines.append(f"<b>Telegram:</b> @{html.escape(owner)}")
+        if owner_username:
+            lines.append(f"<b>Telegram:</b> @{html.escape(owner_username)}")
 
     return "\n".join(lines)
-    
-
-async def show_onboarding_screen(target, screen: int):
-    text = ONBOARDING_TEXTS[screen]
-    kb = onboarding_finish_kb() if screen == 6 else onboarding_next_kb(screen)
-
-    try:
-        if hasattr(target, "edit_text"):
-            await target.edit_text(text, reply_markup=kb)
-        else:
-            await target.answer(text, reply_markup=kb)
-    except Exception as e:
-        print(f"SHOW_ONBOARDING_SCREEN ERROR: {e}")
-        if hasattr(target, "answer"):
-            await target.answer(text, reply_markup=kb)
-
-
-def chunk_buttons(items: List[tuple], prefix: str, per_row: int = 2):
-    rows, row = [], []
-    for label, value in items:
-        row.append(InlineKeyboardButton(text=label, callback_data=f"{prefix}:{value}"))
-        if len(row) == per_row:
-            rows.append(row)
-            row = []
-    if row:
-        rows.append(row)
-    return rows
-
 
 def with_back(rows: List[List[InlineKeyboardButton]], include_back: bool = True):
     if include_back:
@@ -4334,7 +4318,7 @@ async def open_my_post(callback: CallbackQuery):
             await callback.answer("Объявление уже удалено", show_alert=True)
             return
 
-        text = post_text(row)
+        text = (row)
         if len(text) > 4000:
             text = text[:3900] + "\n\n..."
 
@@ -4709,7 +4693,7 @@ async def find_to(callback: CallbackQuery, state: FSMContext):
             notes = item["notes"]
             intro = format_coincidence_badges(score, notes)
             await callback.message.answer(
-                f"{intro}\n\n{post_text(row)}",
+                f"{intro}\n\n{(row)}",
                 reply_markup=public_post_kb(row["id"], row["user_id"], row["post_type"])
             )
 
@@ -4758,7 +4742,7 @@ async def coincidences_for_post(callback: CallbackQuery):
             notes = item["notes"]
             intro = format_coincidence_badges(score, notes)
             await callback.message.answer(
-                f"{intro}\n\n{post_text(found_row)}",
+                f"{intro}\n\n{(found_row)}",
                 reply_markup=public_post_kb(found_row["id"], found_row["user_id"], found_row["post_type"])
             )
 
@@ -4798,7 +4782,7 @@ async def popular_route_open(callback: CallbackQuery):
 
         for row in rows:
             try:
-                text = post_text(row)
+                text = (row)
                 if len(text) > 4000:
                     text = text[:3900] + "\n\n..."
                 await callback.message.answer(

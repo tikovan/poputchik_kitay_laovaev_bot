@@ -4,6 +4,7 @@ import os
 import re
 import sqlite3
 import time
+from functools import lru_cache
 from contextlib import closing
 from datetime import datetime, timedelta
 from typing import List, Optional, Tuple
@@ -650,21 +651,21 @@ def init_db():
             UNIQUE(post_a_id, post_b_id)
         );
 
-CREATE TABLE IF NOT EXISTS deal_requests (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    post_id INTEGER NOT NULL,
-    owner_user_id INTEGER NOT NULL,
-    requester_user_id INTEGER NOT NULL,
-    status TEXT NOT NULL DEFAULT 'pending',
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
-);
+        CREATE TABLE IF NOT EXISTS deal_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            post_id INTEGER NOT NULL,
+            owner_user_id INTEGER NOT NULL,
+            requester_user_id INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
 
-CREATE INDEX IF NOT EXISTS idx_deal_requests_owner
-ON deal_requests(owner_user_id, status, created_at);
+        CREATE INDEX IF NOT EXISTS idx_deal_requests_owner
+        ON deal_requests(owner_user_id, status, created_at);
 
-CREATE INDEX IF NOT EXISTS idx_deal_requests_requester
-ON deal_requests(requester_user_id, status, created_at);
+        CREATE INDEX IF NOT EXISTS idx_deal_requests_requester
+        ON deal_requests(requester_user_id, status, created_at);
 
         CREATE TABLE IF NOT EXISTS deals (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -705,13 +706,43 @@ ON deal_requests(requester_user_id, status, created_at);
             paid_at INTEGER
         );
 
-        CREATE INDEX IF NOT EXISTS idx_posts_search ON posts(post_type, status, from_country, to_country, created_at);
-        CREATE INDEX IF NOT EXISTS idx_posts_user ON posts(user_id, status, created_at);
-        CREATE INDEX IF NOT EXISTS idx_subscriptions_search ON route_subscriptions(post_type, from_country, to_country);
-        CREATE INDEX IF NOT EXISTS idx_reviews_user ON reviews(reviewed_user_id, created_at);
-        CREATE INDEX IF NOT EXISTS idx_deals_owner ON deals(owner_user_id, status, created_at);
-        CREATE INDEX IF NOT EXISTS idx_deals_requester ON deals(requester_user_id, status, created_at);
+        CREATE INDEX IF NOT EXISTS idx_posts_search 
+        ON posts(post_type, status, from_country, to_country, created_at);
+
+        CREATE INDEX IF NOT EXISTS idx_posts_user 
+        ON posts(user_id, status, created_at);
+
+        CREATE INDEX IF NOT EXISTS idx_subscriptions_search 
+        ON route_subscriptions(post_type, from_country, to_country);
+
+        CREATE INDEX IF NOT EXISTS idx_reviews_user 
+        ON reviews(reviewed_user_id, created_at);
+
+        CREATE INDEX IF NOT EXISTS idx_deals_owner 
+        ON deals(owner_user_id, status, created_at);
+
+        CREATE INDEX IF NOT EXISTS idx_deals_requester 
+        ON deals(requester_user_id, status, created_at);
         """)
+
+        # ---- дополнительные индексы для ускорения ----
+
+        conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_posts_expires_at
+        ON posts(expires_at)
+        """)
+
+        conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_posts_status_created
+        ON posts(status, created_at)
+        """)
+
+        conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_posts_status_route
+        ON posts(status, post_type, from_country, to_country)
+        """)
+
+        # ---- ensure columns ----
 
         ensure_column(conn, "users", "is_verified", "is_verified INTEGER DEFAULT 0")
         ensure_column(conn, "users", "is_banned", "is_banned INTEGER DEFAULT 0")
@@ -731,7 +762,7 @@ ON deal_requests(requester_user_id, status, created_at);
 
         conn.execute("UPDATE deals SET updated_at = created_at WHERE updated_at IS NULL OR updated_at = 0")
         conn.execute("UPDATE deals SET status='contacted' WHERE status='pending'")
-
+        
 
 def upsert_user(message_or_callback):
     user = message_or_callback.from_user
@@ -897,6 +928,11 @@ def get_user_profile_short(user_id: int) -> dict:
         "completed_deals": int(row["completed_deals"] or 0),
         "service_text": service_text,
     }
+
+
+@lru_cache(maxsize=2000)
+def get_user_profile_short_cached(user_id: int) -> dict:
+    return get_user_profile_short(user_id)
     
 
 def user_completed_deals_count(user_id: int) -> int:
@@ -1229,7 +1265,7 @@ def post_text(row, for_channel: bool = False) -> str:
         route += f", {html.escape(row['to_city'])}"
 
     owner_user_id = row["user_id"]
-    profile = get_user_profile_short(owner_user_id)
+    profile = get_user_profile_short_cached(owner_user_id)
 
     owner_username = row["username"] if "username" in row.keys() else None
     owner_full_name = row["full_name"] if "full_name" in row.keys() else None

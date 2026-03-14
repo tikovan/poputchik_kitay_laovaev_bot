@@ -2970,7 +2970,7 @@ async def begin_create(message: Message, state: FSMContext, post_type: str):
     upsert_user(message)
 
     if is_user_banned(message.from_user.id):
-    await message.answer(
+        await message.answer(
         "⛔ Ваш аккаунт ограничен. Если это ошибка — свяжитесь с администратором.",
         reply_markup=main_menu(message.from_user.id)
     )

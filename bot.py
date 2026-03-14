@@ -1296,6 +1296,9 @@ def post_text(row, for_channel: bool = False) -> str:
         short_name = owner_full_name.strip().split()[0]
         lines.append(f"🪪 <b>Имя:</b> {html.escape(short_name)}")
 
+    if owner_user_id in ADMIN_IDS:
+        lines.append("🟩 <b>АДМИН СЕРВИСА</b> 🟩")
+
     status_parts = []
 
     if profile["verified"]:
@@ -2967,20 +2970,26 @@ async def begin_create(message: Message, state: FSMContext, post_type: str):
     upsert_user(message)
 
     if is_user_banned(message.from_user.id):
-        await message.answer("⛔ Ваш аккаунт ограничен. Если это ошибка — свяжитесь с администратором.", reply_markup=main_menu(message.from_user.id))
-        return
+    await message.answer(
+        "⛔ Ваш аккаунт ограничен. Если это ошибка — свяжитесь с администратором.",
+        reply_markup=main_menu(message.from_user.id)
+    )
+    return
 
-    spam_error = anti_spam_check(message.from_user.id)
-    if spam_error:
-        await message.answer(spam_error, reply_markup=main_menu(message.from_user.id))
-        return
+spam_error = anti_spam_check(message.from_user.id)
+if spam_error:
+    await message.answer(
+        spam_error,
+        reply_markup=main_menu(message.from_user.id)
+    )
+    return
 
-    if active_post_count(message.from_user.id) >= MAX_ACTIVE_POSTS_PER_USER:
-        await message.answer(
-            f"У вас уже слишком много объявлений. Лимит: {MAX_ACTIVE_POSTS_PER_USER}. Удалите или деактивируйте старые объявления.",
-            reply_markup=main_menu(message.from_user.id)
-        )
-        return
+if message.from_user.id not in ADMIN_IDS and active_post_count(message.from_user.id) >= MAX_ACTIVE_POSTS_PER_USER:
+    await message.answer(
+        f"У вас уже слишком много объявлений. Лимит: {MAX_ACTIVE_POSTS_PER_USER}. Удалите или деактивируйте старые объявления.",
+        reply_markup=main_menu(message.from_user.id)
+    )
+    return
 
     await state.clear()
     await state.update_data(post_type=post_type)

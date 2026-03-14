@@ -2971,25 +2971,25 @@ async def begin_create(message: Message, state: FSMContext, post_type: str):
 
     if is_user_banned(message.from_user.id):
         await message.answer(
-        "⛔ Ваш аккаунт ограничен. Если это ошибка — свяжитесь с администратором.",
-        reply_markup=main_menu(message.from_user.id)
-    )
-    return
+            "⛔ Ваш аккаунт ограничен. Если это ошибка — свяжитесь с администратором.",
+            reply_markup=main_menu(message.from_user.id)
+        )
+        return
 
-spam_error = anti_spam_check(message.from_user.id)
-if spam_error:
-    await message.answer(
-        spam_error,
-        reply_markup=main_menu(message.from_user.id)
-    )
-    return
+    spam_error = anti_spam_check(message.from_user.id)
+    if spam_error:
+        await message.answer(
+            spam_error,
+            reply_markup=main_menu(message.from_user.id)
+        )
+        return
 
-if message.from_user.id not in ADMIN_IDS and active_post_count(message.from_user.id) >= MAX_ACTIVE_POSTS_PER_USER:
-    await message.answer(
-        f"У вас уже слишком много объявлений. Лимит: {MAX_ACTIVE_POSTS_PER_USER}. Удалите или деактивируйте старые объявления.",
-        reply_markup=main_menu(message.from_user.id)
-    )
-    return
+    if message.from_user.id not in ADMIN_IDS and active_post_count(message.from_user.id) >= MAX_ACTIVE_POSTS_PER_USER:
+        await message.answer(
+            f"У вас уже слишком много объявлений. Лимит: {MAX_ACTIVE_POSTS_PER_USER}. Удалите или деактивируйте старые объявления.",
+            reply_markup=main_menu(message.from_user.id)
+        )
+        return
 
     await state.clear()
     await state.update_data(post_type=post_type)
@@ -2998,7 +2998,7 @@ if message.from_user.id not in ADMIN_IDS and active_post_count(message.from_user
         form_text(post_type, 1, "Выберите страну отправления"),
         reply_markup=countries_select_kb("from_country_pick", include_back=False)
     )
-
+    
 
 def owner_only(callback: CallbackQuery, post_id: int) -> Optional[sqlite3.Row]:
     row = get_post(post_id)

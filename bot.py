@@ -50,6 +50,17 @@ BUMP_PRICE_TEXT = os.getenv(
     "BUMP_PRICE_TEXT",
     "Поднятие объявления оплачивается вручную. После оплаты администратор поднимет ваше объявление выше в выдаче."
 )
+VERIFICATION_PRICE_AMOUNT = int(os.getenv("VERIFICATION_PRICE_AMOUNT", "50"))
+VERIFICATION_PRICE_CURRENCY = os.getenv("VERIFICATION_PRICE_CURRENCY", "CNY")
+
+VERIF_STATUS_AWAITING_PAYMENT = "awaiting_payment"
+VERIF_STATUS_PAYMENT_REVIEW = "payment_review"
+VERIF_STATUS_DOCS_PENDING = "docs_pending"
+VERIF_STATUS_SELFIE_PENDING = "selfie_pending"
+VERIF_STATUS_REVIEW_PENDING = "review_pending"
+VERIF_STATUS_APPROVED = "approved"
+VERIF_STATUS_REJECTED = "rejected"
+VERIF_STATUS_PAYMENT_REJECTED = "payment_rejected"
 
 MAX_ACTIVE_POSTS_PER_USER = int(os.getenv("MAX_ACTIVE_POSTS_PER_USER", "5"))
 MIN_SECONDS_BETWEEN_ACTIONS = int(os.getenv("MIN_SECONDS_BETWEEN_ACTIONS", "2"))
@@ -706,6 +717,22 @@ def init_db():
             paid_at INTEGER
         );
 
+        CREATE TABLE IF NOT EXISTS verification_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'awaiting_payment',
+            payment_amount INTEGER NOT NULL DEFAULT 0,
+            payment_currency TEXT NOT NULL DEFAULT 'CNY',
+            passport_photo_file_id TEXT,
+            selfie_photo_file_id TEXT,
+            rejection_reason TEXT,
+            admin_user_id INTEGER,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            paid_at INTEGER,
+            reviewed_at INTEGER
+        );
+
         CREATE INDEX IF NOT EXISTS idx_posts_search 
         ON posts(post_type, status, from_country, to_country, created_at);
 
@@ -759,6 +786,8 @@ def init_db():
         ensure_column(conn, "users", "active_chat_target_user_id", "active_chat_target_user_id INTEGER")
         ensure_column(conn, "users", "active_chat_post_id", "active_chat_post_id INTEGER")
         ensure_column(conn, "users", "active_chat_deal_id", "active_chat_deal_id INTEGER")
+        ensure_column(conn, "users", "verified_at", "verified_at INTEGER")
+        ensure_column(conn, "users", "verification_type", "verification_type TEXT")
 
         conn.execute("UPDATE deals SET updated_at = created_at WHERE updated_at IS NULL OR updated_at = 0")
         conn.execute("UPDATE deals SET status='contacted' WHERE status='pending'")
@@ -1720,9 +1749,67 @@ def subscription_actions_kb():
     ])
 
 
+def verification_info_kb(is_verified_now: bool):
+    rows = []
+    if not is_verified_now:
+        rows.append([InlineKeyboardButton(text="💳 Начать верификацию", callback_data="verify:start")])
+    return InlineKeyboardMarkup(inline_keyboard=rows or [[InlineKeyboardButton(text="Ок", callback_data="noop")]])
+
+
+def verification_pay_kb(request_id: int):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Я оплатил", callback_data=f"verify:paid:{request_id}")]
+    ])
+
+
+def verification_upload_passport_kb(request_id: int):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📷 Загрузить паспорт", callback_data=f"verify:upload_passport:{request_id}")]
+    ])
+
+
+def verification_retry_kb(request_id: int):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📷 Отправить заново", callback_data=f"verify:retry:{request_id}")]
+    ])
+
+
+def admin_verification_payment_kb(request_id: int, user_id: int):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Подтвердить оплату", callback_data=f"admin_verif_pay_ok:{request_id}"),
+            InlineKeyboardButton(text="❌ Отклонить оплату", callback_data=f"admin_verif_pay_no:{request_id}")
+        ],
+        [
+            InlineKeyboardButton(text="👤 Профиль", callback_data=f"admin_user:{user_id}")
+        ]
+    ])
+
+
+def admin_verification_review_kb(request_id: int, user_id: int):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Одобрить", callback_data=f"admin_verif_ok:{request_id}"),
+            InlineKeyboardButton(text="❌ Отклонить", callback_data=f"admin_verif_no:{request_id}")
+        ],
+        [
+            InlineKeyboardButton(text="👤 Профиль", callback_data=f"admin_user:{user_id}")
+        ]
+    ])
+
+
+def admin_verification_list_kb(rows: List[sqlite3.Row]):
+    buttons = []
+    for row in rows:
+        label = f"{row['id']} • USER {row['user_id']} • {format_verification_status(row['status'])}"
+        buttons.append([InlineKeyboardButton(text=label[:64], callback_data=f"admin_verif_open:{row['id']}")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons or [[InlineKeyboardButton(text="Пусто", callback_data="noop")]])
+
+
 def admin_menu_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📚 Все объявления", callback_data="admin:all_posts")],
+        [InlineKeyboardButton(text="🛡 Верификации", callback_data="admin:verifications")],
         [InlineKeyboardButton(text="🆘 Последние жалобы", callback_data="admin:complaints")],
         [InlineKeyboardButton(text="👤 Пользователь", callback_data="admin:user_lookup")],
         [InlineKeyboardButton(text="💰 Заявки на поднятие", callback_data="admin:bump_orders")],
@@ -1885,8 +1972,9 @@ def main_menu(user_id: Optional[int] = None):
         [KeyboardButton(text="🔎 Найти совпадения"), KeyboardButton(text="📋 Мои объявления")],
         [KeyboardButton(text="🤝 Мои сделки"), KeyboardButton(text="🔔 Подписки")],
         [KeyboardButton(text="🆕 Новые объявления"), KeyboardButton(text="🔥 Популярные маршруты")],
-        [KeyboardButton(text="💰 Поднять объявление"), KeyboardButton(text="📊 Статистика")],
-        [KeyboardButton(text="🚩 Жалоба / Баг / Поддержка"), KeyboardButton(text="ℹ️ Помощь")],
+        [KeyboardButton(text="💰 Поднять объявление"), KeyboardButton(text="🛡 Верификация аккаунта")],
+        [KeyboardButton(text="📊 Статистика")],[KeyboardButton(text="🚩 Жалоба / Баг / Поддержка"),
+        [KeyboardButton(text="ℹ️ Помощь")],
     ]
 
     if user_id is not None and is_admin(user_id):
@@ -1971,6 +2059,10 @@ class OnboardingFlow(StatesGroup):
 
 class AdminContactFlow(StatesGroup):
     message = State()
+
+class VerificationFlow(StatesGroup):
+    passport_photo = State()
+    selfie_photo = State()
     
 
 def is_main_menu_text(text: str) -> bool:
@@ -2172,6 +2264,14 @@ def admin_stats_text() -> str:
             FROM bump_orders
             WHERE status='pending'
         """).fetchone()["c"]
+        verif_pending = conn.execute("""
+            SELECT COUNT(*) AS c
+            FROM verification_requests
+            WHERE status IN (?, ?)
+        """, (
+            VERIF_STATUS_PAYMENT_REVIEW,
+            VERIF_STATUS_REVIEW_PENDING
+        )).fetchone()["c"]
 
     return (
         "👨‍💼 <b>Админка</b>\n\n"
@@ -2181,17 +2281,198 @@ def admin_stats_text() -> str:
         f"🆘 Жалоб: <b>{complaints_count}</b>\n"
         f"⚖️ Активных споров: <b>{disputes_open}</b>\n"
         f"💰 Заявок на поднятие: <b>{bump_pending}</b>"
+        f"🛡 Верификаций на проверке: <b>{verif_pending}</b>\n"
     )
 
 
 def verify_user(user_id: int):
     with closing(connect_db()) as conn, conn:
-        conn.execute("UPDATE users SET is_verified=1 WHERE user_id=?", (user_id,))
+        conn.execute("""
+            UPDATE users
+            SET is_verified=1,
+                verified_at=?,
+                verification_type='passport'
+            WHERE user_id=?
+        """, (now_ts(), user_id))
 
 
 def unverify_user(user_id: int):
     with closing(connect_db()) as conn, conn:
-        conn.execute("UPDATE users SET is_verified=0 WHERE user_id=?", (user_id,))
+        conn.execute("""
+            UPDATE users
+            SET is_verified=0,
+                verified_at=NULL,
+                verification_type=NULL
+            WHERE user_id=?
+        """, (user_id,))
+        
+
+def verify_user(user_id: int):
+    with closing(connect_db()) as conn, conn:
+        conn.execute("""
+            UPDATE users
+            SET is_verified=1,
+                verified_at=?,
+                verification_type='passport'
+            WHERE user_id=?
+        """, (now_ts(), user_id))
+
+
+def unverify_user(user_id: int):
+    with closing(connect_db()) as conn, conn:
+        conn.execute("""
+            UPDATE users
+            SET is_verified=0,
+                verified_at=NULL,
+                verification_type=NULL
+            WHERE user_id=?
+        """, (user_id,))
+
+
+def get_latest_verification_request(user_id: int) -> Optional[sqlite3.Row]:
+    with closing(connect_db()) as conn:
+        return conn.execute("""
+            SELECT *
+            FROM verification_requests
+            WHERE user_id=?
+            ORDER BY id DESC
+            LIMIT 1
+        """, (user_id,)).fetchone()
+
+
+def get_verification_request(request_id: int) -> Optional[sqlite3.Row]:
+    with closing(connect_db()) as conn:
+        return conn.execute("""
+            SELECT *
+            FROM verification_requests
+            WHERE id=?
+            LIMIT 1
+        """, (request_id,)).fetchone()
+
+
+def create_verification_request(user_id: int) -> int:
+    ts = now_ts()
+    with closing(connect_db()) as conn, conn:
+        cur = conn.execute("""
+            INSERT INTO verification_requests (
+                user_id, status, payment_amount, payment_currency,
+                created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (
+            user_id,
+            VERIF_STATUS_AWAITING_PAYMENT,
+            VERIFICATION_PRICE_AMOUNT,
+            VERIFICATION_PRICE_CURRENCY,
+            ts,
+            ts
+        ))
+        return int(cur.lastrowid)
+
+
+def set_verification_status(
+    request_id: int,
+    status: str,
+    *,
+    rejection_reason: Optional[str] = None,
+    admin_user_id: Optional[int] = None,
+    mark_paid: bool = False,
+    mark_reviewed: bool = False
+):
+    with closing(connect_db()) as conn, conn:
+        row = conn.execute("SELECT * FROM verification_requests WHERE id=?", (request_id,)).fetchone()
+        if not row:
+            return
+
+        paid_at = row["paid_at"]
+        reviewed_at = row["reviewed_at"]
+
+        if mark_paid:
+            paid_at = now_ts()
+        if mark_reviewed:
+            reviewed_at = now_ts()
+
+        conn.execute("""
+            UPDATE verification_requests
+            SET status=?,
+                rejection_reason=?,
+                admin_user_id=?,
+                updated_at=?,
+                paid_at=?,
+                reviewed_at=?
+            WHERE id=?
+        """, (
+            status,
+            rejection_reason,
+            admin_user_id,
+            now_ts(),
+            paid_at,
+            reviewed_at,
+            request_id
+        ))
+
+
+def save_verification_passport(request_id: int, photo_file_id: str):
+    with closing(connect_db()) as conn, conn:
+        conn.execute("""
+            UPDATE verification_requests
+            SET passport_photo_file_id=?,
+                status=?,
+                updated_at=?
+            WHERE id=?
+        """, (photo_file_id, VERIF_STATUS_SELFIE_PENDING, now_ts(), request_id))
+
+
+def save_verification_selfie(request_id: int, photo_file_id: str):
+    with closing(connect_db()) as conn, conn:
+        conn.execute("""
+            UPDATE verification_requests
+            SET selfie_photo_file_id=?,
+                status=?,
+                updated_at=?,
+                rejection_reason=NULL
+            WHERE id=?
+        """, (photo_file_id, VERIF_STATUS_REVIEW_PENDING, now_ts(), request_id))
+
+
+def clear_verification_files(request_id: int):
+    with closing(connect_db()) as conn, conn:
+        conn.execute("""
+            UPDATE verification_requests
+            SET passport_photo_file_id=NULL,
+                selfie_photo_file_id=NULL,
+                updated_at=?
+            WHERE id=?
+        """, (now_ts(), request_id))
+
+
+def list_pending_verification_requests(limit: int = 20):
+    with closing(connect_db()) as conn:
+        return conn.execute("""
+            SELECT *
+            FROM verification_requests
+            WHERE status IN (?, ?)
+            ORDER BY updated_at DESC
+            LIMIT ?
+        """, (
+            VERIF_STATUS_PAYMENT_REVIEW,
+            VERIF_STATUS_REVIEW_PENDING,
+            limit
+        )).fetchall()
+
+
+def format_verification_status(status: str) -> str:
+    mapping = {
+        VERIF_STATUS_AWAITING_PAYMENT: "ожидает оплаты",
+        VERIF_STATUS_PAYMENT_REVIEW: "оплата на проверке",
+        VERIF_STATUS_DOCS_PENDING: "ожидает фото паспорта",
+        VERIF_STATUS_SELFIE_PENDING: "ожидает селфи с паспортом",
+        VERIF_STATUS_REVIEW_PENDING: "документы на проверке",
+        VERIF_STATUS_APPROVED: "верификация одобрена",
+        VERIF_STATUS_REJECTED: "документы отклонены",
+        VERIF_STATUS_PAYMENT_REJECTED: "оплата отклонена",
+    }
+    return mapping.get(status, status)
 
 
 def get_recent_posts(limit: int = 10) -> List[sqlite3.Row]:
@@ -3402,6 +3683,10 @@ async def global_main_menu_router(message: Message, state: FSMContext):
     if text == "👨‍💼 Админка":
         await admin_menu_handler(message)
         return
+
+    if text == "🛡 Верификация аккаунта":
+        await verification_menu_handler(message)
+        return
         
 
 @router.message(CommandStart())
@@ -3768,6 +4053,242 @@ async def help_handler(message: Message):
     )
     await message.answer(text, reply_markup=main_menu(message.from_user.id))
 
+
+@router.message(F.text == "🛡 Верификация аккаунта")
+async def verification_menu_handler(message: Message):
+    upsert_user(message)
+
+    if is_user_verified(message.from_user.id):
+        await message.answer(
+            "🛡 <b>Ваш аккаунт уже верифицирован.</b>\n\n"
+            "Статус: ✅ Проверенный пользователь",
+            reply_markup=main_menu(message.from_user.id)
+        )
+        return
+
+    req = get_latest_verification_request(message.from_user.id)
+
+    extra = ""
+    if req:
+        extra = f"\n\n<b>Текущий статус:</b> {format_verification_status(req['status'])}"
+        if req["status"] == VERIF_STATUS_REJECTED and req["rejection_reason"]:
+            extra += f"\n<b>Причина:</b> {html.escape(req['rejection_reason'])}"
+
+    text = (
+        "🛡 <b>Верификация аккаунта</b>\n\n"
+        "Что вы получите:\n"
+        "• ✅ бейдж проверенного пользователя\n"
+        "• 📈 больше доверия к вашим объявлениям\n"
+        "• 🤝 выше шанс сделки\n\n"
+        f"Стоимость: <b>{VERIFICATION_PRICE_AMOUNT} {VERIFICATION_PRICE_CURRENCY}</b>\n\n"
+        "Оплата производится <b>до проверки</b>.\n"
+        "Если документы не прошли — деньги <b>не возвращаются</b>, "
+        "но документы можно отправить повторно без доплаты.\n\n"
+        "Фото документов используются только для проверки и после финального решения очищаются из базы."
+        f"{extra}"
+    )
+
+    await message.answer(
+        text,
+        reply_markup=verification_info_kb(False)
+    )
+
+
+@router.callback_query(F.data == "verify:start")
+async def verify_start_handler(callback: CallbackQuery):
+    if is_user_verified(callback.from_user.id):
+        await callback.answer("Ваш аккаунт уже верифицирован.", show_alert=True)
+        return
+
+    req = get_latest_verification_request(callback.from_user.id)
+
+    if req and req["status"] in (
+        VERIF_STATUS_AWAITING_PAYMENT,
+        VERIF_STATUS_PAYMENT_REVIEW,
+        VERIF_STATUS_DOCS_PENDING,
+        VERIF_STATUS_SELFIE_PENDING,
+        VERIF_STATUS_REVIEW_PENDING,
+    ):
+        request_id = req["id"]
+    else:
+        request_id = create_verification_request(callback.from_user.id)
+
+    await callback.message.answer(
+        f"💳 <b>Оплата верификации</b>\n\n"
+        f"Стоимость: <b>{VERIFICATION_PRICE_AMOUNT} {VERIFICATION_PRICE_CURRENCY}</b>\n\n"
+        "Оплатите через WeChat / Alipay и после оплаты нажмите кнопку ниже.\n\n"
+        "⚠️ Деньги не возвращаются после начала проверки.",
+        reply_markup=verification_pay_kb(request_id)
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("verify:paid:"))
+async def verify_paid_handler(callback: CallbackQuery):
+    request_id = int(callback.data.split(":")[2])
+    req = get_verification_request(request_id)
+
+    if not req or req["user_id"] != callback.from_user.id:
+        await callback.answer("Заявка не найдена", show_alert=True)
+        return
+
+    if req["status"] not in (VERIF_STATUS_AWAITING_PAYMENT, VERIF_STATUS_PAYMENT_REJECTED):
+        await callback.answer("Этот этап уже пройден.", show_alert=True)
+        return
+
+    set_verification_status(
+        request_id,
+        VERIF_STATUS_PAYMENT_REVIEW,
+        rejection_reason=None
+    )
+
+    for admin_id in ADMIN_IDS:
+        try:
+            await callback.bot.send_message(
+                admin_id,
+                f"💳 <b>Новая оплата верификации</b>\n\n"
+                f"<b>Заявка:</b> {request_id}\n"
+                f"<b>USER_ID:</b> {req['user_id']}\n"
+                f"<b>Сумма:</b> {req['payment_amount']} {req['payment_currency']}",
+                reply_markup=admin_verification_payment_kb(request_id, req["user_id"])
+            )
+        except Exception as e:
+            print(f"VERIF PAYMENT ADMIN NOTIFY ERROR: {e}")
+
+    await callback.message.answer(
+        "✅ Заявка на оплату отправлена администратору.\n"
+        "После подтверждения оплаты вы сможете загрузить паспорт."
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("verify:upload_passport:"))
+async def verify_upload_passport_handler(callback: CallbackQuery, state: FSMContext):
+    request_id = int(callback.data.split(":")[2])
+    req = get_verification_request(request_id)
+
+    if not req or req["user_id"] != callback.from_user.id:
+        await callback.answer("Заявка не найдена", show_alert=True)
+        return
+
+    if req["status"] not in (VERIF_STATUS_DOCS_PENDING, VERIF_STATUS_REJECTED):
+        await callback.answer("Сейчас нельзя загрузить паспорт.", show_alert=True)
+        return
+
+    await state.clear()
+    await state.update_data(verification_request_id=request_id)
+    await state.set_state(VerificationFlow.passport_photo)
+
+    await callback.message.answer(
+        "📷 <b>Шаг 1/2</b>\n\n"
+        "Отправьте фото паспорта / загранпаспорта / ID.\n\n"
+        "Требования:\n"
+        "• документ полностью в кадре\n"
+        "• текст читаемый\n"
+        "• без сильных бликов"
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("verify:retry:"))
+async def verify_retry_handler(callback: CallbackQuery, state: FSMContext):
+    request_id = int(callback.data.split(":")[2])
+    req = get_verification_request(request_id)
+
+    if not req or req["user_id"] != callback.from_user.id:
+        await callback.answer("Заявка не найдена", show_alert=True)
+        return
+
+    set_verification_status(
+        request_id,
+        VERIF_STATUS_DOCS_PENDING,
+        rejection_reason=None
+    )
+    clear_verification_files(request_id)
+
+    await state.clear()
+    await state.update_data(verification_request_id=request_id)
+    await state.set_state(VerificationFlow.passport_photo)
+
+    await callback.message.answer(
+        "📷 <b>Повторная отправка</b>\n\n"
+        "Сначала отправьте фото паспорта заново."
+    )
+    await callback.answer()
+
+
+@router.message(VerificationFlow.passport_photo, F.photo)
+async def verification_passport_input(message: Message, state: FSMContext):
+    data = await state.get_data()
+    request_id = data.get("verification_request_id")
+    req = get_verification_request(request_id) if request_id else None
+
+    if not req or req["user_id"] != message.from_user.id:
+        await message.answer("Заявка не найдена.")
+        await state.clear()
+        return
+
+    photo_id = message.photo[-1].file_id
+    save_verification_passport(request_id, photo_id)
+
+    await state.set_state(VerificationFlow.selfie_photo)
+    await message.answer(
+        "📷 <b>Шаг 2/2</b>\n\n"
+        "Теперь отправьте селфи, где вы держите документ рядом с лицом."
+    )
+
+
+@router.message(VerificationFlow.passport_photo)
+async def verification_passport_invalid(message: Message):
+    await message.answer("Пожалуйста, отправьте именно фото паспорта.")
+
+
+@router.message(VerificationFlow.selfie_photo, F.photo)
+async def verification_selfie_input(message: Message, state: FSMContext):
+    data = await state.get_data()
+    request_id = data.get("verification_request_id")
+    req = get_verification_request(request_id) if request_id else None
+
+    if not req or req["user_id"] != message.from_user.id:
+        await message.answer("Заявка не найдена.")
+        await state.clear()
+        return
+
+    photo_id = message.photo[-1].file_id
+    save_verification_selfie(request_id, photo_id)
+    req = get_verification_request(request_id)
+
+    for admin_id in ADMIN_IDS:
+        try:
+            await message.bot.send_message(
+                admin_id,
+                f"🛡 <b>Новая заявка на проверку документов</b>\n\n"
+                f"<b>Заявка:</b> {request_id}\n"
+                f"<b>USER_ID:</b> {req['user_id']}\n"
+                f"<b>Статус:</b> {format_verification_status(req['status'])}"
+            )
+            if req["passport_photo_file_id"]:
+                await message.bot.send_photo(admin_id, req["passport_photo_file_id"], caption=f"Паспорт • заявка {request_id}")
+            if req["selfie_photo_file_id"]:
+                await message.bot.send_photo(
+                    admin_id,
+                    req["selfie_photo_file_id"],
+                    caption=f"Селфи с документом • заявка {request_id}",
+                    reply_markup=admin_verification_review_kb(request_id, req["user_id"])
+                )
+        except Exception as e:
+            print(f"VERIF REVIEW ADMIN NOTIFY ERROR: {e}")
+
+    await message.answer(
+        "✅ Документы отправлены на проверку.\n"
+        "Мы уведомим вас после решения администратора."
+    )
+    await state.clear()
+
+
+@router.message(VerificationFlow.selfie_photo)
+async def verification_selfie_invalid(message: Message):
+    await message.answer("Пожалуйста, отправьте именно селфи с документом.")
 
 @router.message(Command("admin_verify"))
 async def admin_verify_user_cmd(message: Message):
@@ -5831,6 +6352,197 @@ async def admin_bump_reject_btn(callback: CallbackQuery):
         pass
 
     await callback.message.answer(f"❌ Заказ {order_id} отклонен.")
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin:verifications")
+async def admin_verifications_handler(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    rows = list_pending_verification_requests(20)
+    await callback.message.answer(
+        "🛡 <b>Заявки на верификацию</b>",
+        reply_markup=admin_verification_list_kb(rows)
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admin_verif_open:"))
+async def admin_verif_open_handler(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    request_id = int(callback.data.split(":")[1])
+    req = get_verification_request(request_id)
+    if not req:
+        await callback.answer("Заявка не найдена", show_alert=True)
+        return
+
+    text = (
+        f"🛡 <b>Заявка на верификацию</b>\n\n"
+        f"<b>ID заявки:</b> {req['id']}\n"
+        f"<b>USER_ID:</b> {req['user_id']}\n"
+        f"<b>Статус:</b> {format_verification_status(req['status'])}\n"
+        f"<b>Стоимость:</b> {req['payment_amount']} {req['payment_currency']}"
+    )
+    if req["rejection_reason"]:
+        text += f"\n<b>Причина отклонения:</b> {html.escape(req['rejection_reason'])}"
+
+    await callback.message.answer(text)
+
+    if req["passport_photo_file_id"]:
+        await callback.bot.send_photo(callback.from_user.id, req["passport_photo_file_id"], caption="Паспорт")
+    if req["selfie_photo_file_id"]:
+        await callback.bot.send_photo(callback.from_user.id, req["selfie_photo_file_id"], caption="Селфи с документом")
+
+    if req["status"] == VERIF_STATUS_PAYMENT_REVIEW:
+        await callback.message.answer(
+            "Проверка оплаты:",
+            reply_markup=admin_verification_payment_kb(req["id"], req["user_id"])
+        )
+    elif req["status"] == VERIF_STATUS_REVIEW_PENDING:
+        await callback.message.answer(
+            "Проверка документов:",
+            reply_markup=admin_verification_review_kb(req["id"], req["user_id"])
+        )
+
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admin_verif_pay_ok:"))
+async def admin_verif_pay_ok_handler(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    request_id = int(callback.data.split(":")[1])
+    req = get_verification_request(request_id)
+    if not req:
+        await callback.answer("Заявка не найдена", show_alert=True)
+        return
+
+    set_verification_status(
+        request_id,
+        VERIF_STATUS_DOCS_PENDING,
+        admin_user_id=callback.from_user.id,
+        mark_paid=True
+    )
+
+    try:
+        await callback.bot.send_message(
+            req["user_id"],
+            "✅ Оплата подтверждена.\n\n"
+            "Теперь загрузите фото паспорта.",
+            reply_markup=verification_upload_passport_kb(request_id)
+        )
+    except Exception as e:
+        print(f"VERIF PAY OK USER NOTIFY ERROR: {e}")
+
+    await callback.message.answer(f"✅ Оплата по заявке {request_id} подтверждена.")
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admin_verif_pay_no:"))
+async def admin_verif_pay_no_handler(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    request_id = int(callback.data.split(":")[1])
+    req = get_verification_request(request_id)
+    if not req:
+        await callback.answer("Заявка не найдена", show_alert=True)
+        return
+
+    set_verification_status(
+        request_id,
+        VERIF_STATUS_PAYMENT_REJECTED,
+        rejection_reason="Оплата не подтверждена",
+        admin_user_id=callback.from_user.id
+    )
+
+    try:
+        await callback.bot.send_message(
+            req["user_id"],
+            "❌ Оплата верификации не подтверждена.\n"
+            "Проверьте оплату и отправьте заявку снова."
+        )
+    except Exception as e:
+        print(f"VERIF PAY NO USER NOTIFY ERROR: {e}")
+
+    await callback.message.answer(f"❌ Оплата по заявке {request_id} отклонена.")
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admin_verif_ok:"))
+async def admin_verif_ok_handler(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    request_id = int(callback.data.split(":")[1])
+    req = get_verification_request(request_id)
+    if not req:
+        await callback.answer("Заявка не найдена", show_alert=True)
+        return
+
+    verify_user(req["user_id"])
+    set_verification_status(
+        request_id,
+        VERIF_STATUS_APPROVED,
+        admin_user_id=callback.from_user.id,
+        mark_reviewed=True
+    )
+    clear_verification_files(request_id)
+
+    try:
+        await callback.bot.send_message(
+            req["user_id"],
+            "🎉 <b>Верификация одобрена!</b>\n\n"
+            "Ваш аккаунт теперь отмечен как ✅ Проверенный пользователь."
+        )
+    except Exception as e:
+        print(f"VERIF APPROVED USER NOTIFY ERROR: {e}")
+
+    await callback.message.answer(f"✅ Заявка {request_id} одобрена.")
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admin_verif_no:"))
+async def admin_verif_no_handler(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    request_id = int(callback.data.split(":")[1])
+    req = get_verification_request(request_id)
+    if not req:
+        await callback.answer("Заявка не найдена", show_alert=True)
+        return
+
+    set_verification_status(
+        request_id,
+        VERIF_STATUS_REJECTED,
+        rejection_reason="Документы не прошли проверку. Отправьте более четкие фото.",
+        admin_user_id=callback.from_user.id,
+        mark_reviewed=True
+    )
+    clear_verification_files(request_id)
+
+    try:
+        await callback.bot.send_message(
+            req["user_id"],
+            "❌ Документы не прошли проверку.\n\n"
+            "Вы можете отправить документы повторно без повторной оплаты.",
+            reply_markup=verification_retry_kb(request_id)
+        )
+    except Exception as e:
+        print(f"VERIF REJECTED USER NOTIFY ERROR: {e}")
+
+    await callback.message.answer(f"❌ Заявка {request_id} отклонена.")
     await callback.answer()
 
 

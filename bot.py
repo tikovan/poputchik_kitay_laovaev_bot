@@ -819,6 +819,8 @@ def init_db():
         ensure_column(conn, "users", "active_chat_deal_id", "active_chat_deal_id INTEGER")
         ensure_column(conn, "users", "verified_at", "verified_at INTEGER")
         ensure_column(conn, "users", "verification_type", "verification_type TEXT")
+        ensure_column(conn, "users", "avatar_file_id", "avatar_file_id TEXT")
+        ensure_column(conn, "users", "avatar_updated_at", "avatar_updated_at INTEGER")
 
         conn.execute("UPDATE deals SET updated_at = created_at WHERE updated_at IS NULL OR updated_at = 0")
         conn.execute("UPDATE deals SET status='contacted' WHERE status='pending'")
@@ -1157,7 +1159,7 @@ def format_user_ref(user_id: int) -> str:
 
 
 def get_user_reviews(user_id: int, limit: int = 10):
-    with closing(connect_db()) as conn:
+    with closing(()) as conn:
         return conn.execute("""
             SELECT r.rating, r.text, r.created_at, u.username, u.full_name
             FROM reviews r
@@ -1170,7 +1172,7 @@ def get_user_reviews(user_id: int, limit: int = 10):
 
 def has_user_left_review_for_deal(deal: sqlite3.Row, reviewer_user_id: int) -> bool:
     reviewed_user_id = deal["requester_user_id"] if reviewer_user_id == deal["owner_user_id"] else deal["owner_user_id"]
-    with closing(connect_db()) as conn:
+    with closing(()) as conn:
         row = conn.execute("""
             SELECT 1 FROM reviews
             WHERE reviewer_user_id=? AND reviewed_user_id=? AND post_id=?
@@ -1180,7 +1182,7 @@ def has_user_left_review_for_deal(deal: sqlite3.Row, reviewer_user_id: int) -> b
 
 
 def get_open_dispute_by_deal(deal_id: int) -> Optional[sqlite3.Row]:
-    with closing(connect_db()) as conn:
+    with closing(()) as conn:
         return conn.execute("""
             SELECT *
             FROM disputes
@@ -1198,7 +1200,7 @@ def get_open_dispute_by_deal(deal_id: int) -> Optional[sqlite3.Row]:
 def create_dispute(deal_id: int, opened_by_user_id: int, against_user_id: int, reason_text: str) -> int:
     ts = now_ts()
     deadline = ts + DISPUTE_RESPONSE_HOURS * 3600
-    with closing(connect_db()) as conn, conn:
+    with closing(()) as conn, conn:
         cur = conn.execute("""
             INSERT INTO disputes (
                 deal_id, opened_by_user_id, against_user_id,
@@ -1213,7 +1215,7 @@ def create_dispute(deal_id: int, opened_by_user_id: int, against_user_id: int, r
 
 
 def save_dispute_response(dispute_id: int, response_text: str):
-    with closing(connect_db()) as conn, conn:
+    with closing(()) as conn, conn:
         conn.execute("""
             UPDATE disputes
             SET response_text=?, status=?, responded_at=?, updated_at=?
@@ -1222,7 +1224,7 @@ def save_dispute_response(dispute_id: int, response_text: str):
 
 
 def get_dispute(dispute_id: int) -> Optional[sqlite3.Row]:
-    with closing(connect_db()) as conn:
+    with closing(()) as conn:
         return conn.execute("SELECT * FROM disputes WHERE id=?", (dispute_id,)).fetchone()
 
 
@@ -1231,7 +1233,7 @@ def short_post_type(post_type: str) -> str:
 
 
 def ensure_deal_request(post_id: int, owner_user_id: int, requester_user_id: int) -> tuple[int, bool]:
-    with closing(connect_db()) as conn, conn:
+    with closing(()) as conn, conn:
         row = conn.execute("""
             SELECT id
             FROM deal_requests
@@ -1256,7 +1258,7 @@ def ensure_deal_request(post_id: int, owner_user_id: int, requester_user_id: int
         
 
 def get_deal_request(request_id: int) -> Optional[sqlite3.Row]:
-    with closing(connect_db()) as conn:
+    with closing(()) as conn:
         return conn.execute("""
             SELECT *
             FROM deal_requests
@@ -1495,7 +1497,8 @@ async def send_post_card(
     *,
     with_age: bool = False,
     prefix_text: Optional[str] = None,
-    reply_markup=None
+    reply_markup=None,
+    bot: Optional[Bot] = None
 ):
     text = post_text(row)
 
@@ -1505,14 +1508,49 @@ async def send_post_card(
     if with_age:
         text += f"\n\n<b>Добавлено:</b> {format_age(row['created_at'])}"
 
-    if len(text) > 4000:
-        text = text[:3900] + "\n\n..."
-
     kb = reply_markup if reply_markup is not None else public_post_kb(
         row["id"],
         row["user_id"],
         row["post_type"]
     )
+
+    # Пытаемся понять, какой bot использовать
+    current_bot = bot
+    if current_bot is None:
+        if hasattr(target, "bot"):
+            current_bot = target.bot
+        elif hasattr(target, "message") and hasattr(target.message, "bot"):
+            current_bot = target.message.bot
+
+    avatar_file_id = None
+    if current_bot is not None:
+        avatar_file_id = await get_user_avatar_file_id(current_bot, row["user_id"])
+
+    # Если есть аватарка — шлем как фото с caption
+    if avatar_file_id:
+        caption_text = text
+        if len(caption_text) > 1024:
+            caption_text = caption_text[:1000] + "\n\n..."
+
+        if hasattr(target, "answer"):
+            await target.answer_photo(
+                photo=avatar_file_id,
+                caption=caption_text,
+                reply_markup=kb
+            )
+            return
+
+        if hasattr(target, "message") and hasattr(target.message, "answer"):
+            await target.message.answer_photo(
+                photo=avatar_file_id,
+                caption=caption_text,
+                reply_markup=kb
+            )
+            return
+
+    # Если аватарки нет — обычный текст
+    if len(text) > 4000:
+        text = text[:3900] + "\n\n..."
 
     if hasattr(target, "answer"):
         await target.answer(text, reply_markup=kb)
@@ -1542,14 +1580,31 @@ async def send_post_card_to_user(
     if with_age:
         text += f"\n\n<b>Добавлено:</b> {format_age(row['created_at'])}"
 
-    if len(text) > 4000:
-        text = text[:3900] + "\n\n..."
-
     kb = reply_markup if reply_markup is not None else public_post_kb(
         row["id"],
         row["user_id"],
         row["post_type"]
     )
+
+    avatar_file_id = await get_user_avatar_file_id(bot, row["user_id"])
+
+    # Если есть аватарка — отправляем фото с caption
+    if avatar_file_id:
+        caption_text = text
+        if len(caption_text) > 1024:
+            caption_text = caption_text[:1000] + "\n\n..."
+
+        await bot.send_photo(
+            chat_id=user_id,
+            photo=avatar_file_id,
+            caption=caption_text,
+            reply_markup=kb
+        )
+        return
+
+    # Если аватарки нет — обычное текстовое сообщение
+    if len(text) > 4000:
+        text = text[:3900] + "\n\n..."
 
     await bot.send_message(
         user_id,
@@ -2512,6 +2567,65 @@ def users_had_recent_deal(user1: int, user2: int) -> bool:
     return bool(row)
 
 
+AVATAR_CACHE_TTL_SECONDS = 7 * 24 * 60 * 60  # 7 дней
+
+
+def get_cached_avatar_file_id(user_id: int) -> Optional[str]:
+    with closing(connect_db()) as conn:
+        row = conn.execute("""
+            SELECT avatar_file_id, avatar_updated_at
+            FROM users
+            WHERE user_id=?
+        """, (user_id,)).fetchone()
+
+    if not row:
+        return None
+
+    avatar_file_id = row["avatar_file_id"]
+    avatar_updated_at = int(row["avatar_updated_at"] or 0)
+
+    if not avatar_file_id:
+        return None
+
+    if avatar_updated_at and now_ts() - avatar_updated_at > AVATAR_CACHE_TTL_SECONDS:
+        return None
+
+    return avatar_file_id
+
+
+def save_cached_avatar_file_id(user_id: int, avatar_file_id: Optional[str]):
+    with closing(connect_db()) as conn, conn:
+        conn.execute("""
+            UPDATE users
+            SET avatar_file_id=?,
+                avatar_updated_at=?
+            WHERE user_id=?
+        """, (avatar_file_id, now_ts(), user_id))
+
+
+async def get_user_avatar_file_id(bot: Bot, user_id: int, force_refresh: bool = False) -> Optional[str]:
+    if not force_refresh:
+        cached = get_cached_avatar_file_id(user_id)
+        if cached:
+            return cached
+
+    try:
+        photos = await bot.get_user_profile_photos(user_id=user_id, limit=1)
+
+        if not photos or photos.total_count == 0 or not photos.photos:
+            save_cached_avatar_file_id(user_id, None)
+            return None
+
+        # Берем самую качественную версию первой аватарки
+        avatar_file_id = photos.photos[0][-1].file_id
+        save_cached_avatar_file_id(user_id, avatar_file_id)
+        return avatar_file_id
+
+    except Exception as e:
+        print(f"GET USER AVATAR ERROR: {e}")
+        return get_cached_avatar_file_id(user_id)
+
+
 def active_deals_count(user_id: int) -> int:
     with closing(connect_db()) as conn:
         row = conn.execute("""
@@ -3126,18 +3240,43 @@ def create_bump_order(user_id: int, post_id: int, amount: int = BUMP_PRICE_AMOUN
 def publish_to_channel(bot: Bot, post_id: int):
     if not CHANNEL_USERNAME:
         return
+
     row = get_post(post_id)
     if not row or row["status"] != STATUS_ACTIVE:
         return
 
     async def _send():
-        msg = await bot.send_message(
-            CHANNEL_USERNAME,
-            post_text(row, for_channel=True),
-            reply_markup=channel_post_kb(post_id, row["post_type"])
-        )
+        text = post_text(row, for_channel=True)
+        kb = channel_post_kb(post_id, row["post_type"])
+
+        avatar_file_id = await get_user_avatar_file_id(bot, row["user_id"])
+
+        if avatar_file_id:
+            caption_text = text
+            if len(caption_text) > 1024:
+                caption_text = caption_text[:1000] + "\n\n..."
+
+            msg = await bot.send_photo(
+                CHANNEL_USERNAME,
+                photo=avatar_file_id,
+                caption=caption_text,
+                reply_markup=kb
+            )
+        else:
+            if len(text) > 4000:
+                text = text[:3900] + "\n\n..."
+
+            msg = await bot.send_message(
+                CHANNEL_USERNAME,
+                text,
+                reply_markup=kb
+            )
+
         with closing(connect_db()) as conn, conn:
-            conn.execute("UPDATE posts SET channel_message_id=? WHERE id=?", (msg.message_id, post_id))
+            conn.execute(
+                "UPDATE posts SET channel_message_id=? WHERE id=?",
+                (msg.message_id, post_id)
+            )
 
     return _send()
 

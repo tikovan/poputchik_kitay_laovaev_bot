@@ -4071,8 +4071,9 @@ async def onboarding_skip_handler(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-    @router.callback_query(F.data == "admin:stats")
+@router.callback_query(F.data == "admin:stats")
 async def admin_stats_handler(callback: CallbackQuery):
+    
     if not is_admin(callback.from_user.id):
         await callback.answer("Нет доступа", show_alert=True)
         return

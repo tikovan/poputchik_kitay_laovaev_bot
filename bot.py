@@ -4219,12 +4219,16 @@ async def verify_start_handler(callback: CallbackQuery):
         request_id = create_verification_request(callback.from_user.id)
 
     await callback.message.answer(
-        f"💳 <b>Оплата верификации</b>\n\n"
-        f"Стоимость: <b>{VERIFICATION_PRICE_AMOUNT} {VERIFICATION_PRICE_CURRENCY}</b>\n\n"
-        "Оплатите через WeChat / Alipay и после оплаты нажмите кнопку ниже.\n\n"
-        "⚠️ Деньги не возвращаются после начала проверки.",
-        reply_markup=verification_pay_kb(request_id)
-    )
+    f"💳 <b>Оплата верификации</b>\n\n"
+    f"<b>Заявка:</b> #{request_id}\n"
+    f"<b>Стоимость:</b> {VERIFICATION_PRICE_AMOUNT} {VERIFICATION_PRICE_CURRENCY}\n\n"
+    f"Для совершения оплаты напишите администратору в WeChat:\n\n"
+    f"👤 <b>WeChat:</b> tikovan\n\n"
+    f"Сообщение администратору:\n"
+    f"<code>Оплата верификации #{request_id}</code>\n\n"
+    f"После оплаты нажмите кнопку <b>«✅ Я оплатил»</b> ниже.",
+    reply_markup=verification_payment_kb(request_id)
+)
     await callback.answer()
 
 

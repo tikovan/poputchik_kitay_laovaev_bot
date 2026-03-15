@@ -1013,6 +1013,80 @@ def sort_posts_with_verified_priority(rows: List[sqlite3.Row]) -> List[sqlite3.R
     return sorted(rows, key=sort_key, reverse=True)
 
 
+def build_admin_user_profile_text(user_id: int) -> Optional[str]:
+    profile = get_user_profile(user_id)
+    user = profile["user"]
+
+    if not user:
+        return None
+
+    avg_rating, reviews_count = user_rating_summary(user_id)
+
+    return (
+        f"👤 <b>Профиль пользователя</b>\n\n"
+        f"<b>USER_ID:</b> {user_id}\n"
+        f"<b>Username:</b> @{html.escape(user['username']) if user['username'] else 'нет'}\n"
+        f"<b>Имя:</b> {html.escape(user['full_name'] or 'не указано')}\n"
+        f"<b>Верификация:</b> {'да' if user['is_verified'] else 'нет'}\n"
+        f"<b>Бан:</b> {'да' if user['is_banned'] else 'нет'}\n"
+        f"<b>Объявлений всего:</b> {profile['posts_count']}\n"
+        f"<b>Активных объявлений:</b> {profile['active_posts']}\n"
+        f"<b>Завершенных сделок:</b> {profile['completed_deals']}\n"
+        f"<b>Жалоб на пользователя:</b> {profile['complaints_received']}\n"
+        f"<b>Рейтинг:</b> {avg_rating:.1f} ({reviews_count} {reviews_word(reviews_count)})\n"
+    )
+
+
+async def show_user_posts(target, user_id: int):
+    with closing(connect_db()) as conn:
+        posts = conn.execute("""
+            SELECT * FROM posts
+            WHERE user_id=? AND status != 'deleted'
+            ORDER BY created_at DESC
+            LIMIT 30
+        """, (user_id,)).fetchall()
+
+    if not posts:
+        await target.answer("У вас пока нет объявлений.")
+        return
+
+    await target.answer(
+        "📋 Ваши объявления:",
+        reply_markup=my_posts_kb(posts)
+    )
+
+
+async def show_user_deals_sections(target, user_id: int):
+    deals = list_user_deals(user_id)
+
+    if not deals:
+        await target.answer("У вас пока нет сделок.")
+        return
+
+    in_progress, disputes, finished = split_deals_by_sections(deals)
+
+    if in_progress:
+        await target.answer(
+            "🟢 <b>Сделки в процессе</b>\n"
+            "Здесь сделки, по которым сейчас идёт передача или ожидание подтверждения.",
+            reply_markup=deal_section_kb(in_progress)
+        )
+
+    if disputes:
+        await target.answer(
+            "⚖️ <b>Споры</b>\n"
+            "Здесь сделки, по которым открыт спор или ожидается решение.",
+            reply_markup=deal_section_kb(disputes)
+        )
+
+    if finished:
+        await target.answer(
+            "✅ <b>Завершённые и закрытые</b>\n"
+            "Здесь завершённые, неуспешные и отменённые сделки.",
+            reply_markup=deal_section_kb(finished)
+        )
+
+
 def reviews_word(n: int) -> str:
     n = abs(n) % 100
     n1 = n % 10
@@ -2644,12 +2718,14 @@ def delete_subscription(user_id: int, sub_id: int) -> bool:
 
 
 def reserve_coincidence_notification(post_a_id: int, post_b_id: int) -> bool:
+    a, b = sorted([post_a_id, post_b_id])
+
     with closing(connect_db()) as conn, conn:
         try:
             conn.execute("""
                 INSERT INTO coincidence_notifications (post_a_id, post_b_id, created_at)
                 VALUES (?, ?, ?)
-            """, (post_a_id, post_b_id, now_ts()))
+            """, (a, b, now_ts()))
             return True
         except sqlite3.IntegrityError:
             return False
@@ -3561,6 +3637,13 @@ async def contact_admin_handler(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
+@router.message(F.text == "🤝 Мои сделки")
+async def my_deals_menu(message: Message):
+    upsert_user(message)
+    await message.answer(MENU_TEXTS["deals"], reply_markup=main_menu(message.from_user.id))
+    await show_user_deals_sections(message, message.from_user.id)
+
+
 @router.message(AdminContactFlow.message)
 async def admin_contact_message(message: Message, state: FSMContext):
     data = await state.get_data()
@@ -3984,6 +4067,19 @@ async def onboarding_skip_handler(callback: CallbackQuery, state: FSMContext):
     await callback.message.answer(
         "Онбординг пропущен. Основные функции доступны в меню ниже.",
         reply_markup=main_menu(callback.from_user.id)
+    )
+    await callback.answer()
+
+
+    @router.callback_query(F.data == "admin:stats")
+async def admin_stats_handler(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    await callback.message.answer(
+        admin_stats_text(),
+        reply_markup=admin_menu_kb()
     )
     await callback.answer()
 
@@ -4485,7 +4581,6 @@ async def support_router(callback: CallbackQuery, state: FSMContext):
 
 
 @router.message(SupportFlow.bug_text)
-@router.message(SupportFlow.bug_text)
 async def support_bug_input(message: Message, state: FSMContext):
     text = (message.text or "").strip()
     if len(text) < 3:
@@ -4657,6 +4752,9 @@ async def back_router(callback: CallbackQuery):
                     "✅ <b>Завершённые и закрытые</b>",
                     reply_markup=deal_section_kb(finished)
                 )
+
+    elif action == "my_deals":
+    await show_user_deals_sections(callback.message, callback.from_user.id)
 
     elif action == "new_posts":
         posts = get_recent_posts(10)
@@ -6159,6 +6257,19 @@ async def admin_user_verify_btn(callback: CallbackQuery):
     await callback.message.answer(f"✅ Пользователь {user_id} верифицирован.")
     await callback.answer()
 
+
+@router.callback_query(F.data == "admin:stats")
+async def admin_stats_handler(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    await callback.message.answer(
+        admin_stats_text(),
+        reply_markup=admin_menu_kb()
+    )
+    await callback.answer()
+    
 
 @router.callback_query(F.data.startswith("admin_user_unverify:"))
 async def admin_user_unverify_btn(callback: CallbackQuery):

@@ -4228,7 +4228,7 @@ async def verify_start_handler(callback: CallbackQuery):
     f"<code>Оплата верификации #{request_id}</code>\n\n"
     f"После оплаты нажмите кнопку <b>«✅ Я оплатил»</b> ниже.",
     reply_markup=verification_payment_kb(request_id)
-)
+ )
     await callback.answer()
 
 

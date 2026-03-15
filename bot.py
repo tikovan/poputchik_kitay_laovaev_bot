@@ -4199,7 +4199,7 @@ async def verification_menu_handler(message: Message):
 
     if is_user_verified(message.from_user.id):
         await message.answer(
-            "🛡 <b>Ваш аккаунт уже верифицирован.</b>\n\n"
+            "✅  <b>Ваш аккаунт уже верифицирован.</b>\n\n"
             "Статус: 🛡 Паспорт подтвержден",
             reply_markup=main_menu(message.from_user.id)
         )

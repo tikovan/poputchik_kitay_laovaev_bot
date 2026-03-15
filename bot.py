@@ -1230,7 +1230,7 @@ def short_post_type(post_type: str) -> str:
     return "✈️ Попутчик" if post_type == TYPE_TRIP else "📦 Посылка"
 
 
-def ensure_deal_request(post_id: int, owner_user_id: int, requester_user_id: int) -> int:
+def ensure_deal_request(post_id: int, owner_user_id: int, requester_user_id: int) -> tuple[int, bool]:
     with closing(connect_db()) as conn, conn:
         row = conn.execute("""
             SELECT id
@@ -1241,7 +1241,7 @@ def ensure_deal_request(post_id: int, owner_user_id: int, requester_user_id: int
         """, (post_id, owner_user_id, requester_user_id, DEAL_REQUEST_PENDING)).fetchone()
 
         if row:
-            return int(row["id"])
+            return int(row["id"]), False
 
         cur = conn.execute("""
             INSERT INTO deal_requests (
@@ -1252,8 +1252,8 @@ def ensure_deal_request(post_id: int, owner_user_id: int, requester_user_id: int
             post_id, owner_user_id, requester_user_id,
             DEAL_REQUEST_PENDING, now_ts(), now_ts()
         ))
-        return int(cur.lastrowid)
-
+        return int(cur.lastrowid), True
+        
 
 def get_deal_request(request_id: int) -> Optional[sqlite3.Row]:
     with closing(connect_db()) as conn:
@@ -2487,6 +2487,29 @@ def create_verification_request(user_id: int) -> int:
             ts
         ))
         return int(cur.lastrowid)
+
+
+def users_had_recent_deal(user1: int, user2: int) -> bool:
+    with closing(connect_db()) as conn:
+        row = conn.execute("""
+            SELECT id
+            FROM deals
+            WHERE (
+                (owner_user_id=? AND requester_user_id=?)
+                OR
+                (owner_user_id=? AND requester_user_id=?)
+            )
+            AND status = ?
+            AND updated_at > ?
+            LIMIT 1
+        """, (
+            user1, user2,
+            user2, user1,
+            DEAL_COMPLETED,
+            now_ts() - 7 * 24 * 3600
+        )).fetchone()
+
+    return bool(row)
 
 
 def active_deals_count(user_id: int) -> int:
@@ -6894,11 +6917,37 @@ async def offer_deal_handler(callback: CallbackQuery):
             )
             return
 
-        request_id = ensure_deal_request(
+        if users_had_recent_deal(owner_id, requester_id):
+            await callback.answer(
+                "Вы недавно уже совершали сделку с этим пользователем. "
+                "Новые сделки между одними и теми же пользователями возможны через 7 дней.",
+                show_alert=True
+            )
+            return
+
+        request_id, is_new_request = ensure_deal_request(
             post_id=post_id,
             owner_user_id=owner_id,
             requester_user_id=requester_id
         )
+
+        if not is_new_request:
+            await callback.answer(
+                "Вы уже отправили заявку на эту сделку. Ожидайте ответа владельца.",
+                show_alert=True
+            )
+            return
+            post_id=post_id,
+            owner_user_id=owner_id,
+            requester_user_id=requester_id
+        )
+
+        if not is_new_request:
+            await callback.answer(
+                "Вы уже отправили заявку на эту сделку. Ожидайте ответа владельца.",
+                show_alert=True
+            )
+            return
 
         route = post_route_title(row)
 

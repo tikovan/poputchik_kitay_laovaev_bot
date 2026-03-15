@@ -1936,7 +1936,7 @@ def admin_verification_list_kb(rows: List[sqlite3.Row]):
 def admin_menu_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📚 Все объявления", callback_data="admin:all_posts")],
-        [InlineKeyboardButton(text="🛡 Верификации", callback_data="admin:verifications")],
+        [InlineKeyboardButton(text="🛂 Верификации", callback_data="admin:verifications")],
         [InlineKeyboardButton(text="🆘 Последние жалобы", callback_data="admin:complaints")],
         [InlineKeyboardButton(text="👤 Пользователь", callback_data="admin:user_lookup")],
         [InlineKeyboardButton(text="💰 Заявки на поднятие", callback_data="admin:bump_orders")],
@@ -2113,7 +2113,7 @@ def main_menu(user_id: Optional[int] = None):
         [KeyboardButton(text="🔎 Найти совпадения"), KeyboardButton(text="📋 Мои объявления")],
         [KeyboardButton(text="🤝 Мои сделки"), KeyboardButton(text="🔔 Подписки")],
         [KeyboardButton(text="🆕 Новые объявления"), KeyboardButton(text="🔥 Популярные маршруты")],
-        [KeyboardButton(text="💰 Поднять объявление"), KeyboardButton(text="🛡 Верификация аккаунта")],
+        [KeyboardButton(text="💰 Поднять объявление"), KeyboardButton(text="🛂 Верификация аккаунта")],
         [KeyboardButton(text="📊 Статистика"), KeyboardButton(text="🚩 Жалоба / Баг / Поддержка")],
         [KeyboardButton(text="ℹ️ Помощь")],
     ]
@@ -2422,7 +2422,7 @@ def admin_stats_text() -> str:
         f"🆘 Жалоб: <b>{complaints_count}</b>\n"
         f"⚖️ Активных споров: <b>{disputes_open}</b>\n"
         f"💰 Заявок на поднятие: <b>{bump_pending}</b>\n"
-        f"🛡 Верификаций на проверке: <b>{verif_pending}</b>\n"
+        f"🛂 Верификаций на проверке: <b>{verif_pending}</b>\n"
     )
 
 
@@ -3867,7 +3867,7 @@ async def global_main_menu_router(message: Message, state: FSMContext):
         await admin_menu_handler(message)
         return
 
-    if text == "🛡 Верификация аккаунта":
+    if text == "🛂 Верификация аккаунта":
         await verification_menu_handler(message)
         return
         
@@ -4216,14 +4216,14 @@ async def help_handler(message: Message):
     await message.answer(text, reply_markup=main_menu(message.from_user.id))
 
 
-@router.message(F.text == "🛡 Верификация аккаунта")
+@router.message(F.text == "🛂 Верификация аккаунта")
 async def verification_menu_handler(message: Message):
     upsert_user(message)
 
     if is_user_verified(message.from_user.id):
         await message.answer(
             "✅  <b>Ваш аккаунт уже верифицирован.</b>\n\n"
-            "Статус: 🛡 Паспорт подтвержден",
+            "Статус: 🛂 Паспорт подтвержден",
             reply_markup=main_menu(message.from_user.id)
         )
         return
@@ -4237,7 +4237,7 @@ async def verification_menu_handler(message: Message):
             extra += f"\n<b>Причина:</b> {html.escape(req['rejection_reason'])}"
 
     text = (
-    "🛡 <b>Верификация аккаунта</b>\n\n"
+    "🛂 <b>Верификация аккаунта</b>\n\n"
 
     "<b>Что такое верификация?</b>\n"
     "Это подтверждение личности пользователя с помощью паспорта.\n"
@@ -4247,8 +4247,7 @@ async def verification_menu_handler(message: Message):
     "который был проверен администратором.\n\n"
     "Она не является гарантией выполнения сделки.\n\n"
 
-    "<b>Что вы получите:</b>\n"
-        
+    "<b>Что вы получите:</b>\n" 
     "• ✅ бейдж проверенного пользователя\n"
     "• 📈 больше доверия к вашим объявлениям\n"
     "• 🔝 приоритет ваших объявлений в поиске и совпадениях\n"
@@ -6532,7 +6531,7 @@ async def admin_verifications_handler(callback: CallbackQuery):
 
     rows = list_pending_verification_requests(20)
     await callback.message.answer(
-        "🛡 <b>Заявки на верификацию</b>",
+        "🛂 <b>Заявки на верификацию</b>",
         reply_markup=admin_verification_list_kb(rows)
     )
     await callback.answer()
@@ -6551,7 +6550,7 @@ async def admin_verif_open_handler(callback: CallbackQuery):
         return
 
     text = (
-        f"🛡 <b>Заявка на верификацию</b>\n\n"
+        f"🛂 <b>Заявка на верификацию</b>\n\n"
         f"<b>ID заявки:</b> {req['id']}\n"
         f"<b>USER_ID:</b> {req['user_id']}\n"
         f"<b>Статус:</b> {format_verification_status(req['status'])}\n"
@@ -6937,17 +6936,6 @@ async def offer_deal_handler(callback: CallbackQuery):
                 show_alert=True
             )
             return
-            post_id=post_id,
-            owner_user_id=owner_id,
-            requester_user_id=requester_id
-        )
-
-        if not is_new_request:
-            await callback.answer(
-                "Вы уже отправили заявку на эту сделку. Ожидайте ответа владельца.",
-                show_alert=True
-            )
-            return
 
         route = post_route_title(row)
 
@@ -6958,12 +6946,20 @@ async def offer_deal_handler(callback: CallbackQuery):
                 f"<b>{html.escape(route)}</b> (ID {post_id}).\n\n"
                 f"Пользователь: {html.escape(callback.from_user.full_name or 'Пользователь')}"
                 + (f" (@{html.escape(callback.from_user.username)})" if callback.from_user.username else ""),
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                    [
-                        InlineKeyboardButton(text="✅ Принять", callback_data=f"deal_request_accept:{request_id}"),
-                        InlineKeyboardButton(text="❌ Отклонить", callback_data=f"deal_request_decline:{request_id}")
+                reply_markup=InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [
+                            InlineKeyboardButton(
+                                text="✅ Принять",
+                                callback_data=f"deal_request_accept:{request_id}"
+                            ),
+                            InlineKeyboardButton(
+                                text="❌ Отклонить",
+                                callback_data=f"deal_request_decline:{request_id}"
+                            )
+                        ]
                     ]
-                ])
+                )
             )
         except Exception as e:
             print(f"OFFER DEAL NOTIFY ERROR: {e}")

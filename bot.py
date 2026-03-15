@@ -435,6 +435,33 @@ def onboarding_finish_kb():
 def now_ts() -> int:
     return int(time.time())
 
+def now_ts() -> int:
+    return int(time.time())
+
+
+DEAL_CONFIRM_DELAY_HOURS = 24
+
+
+def can_confirm_deal_now(deal: sqlite3.Row) -> bool:
+    created_at = int(deal["created_at"] or 0)
+    return now_ts() >= created_at + DEAL_CONFIRM_DELAY_HOURS * 3600
+
+
+def time_left_until_deal_confirm(deal: sqlite3.Row) -> str:
+    created_at = int(deal["created_at"] or 0)
+    unlock_at = created_at + DEAL_CONFIRM_DELAY_HOURS * 3600
+    diff = unlock_at - now_ts()
+
+    if diff <= 0:
+        return "0 мин"
+
+    hours = diff // 3600
+    minutes = (diff % 3600) // 60
+
+    if hours > 0:
+        return f"{hours} ч {minutes} мин"
+    return f"{minutes} мин"
+
 
 def days_to_seconds(days: int) -> int:
     return days * 24 * 60 * 60
@@ -1989,16 +2016,28 @@ def deal_open_kb(deal: sqlite3.Row, user_id: int) -> InlineKeyboardMarkup:
 
     # Активная сделка
     if not user_confirmed:
+    if can_confirm_deal_now(deal):
+
         rows.append([
             InlineKeyboardButton(
                 text="✅ Подтвердить завершение",
                 callback_data=f"deal_confirm:{deal['id']}"
             )
         ])
+
         rows.append([
             InlineKeyboardButton(
                 text="📦 Посылка не доставлена",
                 callback_data=f"deal_dispute_open:{deal['id']}"
+            )
+        ])
+
+    else:
+
+        rows.append([
+            InlineKeyboardButton(
+                text=f"⏳ Доступно через {time_left_until_deal_confirm(deal)}",
+                callback_data="noop"
             )
         ])
 
@@ -7112,6 +7151,13 @@ async def deal_dispute_open_handler(callback: CallbackQuery, state: FSMContext):
         await callback.answer("Нет доступа", show_alert=True)
         return
 
+    if not can_confirm_deal_now(deal):
+        await callback.answer(
+            f"Открыть спор можно только через {DEAL_CONFIRM_DELAY_HOURS} часов после начала сделки.",
+            show_alert=True
+        )
+        return
+
     existing = get_open_dispute_by_deal(deal_id)
     if existing:
         await callback.message.answer(
@@ -7121,7 +7167,11 @@ async def deal_dispute_open_handler(callback: CallbackQuery, state: FSMContext):
         await callback.answer("Спор уже открыт")
         return
 
-    other_user_id = deal["requester_user_id"] if callback.from_user.id == deal["owner_user_id"] else deal["owner_user_id"]
+    other_user_id = (
+        deal["requester_user_id"]
+        if callback.from_user.id == deal["owner_user_id"]
+        else deal["owner_user_id"]
+    )
 
     await state.clear()
     await state.set_state(DisputeFlow.reason)
@@ -7140,7 +7190,7 @@ async def deal_dispute_open_handler(callback: CallbackQuery, state: FSMContext):
         f"Вторая сторона должна ответить в течение <b>{DISPUTE_RESPONSE_HOURS} часов</b>."
     )
     await callback.answer()
-
+    
 
 @router.message(DisputeFlow.reason)
 async def dispute_reason_input(message: Message, state: FSMContext):

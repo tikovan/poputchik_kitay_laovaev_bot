@@ -2484,17 +2484,41 @@ def format_verification_status(status: str) -> str:
     return mapping.get(status, status)
 
 
-def get_recent_posts(limit: int = 10) -> List[sqlite3.Row]:
+def search_posts_inline(query: str, limit: int = 10) -> List[sqlite3.Row]:
+    q = f"%{query.strip().lower()}%"
+
     with closing(connect_db()) as conn:
-        return conn.execute("""
-            SELECT p.*, u.username, u.full_name
-            FROM posts p
-            LEFT JOIN users u ON u.user_id = p.user_id
-            WHERE p.status='active'
-              AND (p.expires_at IS NULL OR p.expires_at > ?)
-            ORDER BY p.created_at DESC
-            LIMIT ?
-        """, (now_ts(), limit)).fetchall()
+        if query.strip():
+            rows = conn.execute("""
+                SELECT p.*, u.username, u.full_name
+                FROM posts p
+                LEFT JOIN users u ON u.user_id = p.user_id
+                WHERE p.status='active'
+                  AND (p.expires_at IS NULL OR p.expires_at > ?)
+                  AND (
+                        lower(p.from_country) LIKE ?
+                     OR lower(COALESCE(p.from_city, '')) LIKE ?
+                     OR lower(p.to_country) LIKE ?
+                     OR lower(COALESCE(p.to_city, '')) LIKE ?
+                     OR lower(COALESCE(p.description, '')) LIKE ?
+                     OR lower(COALESCE(p.travel_date, '')) LIKE ?
+                  )
+                ORDER BY COALESCE(p.bumped_at, p.created_at) DESC
+                LIMIT 100
+            """, (now_ts(), q, q, q, q, q, q)).fetchall()
+        else:
+            rows = conn.execute("""
+                SELECT p.*, u.username, u.full_name
+                FROM posts p
+                LEFT JOIN users u ON u.user_id = p.user_id
+                WHERE p.status='active'
+                  AND (p.expires_at IS NULL OR p.expires_at > ?)
+                ORDER BY COALESCE(p.bumped_at, p.created_at) DESC
+                LIMIT 100
+            """, (now_ts(),)).fetchall()
+
+    rows = sort_posts_with_verified_priority(rows)
+    return rows[:limit]
 
 
 def get_popular_routes(limit: int = 10) -> List[sqlite3.Row]:

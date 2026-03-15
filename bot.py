@@ -1056,7 +1056,7 @@ async def show_user_posts(target, user_id: int):
     )
 
 
-async def show_user_deals_sections(target, user_id: int):
+async def show_user_deals_sections(target, user_id: int, include_descriptions: bool = False):
     deals = list_user_deals(user_id)
 
     if not deals:
@@ -1066,26 +1066,23 @@ async def show_user_deals_sections(target, user_id: int):
     in_progress, disputes, finished = split_deals_by_sections(deals)
 
     if in_progress:
-        await target.answer(
-            "🟢 <b>Сделки в процессе</b>\n"
-            "Здесь сделки, по которым сейчас идёт передача или ожидание подтверждения.",
-            reply_markup=deal_section_kb(in_progress)
-        )
+        text = "🟢 <b>Сделки в процессе</b>"
+        if include_descriptions:
+            text += "\nЗдесь сделки, по которым сейчас идёт передача или ожидание подтверждения."
+        await target.answer(text, reply_markup=deal_section_kb(in_progress))
 
     if disputes:
-        await target.answer(
-            "⚖️ <b>Споры</b>\n"
-            "Здесь сделки, по которым открыт спор или ожидается решение.",
-            reply_markup=deal_section_kb(disputes)
-        )
+        text = "⚖️ <b>Споры</b>"
+        if include_descriptions:
+            text += "\nЗдесь сделки, по которым открыт спор или ожидается решение."
+        await target.answer(text, reply_markup=deal_section_kb(disputes))
 
     if finished:
-        await target.answer(
-            "✅ <b>Завершённые и закрытые</b>\n"
-            "Здесь завершённые, неуспешные и отменённые сделки.",
-            reply_markup=deal_section_kb(finished)
-        )
-
+        text = "✅ <b>Завершённые и закрытые</b>"
+        if include_descriptions:
+            text += "\nЗдесь завершённые, неуспешные и отменённые сделки."
+        await target.answer(text, reply_markup=deal_section_kb(finished))
+        
 
 def reviews_word(n: int) -> str:
     n = abs(n) % 100
@@ -4729,33 +4726,7 @@ async def back_router(callback: CallbackQuery):
             )
 
     elif action == "my_deals":
-        deals = list_user_deals(callback.from_user.id)
-
-        if not deals:
-            await callback.message.answer("У вас пока нет сделок.")
-        else:
-            in_progress, disputes, finished = split_deals_by_sections(deals)
-
-            if in_progress:
-                await callback.message.answer(
-                    "🟢 <b>Сделки в процессе</b>",
-                    reply_markup=deal_section_kb(in_progress)
-                )
-
-            if disputes:
-                await callback.message.answer(
-                    "⚖️ <b>Споры</b>",
-                    reply_markup=deal_section_kb(disputes)
-                )
-
-            if finished:
-                await callback.message.answer(
-                    "✅ <b>Завершённые и закрытые</b>",
-                    reply_markup=deal_section_kb(finished)
-                )
-
-    elif action == "my_deals":
-    await show_user_deals_sections(callback.message, callback.from_user.id)
+        await show_user_deals_sections(callback.message, callback.from_user.id)
 
     elif action == "new_posts":
         posts = get_recent_posts(10)

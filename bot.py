@@ -43,8 +43,6 @@ BOT_USERNAME = os.getenv("BOT_USERNAME", "Poputchik_china_bot").lstrip("@")
 ADMIN_IDS = {474671704}
 MODERATION_ENABLED = False
 
-POST_TTL_DAYS = 30
-AUTO_HIDE_COMPLAINTS_THRESHOLD = 3
 
 BUMP_PRICE_TEXT = os.getenv(
     "BUMP_PRICE_TEXT",
@@ -2393,28 +2391,6 @@ def unverify_user(user_id: int):
         """, (user_id,))
         
 
-def verify_user(user_id: int):
-    with closing(connect_db()) as conn, conn:
-        conn.execute("""
-            UPDATE users
-            SET is_verified=1,
-                verified_at=?,
-                verification_type='passport'
-            WHERE user_id=?
-        """, (now_ts(), user_id))
-
-
-def unverify_user(user_id: int):
-    with closing(connect_db()) as conn, conn:
-        conn.execute("""
-            UPDATE users
-            SET is_verified=0,
-                verified_at=NULL,
-                verification_type=NULL
-            WHERE user_id=?
-        """, (user_id,))
-
-
 def get_latest_verification_request(user_id: int) -> Optional[sqlite3.Row]:
     with closing(connect_db()) as conn:
         return conn.execute("""
@@ -2868,52 +2844,6 @@ def get_coincidences(post_type: str, from_country: str, to_country: str, exclude
     reverse=True
 )
     return results[:limit]
-
-
-def search_posts_inline(query: str, limit: int = 10) -> List[sqlite3.Row]:
-    q = f"%{query.strip().lower()}%"
-
-    with closing(connect_db()) as conn:
-        if query.strip():
-            rows = conn.execute("""
-                SELECT p.*, u.username, u.full_name
-                FROM posts p
-                LEFT JOIN users u ON u.user_id = p.user_id
-                WHERE p.status='active'
-                  AND (p.expires_at IS NULL OR p.expires_at > ?)
-                  AND (
-                        lower(p.from_country) LIKE ?
-                     OR lower(COALESCE(p.from_city, '')) LIKE ?
-                     OR lower(p.to_country) LIKE ?
-                     OR lower(COALESCE(p.to_city, '')) LIKE ?
-                     OR lower(COALESCE(p.description, '')) LIKE ?
-                     OR lower(COALESCE(p.travel_date, '')) LIKE ?
-                  )
-                ORDER BY COALESCE(p.bumped_at, p.created_at) DESC
-                LIMIT 100
-            """, (now_ts(), q, q, q, q, q, q)).fetchall()
-        else:
-            rows = conn.execute("""
-                SELECT p.*, u.username, u.full_name
-                FROM posts p
-                LEFT JOIN users u ON u.user_id = p.user_id
-                WHERE p.status='active'
-                  AND (p.expires_at IS NULL OR p.expires_at > ?)
-                ORDER BY COALESCE(p.bumped_at, p.created_at) DESC
-                LIMIT 100
-            """, (now_ts(),)).fetchall()
-
-    rows = sort_posts_with_verified_priority(rows)
-    return rows[:limit]
-
-
-def sort_posts_with_verified_priority(rows: List[sqlite3.Row]) -> List[sqlite3.Row]:
-    def sort_key(row):
-        verified = 1 if is_user_verified(row["user_id"]) else 0
-        bumped_or_created = row["bumped_at"] or row["created_at"] or 0
-        return (verified, bumped_or_created)
-
-    return sorted(rows, key=sort_key, reverse=True)
 
 
 def ensure_deal(post_id: int, owner_user_id: int, requester_user_id: int, initiator_user_id: int) -> int:
@@ -3660,7 +3590,11 @@ async def contact_admin_handler(callback: CallbackQuery, state: FSMContext):
 async def my_deals_menu(message: Message):
     upsert_user(message)
     await message.answer(MENU_TEXTS["deals"], reply_markup=main_menu(message.from_user.id))
-    await show_user_deals_sections(message, message.from_user.id)
+    await show_user_deals_sections(
+        message,
+        message.from_user.id,
+        include_descriptions=True
+    )
 
 
 @router.message(AdminContactFlow.message)
@@ -3669,8 +3603,12 @@ async def admin_contact_message(message: Message, state: FSMContext):
     deal_id = data.get("deal_id")
 
     deal = get_deal(deal_id)
-    post = get_post(deal["post_id"]) if deal else None
+    if not deal:
+        await message.answer("Сделка не найдена.")
+        await state.clear()
+        return
 
+    post = get_post(deal["post_id"])
     route = ""
     if post:
         route = f"{post['from_country']}"
@@ -3690,7 +3628,7 @@ async def admin_contact_message(message: Message, state: FSMContext):
         f"<b>ID сделки:</b> {deal_id}\n"
         f"<b>ID объявления:</b> {deal['post_id']}\n"
         f"<b>Маршрут:</b> {route}\n\n"
-        f"<b>Сообщение:</b>\n{message.text}"
+        f"<b>Сообщение:</b>\n{html.escape(message.text or '')}"
     )
 
     for admin_id in ADMIN_IDS:
@@ -3716,9 +3654,8 @@ async def admin_contact_message(message: Message, state: FSMContext):
         "📩 Ваше сообщение отправлено администратору.\n"
         "Он свяжется с вами напрямую в Telegram."
     )
-
     await state.clear()
-
+    
 
 @router.inline_query()
 async def inline_search_handler(inline_query: InlineQuery):
@@ -4175,41 +4112,7 @@ async def add_parcel(message: Message, state: FSMContext):
     await state.clear()
     await message.answer(MENU_TEXTS["parcel"], reply_markup=main_menu(message.from_user.id))
     await begin_create(message, state, TYPE_PARCEL)
-
-
-@router.message(F.text == "🤝 Мои сделки")
-async def my_deals_menu(message: Message):
-    upsert_user(message)
-    await message.answer(MENU_TEXTS["deals"], reply_markup=main_menu(message.from_user.id))
-
-    deals = list_user_deals(message.from_user.id)
-    if not deals:
-        await message.answer("У вас пока нет сделок.", reply_markup=main_menu(message.from_user.id))
-        return
-
-    in_progress, disputes, finished = split_deals_by_sections(deals)
-
-    if in_progress:
-        await message.answer(
-            "🟢 <b>Сделки в процессе</b>\n"
-            "Здесь сделки, по которым сейчас идёт передача или ожидание подтверждения.",
-            reply_markup=deal_section_kb(in_progress)
-        )
-
-    if disputes:
-        await message.answer(
-            "⚖️ <b>Споры</b>\n"
-            "Здесь сделки, по которым открыт спор или ожидается решение.",
-            reply_markup=deal_section_kb(disputes)
-        )
-
-    if finished:
-        await message.answer(
-            "✅ <b>Завершённые и закрытые</b>\n"
-            "Здесь завершённые, неуспешные и отменённые сделки.",
-            reply_markup=deal_section_kb(finished)
-        )
-        
+      
 
 @router.message(F.text == "ℹ️ Помощь")
 async def help_handler(message: Message):

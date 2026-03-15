@@ -828,6 +828,22 @@ def set_onboarding_completed(user_id: int):
         )
 
 
+def get_recent_posts(limit: int = 10) -> List[sqlite3.Row]:
+    with closing(connect_db()) as conn:
+        rows = conn.execute("""
+            SELECT p.*, u.username, u.full_name
+            FROM posts p
+            LEFT JOIN users u ON u.user_id = p.user_id
+            WHERE p.status='active'
+              AND (p.expires_at IS NULL OR p.expires_at > ?)
+            ORDER BY COALESCE(p.bumped_at, p.created_at) DESC
+            LIMIT 100
+        """, (now_ts(),)).fetchall()
+
+    rows = sort_posts_with_verified_priority(rows)
+    return rows[:limit]
+    
+
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
 

@@ -1973,7 +1973,7 @@ def main_menu(user_id: Optional[int] = None):
         [KeyboardButton(text="🤝 Мои сделки"), KeyboardButton(text="🔔 Подписки")],
         [KeyboardButton(text="🆕 Новые объявления"), KeyboardButton(text="🔥 Популярные маршруты")],
         [KeyboardButton(text="💰 Поднять объявление"), KeyboardButton(text="🛡 Верификация аккаунта")],
-        [KeyboardButton(text="📊 Статистика")],[KeyboardButton(text="🚩 Жалоба / Баг / Поддержка"),
+        [KeyboardButton(text="📊 Статистика"), KeyboardButton(text="🚩 Жалоба / Баг / Поддержка")],
         [KeyboardButton(text="ℹ️ Помощь")],
     ]
 

@@ -1431,7 +1431,7 @@ def post_text(row, for_channel: bool = False) -> str:
     status_parts = []
 
     if profile["verified"]:
-        status_parts.append("✅ Проверенный")
+        status_parts.append("🛡 Паспорт подтвержден")
 
     if profile["has_warning"]:
         status_parts.append("⚠️ Были спорные сделки")
@@ -4159,7 +4159,7 @@ async def verification_menu_handler(message: Message):
     if is_user_verified(message.from_user.id):
         await message.answer(
             "🛡 <b>Ваш аккаунт уже верифицирован.</b>\n\n"
-            "Статус: ✅ Проверенный пользователь",
+            "Статус: 🛡 Паспорт подтвержден",
             reply_markup=main_menu(message.from_user.id)
         )
         return
@@ -4179,6 +4179,9 @@ async def verification_menu_handler(message: Message):
     "Это подтверждение личности пользователя с помощью паспорта.\n"
     "Вы загружаете фото первой страницы паспорта и селфи с паспортом в руках, "
     "после чего администратор проверяет данные.\n\n"
+    "* верификация подтверждает, что пользователь загрузил паспорт,\n"
+    "который был проверен администратором.\n\n"
+    "Она не является гарантией выполнения сделки.\n\n"
 
     "<b>Что вы получите:</b>\n"
     "• ✅ бейдж проверенного пользователя\n"
@@ -6603,7 +6606,7 @@ async def admin_verif_ok_handler(callback: CallbackQuery):
         await callback.bot.send_message(
             req["user_id"],
             "🎉 <b>Верификация одобрена!</b>\n\n"
-            "Ваш аккаунт теперь отмечен как ✅ Проверенный пользователь."
+            "Ваш аккаунт теперь отмечен как 🛡 Паспорт подтвержден."
         )
     except Exception as e:
         print(f"VERIF APPROVED USER NOTIFY ERROR: {e}")

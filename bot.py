@@ -2016,30 +2016,31 @@ def deal_open_kb(deal: sqlite3.Row, user_id: int) -> InlineKeyboardMarkup:
 
     # Активная сделка
     if not user_confirmed:
-    if can_confirm_deal_now(deal):
 
-        rows.append([
-            InlineKeyboardButton(
-                text="✅ Подтвердить завершение",
-                callback_data=f"deal_confirm:{deal['id']}"
-            )
-        ])
+        if can_confirm_deal_now(deal):
 
-        rows.append([
-            InlineKeyboardButton(
-                text="📦 Посылка не доставлена",
-                callback_data=f"deal_dispute_open:{deal['id']}"
-            )
-        ])
+            rows.append([
+                InlineKeyboardButton(
+                    text="✅ Подтвердить завершение",
+                    callback_data=f"deal_confirm:{deal['id']}"
+                )
+            ])
 
-    else:
+            rows.append([
+                InlineKeyboardButton(
+                    text="📦 Посылка не доставлена",
+                    callback_data=f"deal_dispute_open:{deal['id']}"
+                )
+            ])
 
-        rows.append([
-            InlineKeyboardButton(
-                text=f"⏳ Доступно через {time_left_until_deal_confirm(deal)}",
-                callback_data="noop"
-            )
-        ])
+        else:
+
+            rows.append([
+                InlineKeyboardButton(
+                    text=f"⏳ Доступно через {time_left_until_deal_confirm(deal)}",
+                    callback_data="noop"
+                )
+            ])
 
     rows.append([
         InlineKeyboardButton(
@@ -2047,6 +2048,7 @@ def deal_open_kb(deal: sqlite3.Row, user_id: int) -> InlineKeyboardMarkup:
             callback_data=f"reply_contact:{deal['post_id']}:{other_user_id}:{deal['id']}"
         )
     ])
+
     rows.append([
         InlineKeyboardButton(
             text="⬅️ Назад",

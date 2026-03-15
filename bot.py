@@ -1054,7 +1054,7 @@ async def show_user_posts(target, user_id: int):
         "📋 Ваши объявления:",
         reply_markup=my_posts_kb(posts)
     )
-
+    
 
 async def show_user_deals_sections(target, user_id: int, include_descriptions: bool = False):
     deals = list_user_deals(user_id)
@@ -2366,7 +2366,7 @@ def admin_stats_text() -> str:
         f"⏳ На модерации: <b>{pending_posts}</b>\n"
         f"🆘 Жалоб: <b>{complaints_count}</b>\n"
         f"⚖️ Активных споров: <b>{disputes_open}</b>\n"
-        f"💰 Заявок на поднятие: <b>{bump_pending}</b>"
+        f"💰 Заявок на поднятие: <b>{bump_pending}</b>\n"
         f"🛡 Верификаций на проверке: <b>{verif_pending}</b>\n"
     )
 
@@ -2454,6 +2454,24 @@ def create_verification_request(user_id: int) -> int:
             ts
         ))
         return int(cur.lastrowid)
+
+
+def active_deals_count(user_id: int) -> int:
+    with closing(connect_db()) as conn:
+        row = conn.execute("""
+            SELECT COUNT(*) AS c
+            FROM deals
+            WHERE (owner_user_id=? OR requester_user_id=?)
+              AND status IN (?, ?, ?, ?, ?)
+        """, (
+            user_id, user_id,
+            DEAL_ACCEPTED,
+            DEAL_COMPLETED_BY_OWNER,
+            DEAL_COMPLETED_BY_REQUESTER,
+            DEAL_DISPUTE_OPEN,
+            DEAL_DISPUTE_WAITING
+        )).fetchone()
+        return int(row["c"] or 0)
 
 
 def set_verification_status(
@@ -3402,7 +3420,11 @@ async def begin_create(message: Message, state: FSMContext, post_type: str):
         )
         return
 
-    if message.from_user.id not in ADMIN_IDS and active_post_count(message.from_user.id) >= MAX_ACTIVE_POSTS_PER_USER:
+    if (
+    message.from_user.id not in ADMIN_IDS
+    and not is_user_verified(message.from_user.id)
+    and active_post_count(message.from_user.id) >= MAX_ACTIVE_POSTS_PER_USER
+):
         await message.answer(
             f"У вас уже слишком много объявлений. Лимит: {MAX_ACTIVE_POSTS_PER_USER}. Удалите или деактивируйте старые объявления.",
             reply_markup=main_menu(message.from_user.id)
@@ -4070,7 +4092,6 @@ async def onboarding_skip_handler(callback: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data == "admin:stats")
 async def admin_stats_handler(callback: CallbackQuery):
-    
     if not is_admin(callback.from_user.id):
         await callback.answer("Нет доступа", show_alert=True)
         return
@@ -4080,7 +4101,7 @@ async def admin_stats_handler(callback: CallbackQuery):
         reply_markup=admin_menu_kb()
     )
     await callback.answer()
-
+    
 
 @router.callback_query(F.data.startswith("onboarding_action:"))
 async def onboarding_action_handler(callback: CallbackQuery, state: FSMContext):
@@ -6228,19 +6249,6 @@ async def admin_user_verify_btn(callback: CallbackQuery):
     verify_user(user_id)
     await callback.message.answer(f"✅ Пользователь {user_id} верифицирован.")
     await callback.answer()
-
-
-@router.callback_query(F.data == "admin:stats")
-async def admin_stats_handler(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("Нет доступа", show_alert=True)
-        return
-
-    await callback.message.answer(
-        admin_stats_text(),
-        reply_markup=admin_menu_kb()
-    )
-    await callback.answer()
     
 
 @router.callback_query(F.data.startswith("admin_user_unverify:"))
@@ -6896,50 +6904,62 @@ async def active_chat_fallback(message: Message, state: FSMContext):
 
 @router.callback_query(F.data.startswith("offer_deal:"))
 async def offer_deal_handler(callback: CallbackQuery):
-    _, post_id_str, owner_id_str = callback.data.split(":")
-    post_id = int(post_id_str)
-    owner_id = int(owner_id_str)
-    requester_id = callback.from_user.id
-
-    if owner_id == requester_id:
-        await callback.answer("Это ваше объявление", show_alert=True)
-        return
-
-    row = get_post(post_id)
-    if not row or row["status"] != STATUS_ACTIVE:
-        await callback.answer("Объявление не найдено или неактивно", show_alert=True)
-        return
-
-    request_id = ensure_deal_request(
-        post_id=post_id,
-        owner_user_id=owner_id,
-        requester_user_id=requester_id
-    )
-
-    route = post_route_title(row)
-
     try:
-        await callback.bot.send_message(
-            owner_id,
-            f"🤝 Пользователь предложил открыть сделку по вашему объявлению:\n"
-            f"<b>{html.escape(route)}</b> (ID {post_id}).\n\n"
-            f"Пользователь: {html.escape(callback.from_user.full_name or 'Пользователь')}"
-            + (f" (@{html.escape(callback.from_user.username)})" if callback.from_user.username else ""),
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [
-                    InlineKeyboardButton(text="✅ Принять", callback_data=f"deal_request_accept:{request_id}"),
-                    InlineKeyboardButton(text="❌ Отклонить", callback_data=f"deal_request_decline:{request_id}")
-                ]
-            ])
-        )
-    except Exception as e:
-        print(f"OFFER DEAL NOTIFY ERROR: {e}")
+        _, post_id_str, owner_id_str = callback.data.split(":")
+        post_id = int(post_id_str)
+        owner_id = int(owner_id_str)
+        requester_id = callback.from_user.id
 
-    await callback.message.answer(
-        "📨 Заявка на сделку отправлена владельцу объявления.\n"
-        "Ожидайте подтверждения от второго участника."
-    )
-    await callback.answer("Готово")
+        if owner_id == requester_id:
+            await callback.answer("Это ваше объявление", show_alert=True)
+            return
+
+        row = get_post(post_id)
+        if not row or row["status"] != STATUS_ACTIVE:
+            await callback.answer("Объявление не найдено или неактивно", show_alert=True)
+            return
+
+        if not is_user_verified(requester_id) and active_deals_count(requester_id) >= 2:
+            await callback.answer(
+                "У обычных пользователей максимум 2 активные сделки. Пройдите верификацию, чтобы снять лимит.",
+                show_alert=True
+            )
+            return
+
+        request_id = ensure_deal_request(
+            post_id=post_id,
+            owner_user_id=owner_id,
+            requester_user_id=requester_id
+        )
+
+        route = post_route_title(row)
+
+        try:
+            await callback.bot.send_message(
+                owner_id,
+                f"🤝 Пользователь предложил открыть сделку по вашему объявлению:\n"
+                f"<b>{html.escape(route)}</b> (ID {post_id}).\n\n"
+                f"Пользователь: {html.escape(callback.from_user.full_name or 'Пользователь')}"
+                + (f" (@{html.escape(callback.from_user.username)})" if callback.from_user.username else ""),
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [
+                        InlineKeyboardButton(text="✅ Принять", callback_data=f"deal_request_accept:{request_id}"),
+                        InlineKeyboardButton(text="❌ Отклонить", callback_data=f"deal_request_decline:{request_id}")
+                    ]
+                ])
+            )
+        except Exception as e:
+            print(f"OFFER DEAL NOTIFY ERROR: {e}")
+
+        await callback.message.answer(
+            "📨 Заявка на сделку отправлена владельцу объявления.\n"
+            "Ожидайте подтверждения от второго участника."
+        )
+        await callback.answer("Готово")
+
+    except Exception as e:
+        print(f"OFFER_DEAL_HANDLER ERROR: {e}")
+        await callback.answer("Ошибка при создании заявки", show_alert=True)
 
 
 @router.callback_query(F.data.startswith("deal_request_accept:"))

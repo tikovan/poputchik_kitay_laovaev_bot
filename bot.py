@@ -2744,7 +2744,7 @@ def get_coincidences(post_type: str, from_country: str, to_country: str, exclude
     ),
     reverse=True
 )
-return results[:limit]
+    return results[:limit]
 
 
 def search_posts_inline(query: str, limit: int = 10) -> List[sqlite3.Row]:

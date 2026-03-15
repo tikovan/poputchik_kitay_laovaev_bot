@@ -998,6 +998,15 @@ def is_user_verified(user_id: int) -> bool:
         return bool(row and row["is_verified"])
 
 
+def sort_posts_with_verified_priority(rows: List[sqlite3.Row]) -> List[sqlite3.Row]:
+    def sort_key(row):
+        verified = 1 if is_user_verified(row["user_id"]) else 0
+        bumped_or_created = row["bumped_at"] or row["created_at"] or 0
+        return (verified, bumped_or_created)
+
+    return sorted(rows, key=sort_key, reverse=True)
+
+
 def reviews_word(n: int) -> str:
     n = abs(n) % 100
     n1 = n % 10
@@ -2503,7 +2512,7 @@ def get_popular_routes(limit: int = 10) -> List[sqlite3.Row]:
 
 def search_route_posts_all(from_country: str, to_country: str, limit: int = 20) -> List[sqlite3.Row]:
     with closing(connect_db()) as conn:
-        return conn.execute("""
+        rows = conn.execute("""
             SELECT p.*, u.username, u.full_name
             FROM posts p
             LEFT JOIN users u ON u.user_id = p.user_id
@@ -2511,9 +2520,12 @@ def search_route_posts_all(from_country: str, to_country: str, limit: int = 20) 
               AND p.status='active'
               AND (p.expires_at IS NULL OR p.expires_at > ?)
             ORDER BY COALESCE(p.bumped_at, p.created_at) DESC
-            LIMIT ?
-        """, (from_country, to_country, now_ts(), limit)).fetchall()
+            LIMIT 100
+        """, (from_country, to_country, now_ts())).fetchall()
 
+    rows = sort_posts_with_verified_priority(rows)
+    return rows[:limit]
+    
 
 def service_stats() -> sqlite3.Row:
     with closing(connect_db()) as conn:
@@ -2724,15 +2736,23 @@ def get_coincidences(post_type: str, from_country: str, to_country: str, exclude
             "type": "strong" if score >= 75 else "good" if score >= 55 else "possible"
         })
 
-    results.sort(key=lambda x: (x["score"], x["row"]["bumped_at"] or x["row"]["created_at"]), reverse=True)
-    return results[:limit]
+    results.sort(
+    key=lambda x: (
+        x["score"],
+        1 if is_user_verified(x["row"]["user_id"]) else 0,
+        x["row"]["bumped_at"] or x["row"]["created_at"] or 0
+    ),
+    reverse=True
+)
+return results[:limit]
 
 
 def search_posts_inline(query: str, limit: int = 10) -> List[sqlite3.Row]:
     q = f"%{query.strip().lower()}%"
+
     with closing(connect_db()) as conn:
         if query.strip():
-            return conn.execute("""
+            rows = conn.execute("""
                 SELECT p.*, u.username, u.full_name
                 FROM posts p
                 LEFT JOIN users u ON u.user_id = p.user_id
@@ -2747,18 +2767,30 @@ def search_posts_inline(query: str, limit: int = 10) -> List[sqlite3.Row]:
                      OR lower(COALESCE(p.travel_date, '')) LIKE ?
                   )
                 ORDER BY COALESCE(p.bumped_at, p.created_at) DESC
-                LIMIT ?
-            """, (now_ts(), q, q, q, q, q, q, limit)).fetchall()
+                LIMIT 100
+            """, (now_ts(), q, q, q, q, q, q)).fetchall()
+        else:
+            rows = conn.execute("""
+                SELECT p.*, u.username, u.full_name
+                FROM posts p
+                LEFT JOIN users u ON u.user_id = p.user_id
+                WHERE p.status='active'
+                  AND (p.expires_at IS NULL OR p.expires_at > ?)
+                ORDER BY COALESCE(p.bumped_at, p.created_at) DESC
+                LIMIT 100
+            """, (now_ts(),)).fetchall()
 
-        return conn.execute("""
-            SELECT p.*, u.username, u.full_name
-            FROM posts p
-            LEFT JOIN users u ON u.user_id = p.user_id
-            WHERE p.status='active'
-              AND (p.expires_at IS NULL OR p.expires_at > ?)
-            ORDER BY COALESCE(p.bumped_at, p.created_at) DESC
-            LIMIT ?
-        """, (now_ts(), limit)).fetchall()
+    rows = sort_posts_with_verified_priority(rows)
+    return rows[:limit]
+
+
+def sort_posts_with_verified_priority(rows: List[sqlite3.Row]) -> List[sqlite3.Row]:
+    def sort_key(row):
+        verified = 1 if is_user_verified(row["user_id"]) else 0
+        bumped_or_created = row["bumped_at"] or row["created_at"] or 0
+        return (verified, bumped_or_created)
+
+    return sorted(rows, key=sort_key, reverse=True)
 
 
 def ensure_deal(post_id: int, owner_user_id: int, requester_user_id: int, initiator_user_id: int) -> int:
@@ -4085,6 +4117,7 @@ async def verification_menu_handler(message: Message):
     "<b>Что вы получите:</b>\n"
     "• ✅ бейдж проверенного пользователя\n"
     "• 📈 больше доверия к вашим объявлениям\n"
+    "• 🔝 приоритет ваших объявлений в поиске и совпадениях\n"
     "• 🤝 <b>неограниченное количество активных сделок</b>\n"
     "  (у обычных пользователей максимум 2)\n"
     "• 📢 <b>неограниченное количество активных объявлений</b>\n"

@@ -752,6 +752,7 @@ def init_db():
         ON deals(requester_user_id, status, created_at);
         """)
 
+
         # ---- дополнительные индексы для ускорения ----
 
         conn.execute("""
@@ -767,6 +768,11 @@ def init_db():
         conn.execute("""
         CREATE INDEX IF NOT EXISTS idx_posts_status_route
         ON posts(status, post_type, from_country, to_country)
+        """)
+
+        conn.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_coincidence_unique_pair
+        ON coincidence_notifications(post_a_id, post_b_id)
         """)
 
         # ---- ensure columns ----
@@ -2638,13 +2644,15 @@ def delete_subscription(user_id: int, sub_id: int) -> bool:
 
 
 def reserve_coincidence_notification(post_a_id: int, post_b_id: int) -> bool:
-    a, b = sorted([post_a_id, post_b_id])
     with closing(connect_db()) as conn, conn:
-        cur = conn.execute("""
-            INSERT OR IGNORE INTO coincidence_notifications (post_a_id, post_b_id, created_at)
-            VALUES (?, ?, ?)
-        """, (a, b, now_ts()))
-        return cur.rowcount > 0
+        try:
+            conn.execute("""
+                INSERT INTO coincidence_notifications (post_a_id, post_b_id, created_at)
+                VALUES (?, ?, ?)
+            """, (post_a_id, post_b_id, now_ts()))
+            return True
+        except sqlite3.IntegrityError:
+            return False
 
 
 def calculate_coincidence_score(source_row, candidate_row: sqlite3.Row) -> Tuple[int, List[str]]:

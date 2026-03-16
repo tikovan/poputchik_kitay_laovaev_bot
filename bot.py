@@ -4438,6 +4438,7 @@ async def admin_toggle_ban_handler(callback: CallbackQuery):
     await callback.answer(
         "Пользователь разбанен" if new_status == 0 else "Пользователь забанен"
     )
+    
 
 @router.callback_query(F.data.startswith("adminbanpost:"))
 async def admin_ban_post_owner(callback: CallbackQuery):

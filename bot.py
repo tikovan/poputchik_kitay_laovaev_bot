@@ -4046,10 +4046,25 @@ async def inline_search_handler(inline_query: InlineQuery):
                     parse_mode=ParseMode.HTML,
                     disable_web_page_preview=True,
                 ),
-                reply_markup=["id"], row["user_id"], row["post_type"]),
+                reply_markup=public_post_kb(row["id"], row["user_id"]),
             )
         )
 
+    if not results:
+        results = [
+            InlineQueryResultArticle(
+                id="no_results",
+                title="Ничего не найдено",
+                description="Попробуйте: Китай Россия, Шэньчжэнь Москва, посылка, попутчик",
+                input_message_content=InputTextMessageContent(
+                    message_text=f"Ничего не найдено.\n\nОткрой бота и создай объявление: {bot_link()}",
+                    disable_web_page_preview=True,
+                ),
+            )
+        ]
+
+    await inline_query.answer(results, cache_time=1, is_personal=True)
+    
     if not results:
         results = [
             InlineQueryResultArticle(

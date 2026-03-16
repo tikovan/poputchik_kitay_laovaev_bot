@@ -1051,6 +1051,62 @@ def sort_posts_with_verified_priority(rows: List[sqlite3.Row]) -> List[sqlite3.R
     return sorted(rows, key=sort_key, reverse=True)
 
 
+def find_user_by_username(username: str):
+    username = username.lstrip("@").strip().lower()
+    with closing(connect_db()) as conn:
+        row = conn.execute("""
+            SELECT user_id, username, full_name, is_banned, created_at
+            FROM users
+            WHERE LOWER(COALESCE(username, '')) = ?
+            LIMIT 1
+        """, (username,)).fetchone()
+    return row
+
+
+def find_user_by_id(user_id: int):
+    with closing(connect_db()) as conn:
+        row = conn.execute("""
+            SELECT user_id, username, full_name, is_banned, created_at
+            FROM users
+            WHERE user_id = ?
+            LIMIT 1
+        """, (user_id,)).fetchone()
+    return row
+
+
+def search_users(query: str, limit: int = 10):
+    q = f"%{query.strip().lower()}%"
+    with closing(connect_db()) as conn:
+        rows = conn.execute("""
+            SELECT user_id, username, full_name, is_banned, created_at
+            FROM users
+            WHERE LOWER(COALESCE(username, '')) LIKE ?
+               OR LOWER(COALESCE(full_name, '')) LIKE ?
+               OR CAST(user_id AS TEXT) LIKE ?
+            ORDER BY created_at DESC
+            LIMIT ?
+        """, (q, q, q, limit)).fetchall()
+    return rows
+
+
+def ban_user(user_id: int):
+    with closing(connect_db()) as conn, conn:
+        conn.execute("""
+            UPDATE users
+            SET is_banned = 1
+            WHERE user_id = ?
+        """, (user_id,))
+
+
+def unban_user(user_id: int):
+    with closing(connect_db()) as conn, conn:
+        conn.execute("""
+            UPDATE users
+            SET is_banned = 0
+            WHERE user_id = ?
+        """, (user_id,))
+
+
 def build_admin_user_profile_text(user_id: int) -> Optional[str]:
     profile = get_user_profile(user_id)
     user = profile["user"]
@@ -2073,6 +2129,39 @@ def get_active_deal_by_post(post_id: int) -> Optional[sqlite3.Row]:
             DEAL_DISPUTE_OPEN,
             DEAL_DISPUTE_WAITING
         )).fetchone()
+
+
+def admin_complaint_actions_kb(post_id: int, owner_user_id: int | None):
+    rows = []
+    if owner_user_id:
+        rows.append([
+            InlineKeyboardButton(
+                text="👤 Профиль автора",
+                callback_data=f"admin_user_profile:{owner_user_id}"
+            )
+        ])
+    rows.append([
+        InlineKeyboardButton(
+            text="📄 Открыть пост",
+            callback_data=f"open_post:{post_id}"
+        )
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admin_deal_users_kb(owner_user_id: int, requester_user_id: int):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(
+                text="👤 Владелец",
+                callback_data=f"admin_user_profile:{owner_user_id}"
+            ),
+            InlineKeyboardButton(
+                text="👤 Заказчик",
+                callback_data=f"admin_user_profile:{requester_user_id}"
+            )
+        ]
+    ])
         
 
 def dispute_actions_kb(dispute: sqlite3.Row, viewer_user_id: int) -> InlineKeyboardMarkup:
@@ -3480,6 +3569,86 @@ def format_dispute_status(status: str) -> str:
     return mapping.get(status, status)
 
 
+def get_user_profile(user_id: int):
+    with closing(connect_db()) as conn:
+        return conn.execute("""
+            SELECT user_id, username, full_name, created_at, is_banned, is_verified,
+                   dispute_no_response_count, onboarding_completed
+            FROM users
+            WHERE user_id = ?
+            LIMIT 1
+        """, (user_id,)).fetchone()
+
+
+def set_user_ban_status(user_id: int, is_banned: int):
+    with closing(connect_db()) as conn, conn:
+        conn.execute("""
+            UPDATE users
+            SET is_banned = ?
+            WHERE user_id = ?
+        """, (is_banned, user_id))
+
+
+def get_post_owner_user_id(post_id: int):
+    with closing(connect_db()) as conn:
+        row = conn.execute("""
+            SELECT user_id
+            FROM posts
+            WHERE id = ?
+            LIMIT 1
+        """, (post_id,)).fetchone()
+    return row["user_id"] if row else None
+
+
+def admin_user_moderation_kb(target_user_id: int, is_banned: int):
+    buttons = [
+        [
+            InlineKeyboardButton(
+                text="👤 Профиль",
+                callback_data=f"admin_user_profile:{target_user_id}"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text="✅ Разбанить" if is_banned else "🚫 Забанить",
+                callback_data=f"admin_toggle_ban:{target_user_id}"
+            )
+        ]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def fmt_ts(ts: int | None) -> str:
+    if not ts:
+        return "—"
+    try:
+        return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        return str(ts)
+
+
+def render_user_admin_card(user_row) -> str:
+    if not user_row:
+        return "Пользователь не найден."
+
+    username_text = f"@{user_row['username']}" if user_row["username"] else "—"
+    full_name_text = user_row["full_name"] or "—"
+    banned_text = "Да 🚫" if user_row["is_banned"] else "Нет ✅"
+    verified_text = "Да" if user_row["is_verified"] else "Нет"
+
+    return (
+        "👤 <b>Профиль пользователя</b>\n\n"
+        f"ID: <code>{user_row['user_id']}</code>\n"
+        f"Username: {username_text}\n"
+        f"Имя: {full_name_text}\n"
+        f"Забанен: {banned_text}\n"
+        f"Верифицирован: {verified_text}\n"
+        f"Onboarding: {user_row['onboarding_completed']}\n"
+        f"Пропуски ответа по спорам: {user_row['dispute_no_response_count']}\n"
+        f"Создан: {fmt_ts(user_row['created_at'])}"
+    )
+
+
 def admin_contact_kb():
     rows = []
 
@@ -3673,6 +3842,130 @@ async def my_deals_menu(message: Message):
         include_descriptions=True
     )
 
+
+@router.message(Command("find"))
+async def admin_find_handler(message: Message):
+    if message.from_user.id not in ADMIN_IDS:
+        await message.answer("Нет доступа.")
+        return
+
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) < 2:
+        await message.answer("Использование: /find username")
+        return
+
+    query = parts[1].strip()
+    rows = search_users(query, limit=15)
+
+    if not rows:
+        await message.answer("Ничего не найдено.")
+        return
+
+    lines = ["🔎 Результаты поиска:\n"]
+    for row in rows:
+        username_text = f"@{row['username']}" if row["username"] else "—"
+        full_name_text = row["full_name"] or "—"
+        banned = "🚫" if row["is_banned"] else "✅"
+        lines.append(
+            f"{banned} <code>{row['user_id']}</code> | {username_text} | {full_name_text}"
+        )
+
+    await message.answer("\n".join(lines))
+
+
+@router.message(Command("ban"))
+async def admin_ban_handler(message: Message):
+    if message.from_user.id not in ADMIN_IDS:
+        await message.answer("Нет доступа.")
+        return
+
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) < 2:
+        await message.answer("Использование: /ban 123456789")
+        return
+
+    arg = parts[1].strip()
+
+    target_user_id = None
+
+    if arg.isdigit():
+        target_user_id = int(arg)
+    else:
+        row = find_user_by_username(arg)
+        if row:
+            target_user_id = row["user_id"]
+
+    if not target_user_id:
+        await message.answer("Пользователь не найден.")
+        return
+
+    ban_user(target_user_id)
+    await message.answer(f"🚫 Пользователь <code>{target_user_id}</code> забанен.")
+
+
+@router.message(Command("unban"))
+async def admin_unban_handler(message: Message):
+    if message.from_user.id not in ADMIN_IDS:
+        await message.answer("Нет доступа.")
+        return
+
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) < 2:
+        await message.answer("Использование: /unban 123456789")
+        return
+
+    arg = parts[1].strip()
+
+    target_user_id = None
+
+    if arg.isdigit():
+        target_user_id = int(arg)
+    else:
+        row = find_user_by_username(arg)
+        if row:
+            target_user_id = row["user_id"]
+
+    if not target_user_id:
+        await message.answer("Пользователь не найден.")
+        return
+
+    unban_user(target_user_id)
+    await message.answer(f"✅ Пользователь <code>{target_user_id}</code> разбанен.")
+
+
+@router.message(Command("id"))
+async def admin_id_handler(message: Message):
+    if message.from_user.id not in ADMIN_IDS:
+        await message.answer("Нет доступа.")
+        return
+
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) < 2:
+        await message.answer("Использование: /id @username или /id 123456789")
+        return
+
+    arg = parts[1].strip()
+
+    if arg.isdigit():
+        row = find_user_by_id(int(arg))
+    else:
+        row = find_user_by_username(arg)
+
+    if not row:
+        await message.answer("Пользователь не найден.")
+        return
+
+    username_text = f"@{row['username']}" if row["username"] else "—"
+    full_name_text = row["full_name"] or "—"
+    banned_text = "Да" if row["is_banned"] else "Нет"
+
+    await message.answer(
+        f"👤 ID: <code>{row['user_id']}</code>\n"
+        f"Username: {username_text}\n"
+        f"Имя: {full_name_text}\n"
+        f"Забанен: {banned_text}"
+    )
+    
 
 @router.message(AdminContactFlow.message)
 async def admin_contact_message(message: Message, state: FSMContext):
@@ -4086,6 +4379,58 @@ async def admin_reject_post(callback: CallbackQuery):
     await callback.answer()
 
 
+@router.callback_query(F.data.startswith("admin_user_profile:"))
+async def admin_user_profile_handler(callback: CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    target_user_id = int(callback.data.split(":")[1])
+    user_row = get_user_profile(target_user_id)
+
+    if not user_row:
+        await callback.answer("Пользователь не найден", show_alert=True)
+        return
+
+    await callback.message.edit_text(
+        render_user_admin_card(user_row),
+        reply_markup=admin_user_moderation_kb(
+            target_user_id=target_user_id,
+            is_banned=user_row["is_banned"]
+        )
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admin_toggle_ban:"))
+async def admin_toggle_ban_handler(callback: CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    target_user_id = int(callback.data.split(":")[1])
+    user_row = get_user_profile(target_user_id)
+
+    if not user_row:
+        await callback.answer("Пользователь не найден", show_alert=True)
+        return
+
+    new_status = 0 if user_row["is_banned"] else 1
+    set_user_ban_status(target_user_id, new_status)
+
+    updated_row = get_user_profile(target_user_id)
+
+    await callback.message.edit_text(
+        render_user_admin_card(updated_row),
+        reply_markup=admin_user_moderation_kb(
+            target_user_id=target_user_id,
+            is_banned=updated_row["is_banned"]
+        )
+    )
+
+    await callback.answer("Пользователь разбанен" if new_status == 0 else "Пользователь забанен")
+
+
 @router.callback_query(F.data.startswith("adminbanpost:"))
 async def admin_ban_post_owner(callback: CallbackQuery):
     if not is_admin(callback.from_user.id):
@@ -4234,6 +4579,33 @@ async def help_handler(message: Message):
         "<b>Никогда не делайте предоплату незнакомому человеку.</b>"
     )
     await message.answer(text, reply_markup=main_menu(message.from_user.id))
+
+
+@router.message(Command("user"))
+async def admin_user_command_handler(message: Message):
+    if message.from_user.id not in ADMIN_IDS:
+        await message.answer("Нет доступа.")
+        return
+
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].strip().isdigit():
+        await message.answer("Использование: /user 123456789")
+        return
+
+    target_user_id = int(parts[1].strip())
+    user_row = get_user_profile(target_user_id)
+
+    if not user_row:
+        await message.answer("Пользователь не найден.")
+        return
+
+    await message.answer(
+        render_user_admin_card(user_row),
+        reply_markup=admin_user_moderation_kb(
+            target_user_id=target_user_id,
+            is_banned=user_row["is_banned"]
+        )
+    )
 
 
 @router.message(F.text == "🛂 Верификация аккаунта")

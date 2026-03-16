@@ -1090,7 +1090,7 @@ def search_users(query: str, limit: int = 10):
 
 
 def build_admin_user_profile_text(user_id: int) -> Optional[str]:
-    profile = get_user_profile(user_id)
+    profile = get_user_profile_full(user_id)
     user = profile["user"]
 
     if not user:
@@ -1947,6 +1947,48 @@ def admin_verification_payment_kb(request_id: int, user_id: int):
         ]
     ])
 
+
+def get_user_profile_full(user_id: int):
+    with closing(connect_db()) as conn:
+        user = conn.execute("""
+            SELECT *
+            FROM users
+            WHERE user_id=?
+        """, (user_id,)).fetchone()
+
+        posts_count = conn.execute("""
+            SELECT COUNT(*) AS c
+            FROM posts
+            WHERE user_id=? AND status != ?
+        """, (user_id, STATUS_DELETED)).fetchone()["c"]
+
+        active_posts = conn.execute("""
+            SELECT COUNT(*) AS c
+            FROM posts
+            WHERE user_id=? AND status=?
+        """, (user_id, STATUS_ACTIVE)).fetchone()["c"]
+
+        completed_deals = conn.execute("""
+            SELECT COUNT(*) AS c
+            FROM deals
+            WHERE status=? AND (owner_user_id=? OR requester_user_id=?)
+        """, (DEAL_COMPLETED, user_id, user_id)).fetchone()["c"]
+
+        complaints_received = conn.execute("""
+            SELECT COUNT(*) AS c
+            FROM complaints c
+            LEFT JOIN posts p ON p.id = c.post_id
+            WHERE p.user_id=?
+        """, (user_id,)).fetchone()["c"]
+
+        return {
+            "user": user,
+            "posts_count": int(posts_count or 0),
+            "active_posts": int(active_posts or 0),
+            "completed_deals": int(completed_deals or 0),
+            "complaints_received": int(complaints_received or 0),
+        }
+        
 
 def admin_verification_review_kb(request_id: int, user_id: int):
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -3809,7 +3851,7 @@ async def my_deals_menu(message: Message):
     )
 
 
-@router.message(Command("find"))
+@router.message(Command("search_user"))
 async def admin_find_handler(message: Message):
     if message.from_user.id not in ADMIN_IDS:
         await message.answer("Нет доступа.")
@@ -4383,15 +4425,16 @@ async def admin_toggle_ban_handler(callback: CallbackQuery):
     new_status = 0 if user_row["is_banned"] else 1
     set_user_ban_status(target_user_id, new_status)
 
-    updated_row = get_user_profile(target_user_id)
+    updated_row = get_user_row(target_user_id)
 
-    await callback.message.edit_text(
-        render_user_admin_card(updated_row),
-        reply_markup=admin_user_moderation_kb(
-            target_user_id=target_user_id,
-            is_banned=updated_row["is_banned"]
-        )
+await callback.message.edit_text(
+    render_user_admin_card(updated_row),
+    reply_markup=admin_user_moderation_kb(
+        target_user_id=target_user_id,
+        is_banned=updated_row["is_banned"]
     )
+)
+
 
     await callback.answer("Пользователь разбанен" if new_status == 0 else "Пользователь забанен")
 
@@ -6518,7 +6561,7 @@ async def admin_user_lookup_input(message: Message, state: FSMContext):
         return
 
     user_id = int(text)
-    profile = get_user_profile(user_id)
+    profile = get_user_profile_full(user_id)
     user = profile["user"]
 
     if not user:
@@ -6556,7 +6599,7 @@ async def admin_open_user_profile(callback: CallbackQuery):
         return
 
     user_id = int(callback.data.split(":")[1])
-    profile = get_user_profile(user_id)
+    profile = get_user_profile_full(user_id)
     user = profile["user"]
 
     if not user:

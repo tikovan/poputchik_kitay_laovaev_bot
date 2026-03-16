@@ -2034,7 +2034,7 @@ def deal_open_kb(deal: sqlite3.Row, user_id: int) -> InlineKeyboardMarkup:
 
             rows.append([
                 InlineKeyboardButton(
-                    text=f"⏳Завершить сделку можно через  {time_left_until_deal_confirm(deal)}",
+                    text=f"⏳Завершить сделку через  {time_left_until_deal_confirm(deal)}",
                     callback_data="noop"
                 )
             ])

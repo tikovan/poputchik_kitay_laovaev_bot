@@ -3871,103 +3871,126 @@ async def global_main_menu_router(message: Message, state: FSMContext):
 
 @router.message(CommandStart())
 async def start_handler(message: Message, state: FSMContext):
-    upsert_user(message)
-    await state.clear()
+    try:
+        upsert_user(message)
+        await state.clear()
 
-    if is_user_banned(message.from_user.id):
-        await message.answer(
-            "⛔ Ваш аккаунт ограничен из-за жалоб пользователей.\nЕсли это ошибка — свяжитесь с администратором."
-        )
-        return
+        if is_user_banned(message.from_user.id):
+            await message.answer(
+                "⛔ Ваш аккаунт ограничен из-за жалоб пользователей.\nЕсли это ошибка — свяжитесь с администратором."
+            )
+            return
 
-    start_arg = ""
-    if message.text and " " in message.text:
-        start_arg = message.text.split(" ", 1)[1].strip()
+        start_arg = ""
+        if message.text and " " in message.text:
+            start_arg = message.text.split(" ", 1)[1].strip()
 
-    # ---------- deep links сначала ----------
+        print(f"START ARG = {start_arg!r}")
 
-    if start_arg == "parcel":
-        await message.answer(
-            MENU_TEXTS["parcel"],
-            reply_markup=main_menu(message.from_user.id)
-        )
-        await begin_create(message, state, TYPE_PARCEL)
-        return
+        # ---------- deep links сначала ----------
 
-    if start_arg == "trip":
-        await message.answer(
-            MENU_TEXTS["trip"],
-            reply_markup=main_menu(message.from_user.id)
-        )
-        await begin_create(message, state, TYPE_TRIP)
-        return
+        if start_arg == "wechat":
+            await message.answer(
+                "👋 <b>Добро пожаловать в Попутчик Китай</b>\n\n"
+                "Это сервис для передачи посылок через попутчиков.\n\n"
+                "Здесь можно:\n"
+                "• 📦 отправить посылку\n"
+                "• ✈️ найти попутчика\n"
+                "• 🔎 смотреть новые объявления\n"
+                "• 🔔 получать совпадения автоматически\n\n"
+                "⬇️ Выберите действие в меню ниже.",
+                reply_markup=main_menu(message.from_user.id)
+            )
+            return
 
-    if start_arg.startswith("contact_"):
-        post_id_str = start_arg.replace("contact_", "", 1)
+        if start_arg == "parcel":
+            await message.answer(
+                MENU_TEXTS["parcel"],
+                reply_markup=main_menu(message.from_user.id)
+            )
+            await begin_create(message, state, TYPE_PARCEL)
+            return
 
-        if post_id_str.isdigit():
-            row = get_post(int(post_id_str))
+        if start_arg == "trip":
+            await message.answer(
+                MENU_TEXTS["trip"],
+                reply_markup=main_menu(message.from_user.id)
+            )
+            await begin_create(message, state, TYPE_TRIP)
+            return
 
-            if row and row["status"] == STATUS_ACTIVE:
+        if start_arg.startswith("contact_"):
+            post_id_str = start_arg.replace("contact_", "", 1)
 
-                if row["user_id"] == message.from_user.id:
-                    await message.answer(
-                        "Это ваше объявление.",
-                        reply_markup=main_menu(message.from_user.id)
+            if post_id_str.isdigit():
+                row = get_post(int(post_id_str))
+
+                if row and row["status"] == STATUS_ACTIVE:
+
+                    if row["user_id"] == message.from_user.id:
+                        await message.answer(
+                            "Это ваше объявление.",
+                            reply_markup=main_menu(message.from_user.id)
+                        )
+                        return
+
+                    await state.set_state(ContactFlow.message_text)
+
+                    await state.update_data(
+                        post_id=row["id"],
+                        target_user_id=row["user_id"],
+                        deal_id=None
                     )
+
+                    await message.answer(
+                        "✉️ Вы открыли связь с владельцем объявления:"
+                    )
+
+                    await send_post_card(message, row)
+
+                    await message.answer(
+                        "Напишите сообщение, и я перешлю его владельцу."
+                    )
+
                     return
 
-                await state.set_state(ContactFlow.message_text)
+        if start_arg.startswith("post_"):
+            post_id_str = start_arg.replace("post_", "", 1)
 
-                await state.update_data(
-                    post_id=row["id"],
-                    target_user_id=row["user_id"],
-                    deal_id=None
-                )
+            if post_id_str.isdigit():
+                row = get_post(int(post_id_str))
 
-                await message.answer(
-                    "✉️ Вы открыли связь с владельцем объявления:"
-                )
-
-                await send_post_card(message, row)
-
-                await message.answer(
-                    "Напишите сообщение, и я перешлю его владельцу."
-                )
+                if row and row["status"] == STATUS_ACTIVE:
+                    await send_post_card(
+                        message,
+                        row,
+                        prefix_text="📤 Открыто объявление по ссылке:"
+                    )
+                else:
+                    await message.answer(
+                        "Объявление не найдено или уже неактивно."
+                    )
 
                 return
 
-    if start_arg.startswith("post_"):
-        post_id_str = start_arg.replace("post_", "", 1)
+        # ---------- только теперь онбординг ----------
 
-        if post_id_str.isdigit():
-            row = get_post(int(post_id_str))
-
-            if row and row["status"] == STATUS_ACTIVE:
-                await send_post_card(
-                    message,
-                    row,
-                    prefix_text="📤 Открыто объявление по ссылке:"
-                )
-            else:
-                await message.answer(
-                    "Объявление не найдено или уже неактивно."
-                )
-
+        if not is_onboarding_completed(message.from_user.id):
+            await state.set_state(OnboardingFlow.screen_1)
+            await show_onboarding_screen(message, 1)
             return
 
-    # ---------- только теперь онбординг ----------
+        await message.answer(
+            WELCOME_TEXT,
+            reply_markup=main_menu(message.from_user.id)
+        )
 
-    if not is_onboarding_completed(message.from_user.id):
-        await state.set_state(OnboardingFlow.screen_1)
-        await show_onboarding_screen(message, 1)
-        return
-
-    await message.answer(
-        WELCOME_TEXT,
-        reply_markup=main_menu(message.from_user.id)
-    )
-    
+    except Exception as e:
+        print(f"START HANDLER ERROR: {e}")
+        await message.answer(
+            "Произошла ошибка при запуске бота. Попробуйте еще раз."
+        )
+        
 
 @router.callback_query(F.data.startswith("onboarding_next:"))
 async def onboarding_next_handler(callback: CallbackQuery, state: FSMContext):

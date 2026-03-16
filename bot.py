@@ -2372,12 +2372,14 @@ def support_menu_kb():
     ])
 
 
-def get_user_profile(user_id: int):
+def get_user_row(user_id: int):
     with closing(connect_db()) as conn:
-        user = conn.execute("""
-            SELECT *
+        return conn.execute("""
+            SELECT user_id, username, full_name, created_at, is_banned, is_verified,
+                   dispute_no_response_count, onboarding_completed
             FROM users
-            WHERE user_id=?
+            WHERE user_id = ?
+            LIMIT 1
         """, (user_id,)).fetchone()
 
         posts_count = conn.execute("""
@@ -4386,7 +4388,7 @@ async def admin_user_profile_handler(callback: CallbackQuery):
         return
 
     target_user_id = int(callback.data.split(":")[1])
-    user_row = get_user_profile(target_user_id)
+    user_row = get_user_row(target_user_id)
 
     if not user_row:
         await callback.answer("Пользователь не найден", show_alert=True)
@@ -4593,8 +4595,8 @@ async def admin_user_command_handler(message: Message):
         return
 
     target_user_id = int(parts[1].strip())
-    user_row = get_user_profile(target_user_id)
-
+    user_row = get_user_row(target_user_id)
+    
     if not user_row:
         await message.answer("Пользователь не найден.")
         return

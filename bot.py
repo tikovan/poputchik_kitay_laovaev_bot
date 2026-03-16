@@ -243,6 +243,7 @@ MAIN_MENU_TEXTS = {
     "🔔 Подписки",
     "📊 Статистика",
     "💰 Поднять объявление",
+    "🛂 Верификация аккаунта",
     "🚩 Жалоба / Баг / Поддержка",
     "ℹ️ Помощь",
     "👨‍💼 Админка",
@@ -1545,8 +1546,7 @@ async def send_post_card(
 
     kb = reply_markup if reply_markup is not None else public_post_kb(
         row["id"],
-        row["user_id"],
-        row["post_type"]
+        row["user_id"]
     )
 
     if hasattr(target, "answer"):
@@ -1582,8 +1582,7 @@ async def send_post_card_to_user(
 
     kb = reply_markup if reply_markup is not None else public_post_kb(
         row["id"],
-        row["user_id"],
-        row["post_type"]
+        row["user_id"]
     )
 
     await bot.send_message(
@@ -1836,7 +1835,7 @@ def admin_post_actions_kb(post_id: int):
     ])
 
 
-def public_post_kb(post_id: int, owner_id: int, post_type: Optional[str] = None):
+def public_post_kb(post_id: int, owner_id: int):
     _, reviews_count = user_rating_summary(owner_id)
     row = get_post(post_id)
 
@@ -2376,50 +2375,6 @@ def support_menu_kb():
         [InlineKeyboardButton(text="🐞 Сообщить о баге", callback_data="support:bug")],
         [InlineKeyboardButton(text="🆘 Связаться с поддержкой", callback_data="support:help")],
     ])
-
-
-def get_user_row(user_id: int):
-    with closing(connect_db()) as conn:
-        return conn.execute("""
-            SELECT user_id, username, full_name, created_at, is_banned, is_verified,
-                   dispute_no_response_count, onboarding_completed
-            FROM users
-            WHERE user_id = ?
-            LIMIT 1
-        """, (user_id,)).fetchone()
-
-        posts_count = conn.execute("""
-            SELECT COUNT(*) AS c
-            FROM posts
-            WHERE user_id=? AND status != ?
-        """, (user_id, STATUS_DELETED)).fetchone()["c"]
-
-        active_posts = conn.execute("""
-            SELECT COUNT(*) AS c
-            FROM posts
-            WHERE user_id=? AND status=?
-        """, (user_id, STATUS_ACTIVE)).fetchone()["c"]
-
-        completed_deals = conn.execute("""
-            SELECT COUNT(*) AS c
-            FROM deals
-            WHERE status=? AND (owner_user_id=? OR requester_user_id=?)
-        """, (DEAL_COMPLETED, user_id, user_id)).fetchone()["c"]
-
-        complaints_received = conn.execute("""
-            SELECT COUNT(*) AS c
-            FROM complaints c
-            LEFT JOIN posts p ON p.id = c.post_id
-            WHERE p.user_id=?
-        """, (user_id,)).fetchone()["c"]
-
-        return {
-            "user": user,
-            "posts_count": int(posts_count or 0),
-            "active_posts": int(active_posts or 0),
-            "completed_deals": int(completed_deals or 0),
-            "complaints_received": int(complaints_received or 0),
-        }
 
 
 def admin_posts_kb(rows: List[sqlite3.Row]):
@@ -3597,6 +3552,46 @@ def set_user_ban_status(user_id: int, is_banned: int):
         """, (is_banned, user_id))
 
 
+def fmt_ts(ts: int | None) -> str:
+    if not ts:
+        return "—"
+    try:
+        return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        return str(ts)
+
+
+def render_user_admin_card(user_row) -> str:
+    if not user_row:
+        return "Пользователь не найден."
+
+    username_text = f"@{user_row['username']}" if user_row["username"] else "—"
+    full_name_text = user_row["full_name"] or "—"
+    banned_text = "Да 🚫" if user_row["is_banned"] else "Нет ✅"
+    verified_text = "Да" if user_row["is_verified"] else "Нет"
+
+    return (
+        "👤 <b>Профиль пользователя</b>\n\n"
+        f"ID: <code>{user_row['user_id']}</code>\n"
+        f"Username: {username_text}\n"
+        f"Имя: {full_name_text}\n"
+        f"Забанен: {banned_text}\n"
+        f"Верифицирован: {verified_text}\n"
+        f"Onboarding: {user_row['onboarding_completed']}\n"
+        f"Пропуски ответа по спорам: {user_row['dispute_no_response_count']}\n"
+        f"Создан: {fmt_ts(user_row['created_at'])}"
+    )
+
+
+def set_user_ban_status(user_id: int, is_banned: int):
+    with closing(connect_db()) as conn, conn:
+        conn.execute("""
+            UPDATE users
+            SET is_banned = ?
+            WHERE user_id = ?
+        """, (is_banned, user_id))
+
+
 def get_post_owner_user_id(post_id: int):
     with closing(connect_db()) as conn:
         row = conn.execute("""
@@ -3859,26 +3854,8 @@ async def admin_find_handler(message: Message):
 
     parts = (message.text or "").split(maxsplit=1)
     if len(parts) < 2:
-        await message.answer("Использование: /find username")
+        await message.answer("Использование: /search_user username")
         return
-
-    query = parts[1].strip()
-    rows = search_users(query, limit=15)
-
-    if not rows:
-        await message.answer("Ничего не найдено.")
-        return
-
-    lines = ["🔎 Результаты поиска:\n"]
-    for row in rows:
-        username_text = f"@{row['username']}" if row["username"] else "—"
-        full_name_text = row["full_name"] or "—"
-        banned = "🚫" if row["is_banned"] else "✅"
-        lines.append(
-            f"{banned} <code>{row['user_id']}</code> | {username_text} | {full_name_text}"
-        )
-
-    await message.answer("\n".join(lines))
 
 
 @router.message(Command("ban"))
@@ -4069,7 +4046,7 @@ async def inline_search_handler(inline_query: InlineQuery):
                     parse_mode=ParseMode.HTML,
                     disable_web_page_preview=True,
                 ),
-                reply_markup=public_post_kb(row["id"], row["user_id"], row["post_type"]),
+                reply_markup=["id"], row["user_id"], row["post_type"]),
             )
         )
 
@@ -4153,8 +4130,8 @@ async def global_main_menu_router(message: Message, state: FSMContext):
         await bump_info(message)
         return
 
-    if text == "🚩 Пожаловаться":
-        await complaint_start(message, state)
+    if text == "🚩 Жалоба / Баг / Поддержка":
+        await support_start(message, state)
         return
 
     if text == "ℹ️ Помощь":

@@ -4436,7 +4436,7 @@ await callback.message.edit_text(
 )
 
 
-    await callback.answer("Пользователь разбанен" if new_status == 0 else "Пользователь забанен")
+await callback.answer("Пользователь разбанен" if new_status == 0 else "Пользователь забанен")
 
 
 @router.callback_query(F.data.startswith("adminbanpost:"))

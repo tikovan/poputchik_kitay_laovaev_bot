@@ -4427,17 +4427,17 @@ async def admin_toggle_ban_handler(callback: CallbackQuery):
 
     updated_row = get_user_row(target_user_id)
 
-await callback.message.edit_text(
-    render_user_admin_card(updated_row),
-    reply_markup=admin_user_moderation_kb(
-        target_user_id=target_user_id,
-        is_banned=updated_row["is_banned"]
+    await callback.message.edit_text(
+        render_user_admin_card(updated_row),
+        reply_markup=admin_user_moderation_kb(
+            target_user_id=target_user_id,
+            is_banned=updated_row["is_banned"]
+        )
     )
-)
 
-
-await callback.answer("Пользователь разбанен" if new_status == 0 else "Пользователь забанен")
-
+    await callback.answer(
+        "Пользователь разбанен" if new_status == 0 else "Пользователь забанен"
+    )
 
 @router.callback_query(F.data.startswith("adminbanpost:"))
 async def admin_ban_post_owner(callback: CallbackQuery):

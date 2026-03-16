@@ -435,9 +435,6 @@ def onboarding_finish_kb():
 def now_ts() -> int:
     return int(time.time())
 
-def now_ts() -> int:
-    return int(time.time())
-
 
 DEAL_CONFIRM_DELAY_HOURS = 24
 
@@ -4243,7 +4240,7 @@ async def verification_menu_handler(message: Message):
     "Это подтверждение личности пользователя с помощью паспорта.\n"
     "Вы загружаете фото первой страницы паспорта и селфи с паспортом в руках, "
     "после чего администратор проверяет данные.\n\n"
-    "* верификация подтверждает, что пользователь загрузил паспорт,\n"
+    "• верификация подтверждает, что пользователь загрузил паспорт,\n"
     "который был проверен администратором.\n\n"
     "Она не является гарантией выполнения сделки.\n\n"
 
@@ -6670,7 +6667,7 @@ async def admin_verif_ok_handler(callback: CallbackQuery):
         await callback.bot.send_message(
             req["user_id"],
             "🎉 <b>Верификация одобрена!</b>\n\n"
-            "Ваш аккаунт теперь отмечен как 🛡 Паспорт подтвержден."
+            "Ваш аккаунт теперь отмечен как 🛂 Паспорт подтвержден."
         )
     except Exception as e:
         print(f"VERIF APPROVED USER NOTIFY ERROR: {e}")

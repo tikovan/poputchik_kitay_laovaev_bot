@@ -1089,24 +1089,6 @@ def search_users(query: str, limit: int = 10):
     return rows
 
 
-def ban_user(user_id: int):
-    with closing(connect_db()) as conn, conn:
-        conn.execute("""
-            UPDATE users
-            SET is_banned = 1
-            WHERE user_id = ?
-        """, (user_id,))
-
-
-def unban_user(user_id: int):
-    with closing(connect_db()) as conn, conn:
-        conn.execute("""
-            UPDATE users
-            SET is_banned = 0
-            WHERE user_id = ?
-        """, (user_id,))
-
-
 def build_admin_user_profile_text(user_id: int) -> Optional[str]:
     profile = get_user_profile(user_id)
     user = profile["user"]
@@ -2129,24 +2111,6 @@ def get_active_deal_by_post(post_id: int) -> Optional[sqlite3.Row]:
             DEAL_DISPUTE_OPEN,
             DEAL_DISPUTE_WAITING
         )).fetchone()
-
-
-def admin_complaint_actions_kb(post_id: int, owner_user_id: int | None):
-    rows = []
-    if owner_user_id:
-        rows.append([
-            InlineKeyboardButton(
-                text="👤 Профиль автора",
-                callback_data=f"admin_user_profile:{owner_user_id}"
-            )
-        ])
-    rows.append([
-        InlineKeyboardButton(
-            text="📄 Открыть пост",
-            callback_data=f"open_post:{post_id}"
-        )
-    ])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def admin_deal_users_kb(owner_user_id: int, requester_user_id: int):
@@ -3571,7 +3535,7 @@ def format_dispute_status(status: str) -> str:
     return mapping.get(status, status)
 
 
-def get_user_profile(user_id: int):
+def get_user_row(user_id: int):
     with closing(connect_db()) as conn:
         return conn.execute("""
             SELECT user_id, username, full_name, created_at, is_banned, is_verified,
@@ -4411,8 +4375,7 @@ async def admin_toggle_ban_handler(callback: CallbackQuery):
         return
 
     target_user_id = int(callback.data.split(":")[1])
-    user_row = get_user_profile(target_user_id)
-
+    user_row = get_user_row(target_user_id)
     if not user_row:
         await callback.answer("Пользователь не найден", show_alert=True)
         return

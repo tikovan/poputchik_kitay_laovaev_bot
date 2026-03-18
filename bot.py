@@ -1841,7 +1841,7 @@ def public_post_kb(post_id: int, owner_id: int):
 
     rows = [
         [InlineKeyboardButton(text="✉️ Написать владельцу", callback_data=f"contact:{post_id}:{owner_id}")],
-        [InlineKeyboardButton(text="🤝 Предложить сделку", callback_data=f"offer_deal:{post_id}:{owner_id}")]
+        [InlineKeyboardButton(text="🤝 Предложить сделку", callback_data=f"offer_deal_confirm:{post_id}:{owner_id}")]
     ]
 
     if row and row["photo_file_id"]:
@@ -1882,6 +1882,23 @@ def public_post_kb(post_id: int, owner_id: int):
     ])
 
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def confirm_offer_deal_kb(post_id: int, owner_id: int):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(
+                text="✅ Да, отправить заявку",
+                callback_data=f"offer_deal:{post_id}:{owner_id}"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text="❌ Отмена",
+                callback_data="offer_deal_cancel"
+            )
+        ]
+    ])
     
 
 def channel_post_kb(post_id: int, post_type: Optional[str] = None):
@@ -7284,6 +7301,45 @@ async def active_chat_fallback(message: Message, state: FSMContext):
 
     await relay_message(message, state)
 
+
+@router.callback_query(F.data.startswith("offer_deal_confirm:"))
+async def offer_deal_confirm_handler(callback: CallbackQuery):
+    try:
+        _, post_id_str, owner_id_str = callback.data.split(":")
+        post_id = int(post_id_str)
+        owner_id = int(owner_id_str)
+
+        if owner_id == callback.from_user.id:
+            await callback.answer("Это ваше объявление", show_alert=True)
+            return
+
+        row = get_post(post_id)
+        if not row or row["status"] != STATUS_ACTIVE:
+            await callback.answer("Объявление не найдено или неактивно", show_alert=True)
+            return
+
+        await callback.message.answer(
+            "⚠️ <b>Подтверждение</b>\n\n"
+            "Вы собираетесь отправить владельцу объявления заявку на сделку.\n\n"
+            "Если владелец примет её, объявление перейдет в раздел <b>🤝 Мои сделки</b>.\n\n"
+            "Отправить заявку?",
+            reply_markup=confirm_offer_deal_kb(post_id, owner_id)
+        )
+        await callback.answer()
+
+    except Exception as e:
+        print(f"OFFER_DEAL_CONFIRM_HANDLER ERROR: {e}")
+        await callback.answer("Ошибка", show_alert=True)
+
+
+@router.callback_query(F.data == "offer_deal_cancel")
+async def offer_deal_cancel_handler(callback: CallbackQuery):
+    await callback.answer("Открытие сделки отменено")
+    try:
+        await callback.message.answer("❌ Открытие сделки отменено.")
+    except Exception as e:
+        print(f"OFFER_DEAL_CANCEL_HANDLER ERROR: {e}")
+        
 
 @router.callback_query(F.data.startswith("offer_deal:"))
 async def offer_deal_handler(callback: CallbackQuery):

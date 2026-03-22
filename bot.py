@@ -3523,6 +3523,27 @@ async def remove_post_from_channel(bot: Bot, row):
         logger.exception("CHANNEL DELETE ERROR: %s", e)
 
 
+async def try_update_channel_post(bot: Bot, post_id: int):
+    row = get_post(post_id)
+    if not row:
+        return
+
+    channel_message_id = row["channel_message_id"]
+
+    if not channel_message_id or not CHANNEL_USERNAME:
+        return
+
+    try:
+        await bot.edit_message_text(
+            chat_id=CHANNEL_USERNAME,
+            message_id=channel_message_id,
+            text=post_text(row, for_channel=True),
+            reply_markup=channel_post_kb(post_id, row["post_type"])
+        )
+    except Exception as e:
+        logger.exception(f"CHANNEL UPDATE ERROR: {e}")
+
+
 async def notify_coincidence_users(bot: Bot, new_post_id: int):
     new_row = get_post(new_post_id)
     if not new_row or new_row["status"] != STATUS_ACTIVE:

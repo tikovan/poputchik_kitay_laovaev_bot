@@ -8393,54 +8393,57 @@ async def edit_post_field_pick(callback: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith("editweightpick:"))
 async def edit_post_weight_pick(callback: CallbackQuery, state: FSMContext):
-    parts = callback.data.split(":", 2)
+    await callback.answer()  # ✅ КРИТИЧНО — сразу убирает loading
 
-    if len(parts) < 3:
-        await callback.answer("Ошибка выбора веса", show_alert=True)
-        return
+    try:
+        print("CLICK:", callback.data)
 
-    _, post_id_str, value = parts
+        parts = callback.data.split(":", 2)
 
-    if not post_id_str.isdigit():
-        await callback.answer("Объявление не найдено", show_alert=True)
-        return
+        if len(parts) != 3:
+            await callback.message.answer("Ошибка данных")
+            return
 
-    post_id = int(post_id_str)
+        _, post_id_str, value = parts
 
-    row = owner_only(callback, post_id)
-    if not row:
-        await state.clear()
-        await callback.answer("Нет доступа", show_alert=True)
-        return
+        if not post_id_str.isdigit():
+            await callback.message.answer("Ошибка ID")
+            return
 
-    await state.update_data(edit_post_id=post_id, edit_field="weight_kg")
+        post_id = int(post_id_str)
 
-    if value == "__manual__":
-        await state.set_state(EditPostFlow.weight_manual)
-        await callback.message.answer("Введите новый вес:")
-        await callback.answer()
-        return
+        row = owner_only(callback, post_id)
+        if not row:
+            await callback.message.answer("Нет доступа")
+            return
 
-    ok = update_post_record(post_id, callback.from_user.id, {"weight_kg": value})
-    await state.clear()
+        if value == "__manual__":
+            await state.set_state(EditPostFlow.weight_manual)
+            await callback.message.answer("Введите новый вес:")
+            return
 
-    if not ok:
-        await callback.message.answer("Не удалось обновить объявление.")
-        await callback.answer()
-        return
+        ok = update_post_record(post_id, callback.from_user.id, {"weight_kg": value})
 
-    await try_update_channel_post(callback.bot, post_id)
+        if not ok:
+            await callback.message.answer("Ошибка обновления")
+            return
 
-    updated_row = get_post(post_id)
-    await callback.message.answer("✅ Объявление обновлено.", reply_markup=main_menu(callback.from_user.id))
-    if updated_row:
-        await send_post_card(
-            callback.message,
-            updated_row,
-            reply_markup=post_actions_kb(post_id, updated_row["status"])
-        )
+        await try_update_channel_post(callback.bot, post_id)
 
-    await callback.answer()
+        updated_row = get_post(post_id)
+
+        await callback.message.answer("✅ Объявление обновлено")
+
+        if updated_row:
+            await send_post_card(
+                callback.message,
+                updated_row,
+                reply_markup=post_actions_kb(post_id, updated_row["status"])
+            )
+
+    except Exception as e:
+        print("EDIT WEIGHT ERROR:", e)
+        await callback.message.answer(f"Ошибка: {e}")
 
 
 @router.message(EditPostFlow.weight_manual)

@@ -1787,12 +1787,40 @@ def weight_select_kb():
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def edit_weight_select_kb():
-    rows = chunk_buttons([(w, w) for w in POPULAR_WEIGHTS], "editweightpick", 2)
-    rows.append([InlineKeyboardButton(text=MANUAL_WEIGHT, callback_data="editweightpick:__manual__")])
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="editpost_back_to_fields")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+def edit_weight_select_kb(post_id: int):
+    rows = []
+    row = []
 
+    for weight in POPULAR_WEIGHTS:
+        row.append(
+            InlineKeyboardButton(
+                text=weight,
+                callback_data=f"editweightpick:{post_id}:{weight}"
+            )
+        )
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+
+    if row:
+        rows.append(row)
+
+    rows.append([
+        InlineKeyboardButton(
+            text=MANUAL_WEIGHT,
+            callback_data=f"editweightpick:{post_id}:__manual__"
+        )
+    ])
+
+    rows.append([
+        InlineKeyboardButton(
+            text="⬅️ Назад",
+            callback_data=f"editpost_back_to_fields:{post_id}"
+        )
+    ])
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+    
 
 def date_select_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -8351,7 +8379,7 @@ async def edit_post_field_pick(callback: CallbackQuery, state: FSMContext):
         await state.set_state(EditPostFlow.weight_pick)
         await callback.message.answer(
             EDIT_FIELD_PROMPTS["weight_kg"],
-            reply_markup=edit_weight_select_kb()
+            reply_markup=edit_weight_select_kb(post_id)
         )
         await callback.answer()
         return
@@ -8365,20 +8393,27 @@ async def edit_post_field_pick(callback: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith("editweightpick:"))
 async def edit_post_weight_pick(callback: CallbackQuery, state: FSMContext):
-    value = callback.data.split(":", 1)[1]
-    data = await state.get_data()
-    post_id = data.get("edit_post_id")
+    parts = callback.data.split(":", 2)
 
-    if not post_id:
-        await state.clear()
+    if len(parts) < 3:
+        await callback.answer("Ошибка выбора веса", show_alert=True)
+        return
+
+    _, post_id_str, value = parts
+
+    if not post_id_str.isdigit():
         await callback.answer("Объявление не найдено", show_alert=True)
         return
 
-    row = owner_only(callback, int(post_id))
+    post_id = int(post_id_str)
+
+    row = owner_only(callback, post_id)
     if not row:
         await state.clear()
         await callback.answer("Нет доступа", show_alert=True)
         return
+
+    await state.update_data(edit_post_id=post_id, edit_field="weight_kg")
 
     if value == "__manual__":
         await state.set_state(EditPostFlow.weight_manual)
@@ -8399,7 +8434,11 @@ async def edit_post_weight_pick(callback: CallbackQuery, state: FSMContext):
     updated_row = get_post(post_id)
     await callback.message.answer("✅ Объявление обновлено.", reply_markup=main_menu(callback.from_user.id))
     if updated_row:
-        await send_post_card(callback.message, updated_row, reply_markup=post_actions_kb(post_id, updated_row["status"]))
+        await send_post_card(
+            callback.message,
+            updated_row,
+            reply_markup=post_actions_kb(post_id, updated_row["status"])
+        )
 
     await callback.answer()
 
@@ -8455,15 +8494,16 @@ async def edit_post_value_input(message: Message, state: FSMContext):
         await send_post_card(message, row, reply_markup=post_actions_kb(post_id, row["status"]))
 
 
-@router.callback_query(F.data == "editpost_back_to_fields")
+@router.callback_query(F.data.startswith("editpost_back_to_fields:"))
 async def editpost_back_to_fields(callback: CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    post_id = data.get("edit_post_id")
-    if not post_id:
+    parts = callback.data.split(":", 1)
+    if len(parts) < 2 or not parts[1].isdigit():
         await callback.answer("Объявление не найдено", show_alert=True)
         return
 
-    row = owner_only(callback, int(post_id))
+    post_id = int(parts[1])
+
+    row = owner_only(callback, post_id)
     if not row:
         await callback.answer("Нет доступа", show_alert=True)
         return
@@ -8476,6 +8516,7 @@ async def editpost_back_to_fields(callback: CallbackQuery, state: FSMContext):
         [InlineKeyboardButton(text="Контакт", callback_data=f"editfield:contact_note:{post_id}")],
         [InlineKeyboardButton(text="Вес", callback_data=f"editfield:weight_kg:{post_id}")],
     ])
+
     await callback.message.answer("Выберите, что изменить:", reply_markup=kb)
     await callback.answer()
 

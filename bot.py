@@ -329,6 +329,12 @@ MENU_TEXTS = {
     ),
 }
 
+EDIT_FIELD_PROMPTS = {
+    "description": "Введите новое описание:",
+    "contact_note": "Введите новые контактные данные:",
+    "weight_kg": "Выберите новый вес:",
+}
+
 WELCOME_TEXT = (
     "👋 <b>Привет.</b>\n\n"
     "Это <b>Попутчик Китай</b> — бот для передачи посылок через попутчиков.\n\n"
@@ -1778,6 +1784,13 @@ def weight_select_kb():
     rows = chunk_buttons([(w, w) for w in POPULAR_WEIGHTS], "weightpick", 2)
     rows.append([InlineKeyboardButton(text=MANUAL_WEIGHT, callback_data="weightpick:__manual__")])
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="create_back")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def edit_weight_select_kb():
+    rows = chunk_buttons([(w, w) for w in POPULAR_WEIGHTS], "editweightpick", 2)
+    rows.append([InlineKeyboardButton(text=MANUAL_WEIGHT, callback_data="editweightpick:__manual__")])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="editpost_back_to_fields")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -8319,19 +8332,105 @@ async def edit_post_entry(callback: CallbackQuery, state: FSMContext):
 
 class EditPostFlow(StatesGroup):
     waiting_value = State()
+    weight_pick = State()
+    weight_manual = State()
 
 
 @router.callback_query(F.data.startswith("editfield:"))
 async def edit_post_field_pick(callback: CallbackQuery, state: FSMContext):
     _, field, post_id = callback.data.split(":")
-    row = owner_only(callback, int(post_id))
+    post_id = int(post_id)
+    row = owner_only(callback, post_id)
     if not row:
         await callback.answer("Нет доступа", show_alert=True)
         return
+
+    await state.update_data(edit_post_id=post_id, edit_field=field)
+
+    if field == "weight_kg":
+        await state.set_state(EditPostFlow.weight_pick)
+        await callback.message.answer(
+            EDIT_FIELD_PROMPTS["weight_kg"],
+            reply_markup=edit_weight_select_kb()
+        )
+        await callback.answer()
+        return
+
     await state.set_state(EditPostFlow.waiting_value)
-    await state.update_data(edit_post_id=int(post_id), edit_field=field)
-    await callback.message.answer("Введите новое значение:")
+    await callback.message.answer(
+        EDIT_FIELD_PROMPTS.get(field, "Введите новое значение:")
+    )
     await callback.answer()
+
+
+@router.callback_query(F.data.startswith("editweightpick:"))
+async def edit_post_weight_pick(callback: CallbackQuery, state: FSMContext):
+    value = callback.data.split(":", 1)[1]
+    data = await state.get_data()
+    post_id = data.get("edit_post_id")
+
+    if not post_id:
+        await state.clear()
+        await callback.answer("Объявление не найдено", show_alert=True)
+        return
+
+    row = owner_only(callback, int(post_id))
+    if not row:
+        await state.clear()
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    if value == "__manual__":
+        await state.set_state(EditPostFlow.weight_manual)
+        await callback.message.answer("Введите новый вес:")
+        await callback.answer()
+        return
+
+    ok = update_post_record(post_id, callback.from_user.id, {"weight_kg": value})
+    await state.clear()
+
+    if not ok:
+        await callback.message.answer("Не удалось обновить объявление.")
+        await callback.answer()
+        return
+
+    await try_update_channel_post(callback.bot, post_id)
+
+    updated_row = get_post(post_id)
+    await callback.message.answer("✅ Объявление обновлено.", reply_markup=main_menu(callback.from_user.id))
+    if updated_row:
+        await send_post_card(callback.message, updated_row, reply_markup=post_actions_kb(post_id, updated_row["status"]))
+
+    await callback.answer()
+
+
+@router.message(EditPostFlow.weight_manual)
+async def edit_post_weight_manual_input(message: Message, state: FSMContext):
+    data = await state.get_data()
+    post_id = data.get("edit_post_id")
+
+    if not post_id:
+        await state.clear()
+        return
+
+    value = (message.text or "").strip()
+    if not value:
+        await message.answer("Введите новый вес:")
+        return
+
+    ok = update_post_record(post_id, message.from_user.id, {"weight_kg": value})
+    await state.clear()
+
+    if not ok:
+        await message.answer("Не удалось обновить объявление.")
+        return
+
+    await try_update_channel_post(message.bot, post_id)
+
+    row = get_post(post_id)
+    await message.answer("✅ Объявление обновлено.", reply_markup=main_menu(message.from_user.id))
+    if row:
+        await send_post_card(message, row, reply_markup=post_actions_kb(post_id, row["status"]))
 
 
 @router.message(EditPostFlow.waiting_value)
@@ -8354,6 +8453,31 @@ async def edit_post_value_input(message: Message, state: FSMContext):
     await message.answer("✅ Объявление обновлено.", reply_markup=main_menu(message.from_user.id))
     if row:
         await send_post_card(message, row, reply_markup=post_actions_kb(post_id, row["status"]))
+
+
+@router.callback_query(F.data == "editpost_back_to_fields")
+async def editpost_back_to_fields(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    post_id = data.get("edit_post_id")
+    if not post_id:
+        await callback.answer("Объявление не найдено", show_alert=True)
+        return
+
+    row = owner_only(callback, int(post_id))
+    if not row:
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    await state.clear()
+    await state.update_data(edit_post_id=post_id)
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Описание", callback_data=f"editfield:description:{post_id}")],
+        [InlineKeyboardButton(text="Контакт", callback_data=f"editfield:contact_note:{post_id}")],
+        [InlineKeyboardButton(text="Вес", callback_data=f"editfield:weight_kg:{post_id}")],
+    ])
+    await callback.message.answer("Выберите, что изменить:", reply_markup=kb)
+    await callback.answer()
 
 
 @router.callback_query(F.data.startswith("blockuser:"))

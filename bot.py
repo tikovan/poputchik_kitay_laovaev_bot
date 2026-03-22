@@ -8494,6 +8494,55 @@ async def edit_post_value_input(message: Message, state: FSMContext):
         await send_post_card(message, row, reply_markup=post_actions_kb(post_id, row["status"]))
 
 
+@router.callback_query(F.data.startswith("editweightpick:"))
+async def edit_post_weight_pick(callback: CallbackQuery, state: FSMContext):
+    print("CLICK:", callback.data)
+
+    parts = callback.data.split(":", 2)
+    if len(parts) != 3:
+        await callback.answer("Ошибка", show_alert=True)
+        return
+
+    _, post_id_str, value = parts
+
+    if not post_id_str.isdigit():
+        await callback.answer("Ошибка ID", show_alert=True)
+        return
+
+    post_id = int(post_id_str)
+
+    row = owner_only(callback, post_id)
+    if not row:
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    if value == "__manual__":
+        await state.set_state(EditPostFlow.weight_manual)
+        await callback.message.answer("Введите новый вес:")
+        await callback.answer()
+        return
+
+    ok = update_post_record(post_id, callback.from_user.id, {"weight_kg": value})
+
+    if not ok:
+        await callback.message.answer("Ошибка обновления")
+        await callback.answer()
+        return
+
+    await try_update_channel_post(callback.bot, post_id)
+
+    updated_row = get_post(post_id)
+
+    await callback.message.answer("✅ Объявление обновлено")
+    await send_post_card(
+        callback.message,
+        updated_row,
+        reply_markup=post_actions_kb(post_id, updated_row["status"])
+    )
+
+    await callback.answer()
+
+
 @router.callback_query(F.data.startswith("editpost_back_to_fields:"))
 async def editpost_back_to_fields(callback: CallbackQuery, state: FSMContext):
     parts = callback.data.split(":", 1)

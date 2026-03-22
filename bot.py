@@ -1,9 +1,10 @@
 import asyncio
 import html
-import os
+import os 
 import re
 import sqlite3
 import time
+import logging
 from functools import lru_cache
 from contextlib import closing
 from datetime import datetime, timedelta
@@ -30,6 +31,16 @@ from aiogram.types import (
 from dotenv import load_dotenv
 
 load_dotenv()
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    handlers=[
+        logging.FileHandler("bot.log", encoding="utf-8"),
+        logging.StreamHandler(),
+    ],
+)
+logger = logging.getLogger("poputchik_bot")
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 DB_PATH = os.getenv("DB_PATH", "/data/bot.db")
@@ -68,6 +79,13 @@ BUMP_PRICE_AMOUNT = int(os.getenv("BUMP_PRICE_AMOUNT", "10"))
 BUMP_PRICE_CURRENCY = os.getenv("BUMP_PRICE_CURRENCY", "CNY")
 DISPUTE_RESPONSE_HOURS = int(os.getenv("DISPUTE_RESPONSE_HOURS", "48"))
 AUTO_HIDE_COMPLAINTS_THRESHOLD = int(os.getenv("AUTO_HIDE_COMPLAINTS_THRESHOLD", "3"))
+POSTS_PAGE_SIZE = int(os.getenv("POSTS_PAGE_SIZE", "10"))
+INLINE_PAGE_SIZE = int(os.getenv("INLINE_PAGE_SIZE", "10"))
+MY_POSTS_PAGE_SIZE = int(os.getenv("MY_POSTS_PAGE_SIZE", "10"))
+EXPIRE_WARN_DAYS = int(os.getenv("EXPIRE_WARN_DAYS", "3"))
+MAX_POSTS_PER_10_MIN = int(os.getenv("MAX_POSTS_PER_10_MIN", "3"))
+PROFILE_CACHE_TTL = int(os.getenv("PROFILE_CACHE_TTL", "300"))
+SQLITE_BUSY_TIMEOUT_MS = int(os.getenv("SQLITE_BUSY_TIMEOUT_MS", "5000"))
 
 router = Router()
 
@@ -565,9 +583,56 @@ def post_deeplink(post_id: int) -> str:
 
 
 def connect_db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=max(5, SQLITE_BUSY_TIMEOUT_MS // 1000), check_same_thread=False)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA temp_store=MEMORY")
+    conn.execute("PRAGMA cache_size=-64000")
     return conn
+
+
+def invalidate_user_profile_cache(user_id: Optional[int] = None):
+    if user_id is None:
+        _PROFILE_CACHE.clear()
+        return
+    _PROFILE_CACHE.pop(user_id, None)
+
+
+_PROFILE_CACHE: dict[int, tuple[int, dict]] = {}
+
+
+def cache_user_profile(user_id: int, payload: dict):
+    _PROFILE_CACHE[user_id] = (now_ts(), payload)
+
+
+def get_cached_user_profile(user_id: int) -> Optional[dict]:
+    item = _PROFILE_CACHE.get(user_id)
+    if not item:
+        return None
+    ts_cached, payload = item
+    if now_ts() - ts_cached > PROFILE_CACHE_TTL:
+        _PROFILE_CACHE.pop(user_id, None)
+        return None
+    return payload
+
+
+def run_db_write(query: str, params: tuple = ()):
+    last_error = None
+    for _ in range(3):
+        try:
+            with closing(connect_db()) as conn, conn:
+                cur = conn.execute(query, params)
+                return cur
+        except sqlite3.OperationalError as e:
+            last_error = e
+            if "locked" not in str(e).lower():
+                raise
+            time.sleep(0.15)
+    if last_error:
+        raise last_error
 
 
 def go_my_deals_kb():
@@ -776,6 +841,27 @@ def init_db():
         """)
 
 
+        conn.executescript("""
+        CREATE TABLE IF NOT EXISTS chat_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            post_id INTEGER NOT NULL,
+            deal_id INTEGER,
+            from_user_id INTEGER NOT NULL,
+            to_user_id INTEGER NOT NULL,
+            message_text TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            is_read INTEGER NOT NULL DEFAULT 0
+        );
+
+        CREATE TABLE IF NOT EXISTS user_blacklist (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            blocked_user_id INTEGER NOT NULL,
+            created_at INTEGER NOT NULL,
+            UNIQUE(user_id, blocked_user_id)
+        );
+        """)
+
         # ---- дополнительные индексы для ускорения ----
 
         conn.execute("""
@@ -817,6 +903,14 @@ def init_db():
         ensure_column(conn, "users", "active_chat_deal_id", "active_chat_deal_id INTEGER")
         ensure_column(conn, "users", "verified_at", "verified_at INTEGER")
         ensure_column(conn, "users", "verification_type", "verification_type TEXT")
+        ensure_column(conn, "posts", "expire_warned_at", "expire_warned_at INTEGER")
+        ensure_column(conn, "route_subscriptions", "from_city", "from_city TEXT")
+        ensure_column(conn, "route_subscriptions", "to_city", "to_city TEXT")
+
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_chat_messages_to_read ON chat_messages(to_user_id, is_read, created_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_chat_messages_post ON chat_messages(post_id, created_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_blacklist_user ON user_blacklist(user_id, blocked_user_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_route_subscriptions_city ON route_subscriptions(post_type, from_country, from_city, to_country, to_city)")
 
         conn.execute("UPDATE deals SET updated_at = created_at WHERE updated_at IS NULL OR updated_at = 0")
         conn.execute("UPDATE deals SET status='contacted' WHERE status='pending'")
@@ -853,20 +947,30 @@ def set_onboarding_completed(user_id: int):
         )
 
 
-def get_recent_posts(limit: int = 10) -> List[sqlite3.Row]:
+def get_recent_posts(limit: int = 10, offset: int = 0) -> List[sqlite3.Row]:
     with closing(connect_db()) as conn:
         rows = conn.execute("""
-            SELECT p.*, u.username, u.full_name
+            SELECT p.*, u.username, u.full_name, COALESCE(u.is_verified, 0) AS is_verified
             FROM posts p
             LEFT JOIN users u ON u.user_id = p.user_id
             WHERE p.status='active'
               AND (p.expires_at IS NULL OR p.expires_at > ?)
-            ORDER BY COALESCE(p.bumped_at, p.created_at) DESC
-            LIMIT 100
-        """, (now_ts(),)).fetchall()
+            ORDER BY COALESCE(u.is_verified, 0) DESC, COALESCE(p.bumped_at, p.created_at) DESC
+            LIMIT ? OFFSET ?
+        """, (now_ts(), limit, offset)).fetchall()
 
-    rows = sort_posts_with_verified_priority(rows)
-    return rows[:limit]
+    return rows
+
+
+def count_recent_posts() -> int:
+    with closing(connect_db()) as conn:
+        row = conn.execute("""
+            SELECT COUNT(*) AS c
+            FROM posts
+            WHERE status='active'
+              AND (expires_at IS NULL OR expires_at > ?)
+        """, (now_ts(),)).fetchone()
+        return int(row["c"] or 0)
     
 
 def is_admin(user_id: int) -> bool:
@@ -886,11 +990,13 @@ def ban_user(user_id: int):
             "UPDATE posts SET status=?, updated_at=? WHERE user_id=? AND status IN ('active','pending','inactive')",
             (STATUS_INACTIVE, now_ts(), user_id)
         )
+    invalidate_user_profile_cache(user_id)
 
 
 def unban_user(user_id: int):
     with closing(connect_db()) as conn, conn:
         conn.execute("UPDATE users SET is_banned=0 WHERE user_id=?", (user_id,))
+    invalidate_user_profile_cache(user_id)
 
 
 def anti_spam_check(user_id: int) -> Optional[str]:
@@ -1004,9 +1110,13 @@ def get_user_profile_short(user_id: int) -> dict:
     }
 
 
-@lru_cache(maxsize=2000)
 def get_user_profile_short_cached(user_id: int) -> dict:
-    return get_user_profile_short(user_id)
+    cached = get_cached_user_profile(user_id)
+    if cached is not None:
+        return cached
+    payload = get_user_profile_short(user_id)
+    cache_user_profile(user_id, payload)
+    return payload
     
 
 def user_completed_deals_count(user_id: int) -> int:
@@ -1045,7 +1155,7 @@ def is_user_verified(user_id: int) -> bool:
 
 def sort_posts_with_verified_priority(rows: List[sqlite3.Row]) -> List[sqlite3.Row]:
     def sort_key(row):
-        verified = 1 if is_user_verified(row["user_id"]) else 0
+        verified = int(row["is_verified"]) if "is_verified" in row.keys() else (1 if is_user_verified(row["user_id"]) else 0)
         bumped_or_created = row["bumped_at"] or row["created_at"] or 0
         return (verified, bumped_or_created)
 
@@ -1602,7 +1712,7 @@ async def show_onboarding_screen(target, screen: int):
         else:
             await target.answer(text, reply_markup=kb)
     except Exception as e:
-        print(f"SHOW_ONBOARDING_SCREEN ERROR: {e}")
+        logger.exception("SHOW_ONBOARDING_SCREEN ERROR: %s", e)
         if hasattr(target, "answer"):
             await target.answer(text, reply_markup=kb)
 
@@ -1795,6 +1905,9 @@ def post_actions_kb(post_id: int, status: str):
             InlineKeyboardButton(text="👀 Совпадения", callback_data=f"coincidences:{post_id}")
         ])
         rows.append([
+            InlineKeyboardButton(text="✏️ Редактировать", callback_data=f"editpost:{post_id}")
+        ])
+        rows.append([
             InlineKeyboardButton(text="📤 Поделиться", url=share_url)
         ])
 
@@ -1805,6 +1918,9 @@ def post_actions_kb(post_id: int, status: str):
         ])
         rows.append([
             InlineKeyboardButton(text="👀 Совпадения", callback_data=f"coincidences:{post_id}")
+        ])
+        rows.append([
+            InlineKeyboardButton(text="✏️ Редактировать", callback_data=f"editpost:{post_id}")
         ])
 
     elif status == STATUS_PENDING:
@@ -2701,41 +2817,87 @@ def format_verification_status(status: str) -> str:
     return mapping.get(status, status)
 
 
-def search_posts_inline(query: str, limit: int = 10) -> List[sqlite3.Row]:
+def search_posts_inline(query: str, limit: int = 10, offset: int = 0, post_type: Optional[str] = None, from_country: Optional[str] = None, to_country: Optional[str] = None) -> List[sqlite3.Row]:
     q = f"%{query.strip().lower()}%"
+    sql = [
+        """
+        SELECT p.*, u.username, u.full_name, COALESCE(u.is_verified, 0) AS is_verified
+        FROM posts p
+        LEFT JOIN users u ON u.user_id = p.user_id
+        WHERE p.status='active'
+          AND (p.expires_at IS NULL OR p.expires_at > ?)
+        """
+    ]
+    params = [now_ts()]
+
+    if query.strip():
+        sql.append("""
+          AND (
+                lower(p.from_country) LIKE ?
+             OR lower(COALESCE(p.from_city, '')) LIKE ?
+             OR lower(p.to_country) LIKE ?
+             OR lower(COALESCE(p.to_city, '')) LIKE ?
+             OR lower(COALESCE(p.description, '')) LIKE ?
+             OR lower(COALESCE(p.travel_date, '')) LIKE ?
+             OR lower(COALESCE(p.weight_kg, '')) LIKE ?
+          )
+        """)
+        params.extend([q, q, q, q, q, q, q])
+
+    if post_type:
+        sql.append(" AND p.post_type=? ")
+        params.append(post_type)
+    if from_country:
+        sql.append(" AND p.from_country=? ")
+        params.append(from_country)
+    if to_country:
+        sql.append(" AND p.to_country=? ")
+        params.append(to_country)
+
+    sql.append(" ORDER BY COALESCE(u.is_verified, 0) DESC, COALESCE(p.bumped_at, p.created_at) DESC LIMIT ? OFFSET ? ")
+    params.extend([limit, offset])
 
     with closing(connect_db()) as conn:
-        if query.strip():
-            rows = conn.execute("""
-                SELECT p.*, u.username, u.full_name
-                FROM posts p
-                LEFT JOIN users u ON u.user_id = p.user_id
-                WHERE p.status='active'
-                  AND (p.expires_at IS NULL OR p.expires_at > ?)
-                  AND (
-                        lower(p.from_country) LIKE ?
-                     OR lower(COALESCE(p.from_city, '')) LIKE ?
-                     OR lower(p.to_country) LIKE ?
-                     OR lower(COALESCE(p.to_city, '')) LIKE ?
-                     OR lower(COALESCE(p.description, '')) LIKE ?
-                     OR lower(COALESCE(p.travel_date, '')) LIKE ?
-                  )
-                ORDER BY COALESCE(p.bumped_at, p.created_at) DESC
-                LIMIT 100
-            """, (now_ts(), q, q, q, q, q, q)).fetchall()
-        else:
-            rows = conn.execute("""
-                SELECT p.*, u.username, u.full_name
-                FROM posts p
-                LEFT JOIN users u ON u.user_id = p.user_id
-                WHERE p.status='active'
-                  AND (p.expires_at IS NULL OR p.expires_at > ?)
-                ORDER BY COALESCE(p.bumped_at, p.created_at) DESC
-                LIMIT 100
-            """, (now_ts(),)).fetchall()
+        rows = conn.execute("".join(sql), tuple(params)).fetchall()
+    return rows
 
-    rows = sort_posts_with_verified_priority(rows)
-    return rows[:limit]
+
+def count_search_posts(query: str = "", post_type: Optional[str] = None, from_country: Optional[str] = None, to_country: Optional[str] = None) -> int:
+    q = f"%{query.strip().lower()}%"
+    sql = [
+        """
+        SELECT COUNT(*) AS c
+        FROM posts p
+        WHERE p.status='active'
+          AND (p.expires_at IS NULL OR p.expires_at > ?)
+        """
+    ]
+    params = [now_ts()]
+    if query.strip():
+        sql.append("""
+          AND (
+                lower(p.from_country) LIKE ?
+             OR lower(COALESCE(p.from_city, '')) LIKE ?
+             OR lower(p.to_country) LIKE ?
+             OR lower(COALESCE(p.to_city, '')) LIKE ?
+             OR lower(COALESCE(p.description, '')) LIKE ?
+             OR lower(COALESCE(p.travel_date, '')) LIKE ?
+             OR lower(COALESCE(p.weight_kg, '')) LIKE ?
+          )
+        """)
+        params.extend([q, q, q, q, q, q, q])
+    if post_type:
+        sql.append(" AND p.post_type=? ")
+        params.append(post_type)
+    if from_country:
+        sql.append(" AND p.from_country=? ")
+        params.append(from_country)
+    if to_country:
+        sql.append(" AND p.to_country=? ")
+        params.append(to_country)
+    with closing(connect_db()) as conn:
+        row = conn.execute("".join(sql), tuple(params)).fetchone()
+        return int(row["c"] or 0)
 
 
 def get_popular_routes(limit: int = 10) -> List[sqlite3.Row]:
@@ -2751,21 +2913,32 @@ def get_popular_routes(limit: int = 10) -> List[sqlite3.Row]:
         """, (now_ts(), limit)).fetchall()
 
 
-def search_route_posts_all(from_country: str, to_country: str, limit: int = 20) -> List[sqlite3.Row]:
-    with closing(connect_db()) as conn:
-        rows = conn.execute("""
-            SELECT p.*, u.username, u.full_name
+def search_route_posts_all(from_country: str, to_country: str, limit: int = 20, offset: int = 0, from_city: Optional[str] = None, to_city: Optional[str] = None, post_type: Optional[str] = None) -> List[sqlite3.Row]:
+    sql = [
+        """
+            SELECT p.*, u.username, u.full_name, COALESCE(u.is_verified, 0) AS is_verified
             FROM posts p
             LEFT JOIN users u ON u.user_id = p.user_id
             WHERE p.from_country=? AND p.to_country=?
               AND p.status='active'
               AND (p.expires_at IS NULL OR p.expires_at > ?)
-            ORDER BY COALESCE(p.bumped_at, p.created_at) DESC
-            LIMIT 100
-        """, (from_country, to_country, now_ts())).fetchall()
-
-    rows = sort_posts_with_verified_priority(rows)
-    return rows[:limit]
+        """
+    ]
+    params = [from_country, to_country, now_ts()]
+    if from_city:
+        sql.append(" AND COALESCE(p.from_city, '')=? ")
+        params.append(from_city)
+    if to_city:
+        sql.append(" AND COALESCE(p.to_city, '')=? ")
+        params.append(to_city)
+    if post_type:
+        sql.append(" AND p.post_type=? ")
+        params.append(post_type)
+    sql.append(" ORDER BY COALESCE(u.is_verified, 0) DESC, COALESCE(p.bumped_at, p.created_at) DESC LIMIT ? OFFSET ? ")
+    params.extend([limit, offset])
+    with closing(connect_db()) as conn:
+        rows = conn.execute("".join(sql), tuple(params)).fetchall()
+    return rows
     
 
 def service_stats() -> sqlite3.Row:
@@ -2824,18 +2997,46 @@ def create_post_record(data: dict, user_id: int) -> int:
         return int(cur.lastrowid)
 
 
-def add_route_subscription(user_id: int, post_type: str, from_country: str, to_country: str):
+def update_post_record(post_id: int, user_id: int, updates: dict) -> bool:
+    allowed = {
+        "from_country", "from_city", "to_country", "to_city",
+        "travel_date", "weight_kg", "description", "contact_note", "photo_file_id"
+    }
+    payload = {k: v for k, v in updates.items() if k in allowed}
+    if not payload:
+        return False
+    payload["updated_at"] = now_ts()
+    if "travel_date" in payload:
+        payload["expires_at"] = calculate_post_expires_at(now_ts(), payload.get("travel_date"), POST_TTL_DAYS)
+    sets = ", ".join(f"{key}=?" for key in payload.keys())
+    params = list(payload.values()) + [post_id, user_id]
+    with closing(connect_db()) as conn, conn:
+        cur = conn.execute(f"UPDATE posts SET {sets} WHERE id=? AND user_id=?", tuple(params))
+        return cur.rowcount > 0
+
+
+def user_post_create_rate_limited(user_id: int) -> bool:
+    with closing(connect_db()) as conn:
+        row = conn.execute("""
+            SELECT COUNT(*) AS c
+            FROM posts
+            WHERE user_id=? AND created_at>=?
+        """, (user_id, now_ts() - 600)).fetchone()
+        return int(row["c"] or 0) >= MAX_POSTS_PER_10_MIN
+
+
+def add_route_subscription(user_id: int, post_type: str, from_country: str, to_country: str, from_city: Optional[str] = None, to_city: Optional[str] = None):
     with closing(connect_db()) as conn, conn:
         exists = conn.execute("""
             SELECT id FROM route_subscriptions
-            WHERE user_id=? AND post_type=? AND from_country=? AND to_country=? LIMIT 1
-        """, (user_id, post_type, from_country, to_country)).fetchone()
+            WHERE user_id=? AND post_type=? AND from_country=? AND COALESCE(from_city, '')=COALESCE(?, '') AND to_country=? AND COALESCE(to_city, '')=COALESCE(?, '') LIMIT 1
+        """, (user_id, post_type, from_country, from_city, to_country, to_city)).fetchone()
         if exists:
             return
         conn.execute("""
-            INSERT INTO route_subscriptions (user_id, post_type, from_country, to_country, created_at)
-            VALUES (?, ?, ?, ?, ?)
-        """, (user_id, post_type, from_country, to_country, now_ts()))
+            INSERT INTO route_subscriptions (user_id, post_type, from_country, from_city, to_country, to_city, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (user_id, post_type, from_country, from_city, to_country, to_city, now_ts()))
 
 
 def list_route_subscriptions(user_id: int) -> List[sqlite3.Row]:
@@ -2852,6 +3053,58 @@ def delete_subscription(user_id: int, sub_id: int) -> bool:
     with closing(connect_db()) as conn, conn:
         cur = conn.execute("DELETE FROM route_subscriptions WHERE id=? AND user_id=?", (sub_id, user_id))
         return cur.rowcount > 0
+
+
+def is_user_blocked(user_id: int, blocked_user_id: int) -> bool:
+    with closing(connect_db()) as conn:
+        row = conn.execute("SELECT 1 FROM user_blacklist WHERE user_id=? AND blocked_user_id=? LIMIT 1", (user_id, blocked_user_id)).fetchone()
+        return row is not None
+
+
+def add_user_to_blacklist(user_id: int, blocked_user_id: int) -> bool:
+    if user_id == blocked_user_id:
+        return False
+    with closing(connect_db()) as conn, conn:
+        try:
+            conn.execute("INSERT INTO user_blacklist(user_id, blocked_user_id, created_at) VALUES (?, ?, ?)", (user_id, blocked_user_id, now_ts()))
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+
+def remove_user_from_blacklist(user_id: int, blocked_user_id: int) -> bool:
+    with closing(connect_db()) as conn, conn:
+        cur = conn.execute("DELETE FROM user_blacklist WHERE user_id=? AND blocked_user_id=?", (user_id, blocked_user_id))
+        return cur.rowcount > 0
+
+
+def save_chat_message(post_id: int, from_user_id: int, to_user_id: int, message_text: str, deal_id: Optional[int] = None):
+    with closing(connect_db()) as conn, conn:
+        conn.execute("""
+            INSERT INTO chat_messages(post_id, deal_id, from_user_id, to_user_id, message_text, created_at, is_read)
+            VALUES (?, ?, ?, ?, ?, ?, 0)
+        """, (post_id, deal_id, from_user_id, to_user_id, message_text, now_ts()))
+
+
+def unread_chat_count(user_id: int) -> int:
+    with closing(connect_db()) as conn:
+        row = conn.execute("SELECT COUNT(*) AS c FROM chat_messages WHERE to_user_id=? AND is_read=0", (user_id,)).fetchone()
+        return int(row["c"] or 0)
+
+
+def mark_chat_read(user_id: int, partner_user_id: int, post_id: int):
+    with closing(connect_db()) as conn, conn:
+        conn.execute("UPDATE chat_messages SET is_read=1 WHERE to_user_id=? AND from_user_id=? AND post_id=? AND is_read=0", (user_id, partner_user_id, post_id))
+
+
+def get_chat_history(user_a: int, user_b: int, post_id: int, limit: int = 20) -> List[sqlite3.Row]:
+    with closing(connect_db()) as conn:
+        return conn.execute("""
+            SELECT * FROM chat_messages
+            WHERE post_id=? AND ((from_user_id=? AND to_user_id=?) OR (from_user_id=? AND to_user_id=?))
+            ORDER BY created_at DESC
+            LIMIT ?
+        """, (post_id, user_a, user_b, user_b, user_a, limit)).fetchall()
 
 
 def reserve_coincidence_notification(post_a_id: int, post_b_id: int) -> bool:
@@ -3214,7 +3467,7 @@ async def safe_publish(bot: Bot, post_id: int):
         if coro:
             await coro
     except Exception as e:
-        print(f"CHANNEL PUBLISH ERROR: {e}")
+        logger.exception("CHANNEL PUBLISH ERROR: %s", e)
 
 
 async def remove_post_from_channel(bot: Bot, row):
@@ -3226,7 +3479,7 @@ async def remove_post_from_channel(bot: Bot, row):
     try:
         await bot.delete_message(CHANNEL_USERNAME, channel_message_id)
     except Exception as e:
-        print(f"CHANNEL DELETE ERROR: {e}")
+        logger.exception("CHANNEL DELETE ERROR: %s", e)
 
 
 async def notify_coincidence_users(bot: Bot, new_post_id: int):
@@ -3261,7 +3514,7 @@ async def notify_coincidence_users(bot: Bot, new_post_id: int):
                 prefix_text=f"🔔 Найдено новое совпадение!\n\n{intro}"
             )
         except Exception as e:
-            print(f"COINCIDENCE SEND A ERROR: {e}")
+            logger.exception("COINCIDENCE SEND A ERROR: %s", e)
 
         try:
             await send_post_card_to_user(
@@ -3271,7 +3524,7 @@ async def notify_coincidence_users(bot: Bot, new_post_id: int):
                 prefix_text=f"🔔 Найдено новое совпадение!\n\n{intro}"
             )
         except Exception as e:
-            print(f"COINCIDENCE SEND B ERROR: {e}")
+            logger.exception("COINCIDENCE SEND B ERROR: %s", e)
 
 
 async def notify_subscribers(bot: Bot, post_id: int):
@@ -3282,10 +3535,15 @@ async def notify_subscribers(bot: Bot, post_id: int):
     with closing(connect_db()) as conn:
         subscribers = conn.execute("""
             SELECT * FROM route_subscriptions
-            WHERE post_type=? AND from_country=? AND to_country=? AND user_id != ?
+            WHERE post_type=?
+              AND from_country=?
+              AND to_country=?
+              AND user_id != ?
+              AND (from_city IS NULL OR from_city='' OR from_city=COALESCE(?, ''))
+              AND (to_city IS NULL OR to_city='' OR to_city=COALESCE(?, ''))
             ORDER BY created_at DESC
             LIMIT 50
-        """, (row["post_type"], row["from_country"], row["to_country"], row["user_id"])).fetchall()
+        """, (row["post_type"], row["from_country"], row["to_country"], row["user_id"], row["from_city"], row["to_city"])).fetchall()
 
     for sub in subscribers:
         try:
@@ -3296,7 +3554,7 @@ async def notify_subscribers(bot: Bot, post_id: int):
                 prefix_text="🔔 По вашей подписке появилось новое объявление:"
             )
         except Exception as e:
-            print(f"SUBSCRIBER SEND ERROR: {e}")
+            logger.exception("SUBSCRIBER SEND ERROR: %s", e)
 
 
 async def run_global_coincidence_scan(bot: Bot):
@@ -3340,7 +3598,7 @@ async def run_global_coincidence_scan(bot: Bot):
                         prefix_text=f"🔔 Найдено новое совпадение!\n\n{intro}"
                     )
                 except Exception as e:
-                    print(f"GLOBAL COINCIDENCE SEND A ERROR: {e}")
+                    logger.exception("GLOBAL COINCIDENCE SEND A ERROR: %s", e)
 
                 try:
                     await send_post_card_to_user(
@@ -3350,10 +3608,10 @@ async def run_global_coincidence_scan(bot: Bot):
                         prefix_text=f"🔔 Найдено новое совпадение!\n\n{intro}"
                     )
                 except Exception as e:
-                    print(f"GLOBAL COINCIDENCE SEND B ERROR: {e}")
+                    logger.exception("GLOBAL COINCIDENCE SEND B ERROR: %s", e)
 
     except Exception as e:
-        print(f"GLOBAL COINCIDENCE SCAN ERROR: {e}")
+        logger.exception("GLOBAL COINCIDENCE SCAN ERROR: %s", e)
 
 
 async def expire_old_posts(bot: Bot):
@@ -3389,9 +3647,9 @@ async def expire_old_posts(bot: Bot):
                             reply_markup=main_menu(row["user_id"])
                         )
                     except Exception as e:
-                        print(f"EXPIRE USER NOTIFY ERROR: {e}")
+                        logger.exception("EXPIRE USER NOTIFY ERROR: %s", e)
         except Exception as e:
-            print(f"EXPIRE LOOP ERROR: {e}")
+            logger.exception("EXPIRE LOOP ERROR: %s", e)
 
         await asyncio.sleep(300)
 
@@ -3448,7 +3706,7 @@ async def dispute_timeout_loop(bot: Bot):
                         reply_markup=dispute_failed_against_kb(deal["id"]) if deal else None
                     )
                 except Exception as e:
-                    print(f"DISPUTE TIMEOUT TARGET ERROR: {e}")
+                    logger.exception("DISPUTE TIMEOUT TARGET ERROR: %s", e)
 
                 try:
                     await bot.send_message(
@@ -3460,7 +3718,7 @@ async def dispute_timeout_loop(bot: Bot):
                         reply_markup=dispute_failed_opened_by_kb(deal["id"]) if deal else None
                     )
                 except Exception as e:
-                    print(f"DISPUTE TIMEOUT OPENER ERROR: {e}")
+                    logger.exception("DISPUTE TIMEOUT OPENER ERROR: %s", e)
 
                 for admin_id in ADMIN_IDS:
                     try:
@@ -3473,7 +3731,7 @@ async def dispute_timeout_loop(bot: Bot):
                         pass
 
         except Exception as e:
-            print(f"DISPUTE TIMEOUT LOOP ERROR: {e}")
+            logger.exception("DISPUTE TIMEOUT LOOP ERROR: %s", e)
 
         await asyncio.sleep(600)
 
@@ -3492,6 +3750,13 @@ async def begin_create(message: Message, state: FSMContext, post_type: str):
     if spam_error:
         await message.answer(
             spam_error,
+            reply_markup=main_menu(message.from_user.id)
+        )
+        return
+
+    if user_post_create_rate_limited(message.from_user.id):
+        await message.answer(
+            "Вы слишком часто создаете объявления. Подождите немного и попробуйте снова.",
             reply_markup=main_menu(message.from_user.id)
         )
         return
@@ -4020,7 +4285,7 @@ async def admin_contact_message(message: Message, state: FSMContext):
                 )
             )
         except Exception as e:
-            print(f"ADMIN CONTACT ERROR: {e}")
+            logger.exception("ADMIN CONTACT ERROR: %s", e)
 
     await message.answer(
         "📩 Ваше сообщение отправлено администратору.\n"
@@ -4032,7 +4297,8 @@ async def admin_contact_message(message: Message, state: FSMContext):
 @router.inline_query()
 async def inline_search_handler(inline_query: InlineQuery):
     query = (inline_query.query or "").strip()
-    rows = search_posts_inline(query, limit=10)
+    offset = int(inline_query.offset or "0") if (inline_query.offset or "0").isdigit() else 0
+    rows = search_posts_inline(query, limit=INLINE_PAGE_SIZE, offset=offset)
     results = []
 
     for row in rows:
@@ -4055,7 +4321,7 @@ async def inline_search_handler(inline_query: InlineQuery):
 
         results.append(
             InlineQueryResultArticle(
-                id=str(row["id"]),
+                id=f"{row['id']}_{offset}",
                 title=title[:256],
                 description=description,
                 input_message_content=InputTextMessageContent(
@@ -4079,23 +4345,8 @@ async def inline_search_handler(inline_query: InlineQuery):
                 ),
             )
         ]
-
-    await inline_query.answer(results, cache_time=1, is_personal=True)
-    
-    if not results:
-        results = [
-            InlineQueryResultArticle(
-                id="no_results",
-                title="Ничего не найдено",
-                description="Попробуйте: Китай Россия, Шэньчжэнь Москва, посылка, попутчик",
-                input_message_content=InputTextMessageContent(
-                    message_text=f"Ничего не найдено.\n\nОткрой бота и создай объявление: {bot_link()}",
-                    disable_web_page_preview=True,
-                ),
-            )
-        ]
-
-    await inline_query.answer(results, cache_time=1, is_personal=True)
+    next_offset = str(offset + INLINE_PAGE_SIZE) if len(rows) == INLINE_PAGE_SIZE else ""
+    await inline_query.answer(results, cache_time=1, is_personal=True, next_offset=next_offset)
 
 
 # =========================
@@ -4296,7 +4547,7 @@ async def start_handler(message: Message, state: FSMContext):
         )
 
     except Exception as e:
-        print(f"START HANDLER ERROR: {e}")
+        logger.exception("START HANDLER ERROR: %s", e)
         await message.answer(
             "Произошла ошибка при запуске бота. Попробуйте еще раз."
         )
@@ -4755,7 +5006,7 @@ async def verify_paid_handler(callback: CallbackQuery):
                 reply_markup=admin_verification_payment_kb(request_id, req["user_id"])
             )
         except Exception as e:
-            print(f"VERIF PAYMENT ADMIN NOTIFY ERROR: {e}")
+            logger.exception("VERIF PAYMENT ADMIN NOTIFY ERROR: %s", e)
 
     await callback.message.answer(
         "✅ Заявка на оплату отправлена администратору.\n"
@@ -4879,7 +5130,7 @@ async def verification_selfie_input(message: Message, state: FSMContext):
                     reply_markup=admin_verification_review_kb(request_id, req["user_id"])
                 )
         except Exception as e:
-            print(f"VERIF REVIEW ADMIN NOTIFY ERROR: {e}")
+            logger.exception("VERIF REVIEW ADMIN NOTIFY ERROR: %s", e)
 
     await message.answer(
         "✅ Документы отправлены на проверку.\n"
@@ -5020,7 +5271,7 @@ async def support_bug_input(message: Message, state: FSMContext):
         try:
             await message.bot.send_message(admin_id, admin_text)
         except Exception as e:
-            print(f"BUG REPORT SEND ERROR: {e}")
+            logger.exception("BUG REPORT SEND ERROR: %s", e)
 
     await message.answer(
         "✅ Сообщение о баге отправлено.",
@@ -5050,7 +5301,7 @@ async def support_help_input(message: Message, state: FSMContext):
         try:
             await message.bot.send_message(admin_id, admin_text)
         except Exception as e:
-            print(f"SUPPORT SEND ERROR: {e}")
+            logger.exception("SUPPORT SEND ERROR: %s", e)
 
     await message.answer(
         "✅ Ваше сообщение отправлено в поддержку.",
@@ -5150,15 +5401,8 @@ async def back_router(callback: CallbackQuery):
         await show_user_deals_sections(callback.message, callback.from_user.id)
 
     elif action == "new_posts":
-        posts = get_recent_posts(10)
-
-        if not posts:
-            await callback.message.answer("Новых объявлений пока нет.")
-        else:
-            await callback.message.answer("🆕 Новые объявления:")
-
-            for row in posts:
-                await send_post_card(callback.message, row, with_age=True)
+        await callback.message.answer("🆕 Новые объявления:")
+        await render_recent_posts_page(callback.message, 0)
 
     await callback.answer()
     
@@ -5498,14 +5742,14 @@ async def finalize_post(message: Message, state: FSMContext, bot: Bot):
                         reply_markup=admin_post_actions_kb(post_id)
                     )
                 except Exception as e:
-                    print(f"ADMIN NOTIFY ERROR: {e}")
+                    logger.exception("ADMIN NOTIFY ERROR: %s", e)
         else:
             await safe_publish(bot, post_id)
             await notify_coincidence_users(bot, post_id)
             await notify_subscribers(bot, post_id)
 
     except Exception as e:
-        print(f"FINALIZE_POST ERROR: {e}")
+        logger.exception("FINALIZE_POST ERROR: %s", e)
         await message.answer(
             f"Произошла ошибка при сохранении объявления: {html.escape(str(e))}",
             reply_markup=main_menu(message.from_user.id)
@@ -5518,20 +5762,7 @@ async def finalize_post(message: Message, state: FSMContext, bot: Bot):
 async def my_posts_handler(message: Message):
     upsert_user(message)
     await message.answer(MENU_TEXTS["my_posts"], reply_markup=main_menu(message.from_user.id))
-
-    with closing(connect_db()) as conn:
-        posts = conn.execute("""
-            SELECT * FROM posts
-            WHERE user_id=? AND status != 'deleted'
-            ORDER BY created_at DESC
-            LIMIT 30
-        """, (message.from_user.id,)).fetchall()
-
-    if not posts:
-        await message.answer("У вас пока нет объявлений.", reply_markup=main_menu(message.from_user.id))
-        return
-
-    await message.answer("📋 Ваши объявления:", reply_markup=my_posts_kb(posts))
+    await render_my_posts_page(message, message.from_user.id, 0)
 
 
 @router.callback_query(F.data.startswith("deal_review:"))
@@ -5665,7 +5896,7 @@ async def open_my_post(callback: CallbackQuery):
         await callback.answer()
 
     except Exception as e:
-        print(f"OPEN_MY_POST ERROR: {e}")
+        logger.exception("OPEN_MY_POST ERROR: %s", e)
         await callback.answer("Не удалось открыть объявление", show_alert=True)
         
 
@@ -5696,7 +5927,7 @@ async def deal_confirm_handler(callback: CallbackQuery):
                     reply_markup=deal_open_kb(fresh_deal, user_id)
                 )
             except Exception as e:
-                print(f"DEAL ALREADY CONFIRMED OWNER MARKUP ERROR: {e}")
+                logger.exception("DEAL ALREADY CONFIRMED OWNER MARKUP ERROR: %s", e)
             await callback.answer("Вы уже подтвердили завершение")
             return
 
@@ -5707,7 +5938,7 @@ async def deal_confirm_handler(callback: CallbackQuery):
                     reply_markup=deal_open_kb(fresh_deal, user_id)
                 )
             except Exception as e:
-                print(f"DEAL ALREADY CONFIRMED REQUESTER MARKUP ERROR: {e}")
+                logger.exception("DEAL ALREADY CONFIRMED REQUESTER MARKUP ERROR: %s", e)
             await callback.answer("Вы уже подтвердили завершение")
             return
 
@@ -5754,7 +5985,7 @@ async def deal_confirm_handler(callback: CallbackQuery):
             reply_markup=deal_open_kb(fresh_deal, callback.from_user.id)
         )
     except Exception as e:
-        print(f"DEAL CONFIRM EDIT MARKUP ERROR: {e}")
+        logger.exception("DEAL CONFIRM EDIT MARKUP ERROR: %s", e)
 
     # При желании можно обновить и текст
     try:
@@ -5779,7 +6010,7 @@ async def deal_confirm_handler(callback: CallbackQuery):
             reply_markup=deal_open_kb(fresh_deal, callback.from_user.id)
         )
     except Exception as e:
-        print(f"DEAL CONFIRM EDIT TEXT ERROR: {e}")
+        logger.exception("DEAL CONFIRM EDIT TEXT ERROR: %s", e)
 
     # уведомление второй стороне
     other_user_id = fresh_deal["requester_user_id"] if callback.from_user.id == fresh_deal["owner_user_id"] else fresh_deal["owner_user_id"]
@@ -5810,7 +6041,7 @@ async def deal_confirm_handler(callback: CallbackQuery):
                 )
             )
     except Exception as e:
-        print(f"DEAL CONFIRM NOTIFY ERROR: {e}")
+        logger.exception("DEAL CONFIRM NOTIFY ERROR: %s", e)
     
 
 @router.callback_query(F.data.startswith("delete:"))
@@ -6119,7 +6350,7 @@ async def popular_route_open(callback: CallbackQuery):
                 print(f"POPULAR_ROUTE_SEND_ROW ERROR: {inner_e}")
 
     except Exception as e:
-        print(f"POPULAR_ROUTE_OPEN ERROR: {e}")
+        logger.exception("POPULAR_ROUTE_OPEN ERROR: %s", e)
         await callback.message.answer("Не удалось открыть маршрут.")
 
 
@@ -6213,7 +6444,7 @@ async def complaint_reason_input(message: Message, state: FSMContext):
         try:
             await remove_post_from_channel(message.bot, row)
         except Exception as e:
-            print(f"AUTO HIDE CHANNEL REMOVE ERROR: {e}")
+            logger.exception("AUTO HIDE CHANNEL REMOVE ERROR: %s", e)
 
         try:
             await message.bot.send_message(
@@ -6223,7 +6454,7 @@ async def complaint_reason_input(message: Message, state: FSMContext):
                 "Если это ошибка — свяжитесь с администратором."
             )
         except Exception as e:
-            print(f"AUTO HIDE OWNER NOTIFY ERROR: {e}")
+            logger.exception("AUTO HIDE OWNER NOTIFY ERROR: %s", e)
 
         await message.answer(
             "✅ Жалоба отправлена.\n"
@@ -6252,7 +6483,7 @@ async def complaint_reason_input(message: Message, state: FSMContext):
 
             await message.bot.send_message(admin_id, admin_text)
         except Exception as e:
-            print(f"ADMIN COMPLAINT NOTIFY ERROR: {e}")
+            logger.exception("ADMIN COMPLAINT NOTIFY ERROR: %s", e)
 
 
 @router.message(F.text == "📊 Статистика")
@@ -6394,6 +6625,10 @@ async def contact_owner(callback: CallbackQuery, state: FSMContext):
 
     if owner_id == callback.from_user.id:
         await callback.answer("Это ваше объявление", show_alert=True)
+        return
+
+    if is_user_blocked(owner_id, callback.from_user.id) or is_user_blocked(callback.from_user.id, owner_id):
+        await callback.answer("Диалог недоступен", show_alert=True)
         return
 
     await state.set_state(ContactFlow.message_text)
@@ -6742,7 +6977,7 @@ async def admin_complaint_open_post(callback: CallbackQuery):
         await callback.answer()
 
     except Exception as e:
-        print(f"ADMIN COMPLAINT OPEN POST ERROR: {e}")
+        logger.exception("ADMIN COMPLAINT OPEN POST ERROR: %s", e)
         await callback.answer("Ошибка при открытии объявления", show_alert=True)
 
 
@@ -6780,7 +7015,7 @@ async def admin_complaint_hide_post(callback: CallbackQuery):
         await callback.answer()
 
     except Exception as e:
-        print(f"ADMIN COMPLAINT HIDE POST ERROR: {e}")
+        logger.exception("ADMIN COMPLAINT HIDE POST ERROR: %s", e)
         await callback.answer("Ошибка при скрытии объявления", show_alert=True)
 
 
@@ -6811,7 +7046,7 @@ async def admin_complaint_ban_user(callback: CallbackQuery):
         await callback.answer()
 
     except Exception as e:
-        print(f"ADMIN COMPLAINT BAN USER ERROR: {e}")
+        logger.exception("ADMIN COMPLAINT BAN USER ERROR: %s", e)
         await callback.answer("Ошибка при бане пользователя", show_alert=True)
 
 
@@ -6831,7 +7066,7 @@ async def admin_complaint_done(callback: CallbackQuery):
         await callback.answer()
 
     except Exception as e:
-        print(f"ADMIN COMPLAINT DONE ERROR: {e}")
+        logger.exception("ADMIN COMPLAINT DONE ERROR: %s", e)
         await callback.answer("Ошибка при обработке жалобы", show_alert=True)
 
 
@@ -7017,7 +7252,7 @@ async def admin_verif_pay_ok_handler(callback: CallbackQuery):
             reply_markup=verification_upload_passport_kb(request_id)
         )
     except Exception as e:
-        print(f"VERIF PAY OK USER NOTIFY ERROR: {e}")
+        logger.exception("VERIF PAY OK USER NOTIFY ERROR: %s", e)
 
     await callback.message.answer(f"✅ Оплата по заявке {request_id} подтверждена.")
     await callback.answer()
@@ -7049,7 +7284,7 @@ async def admin_verif_pay_no_handler(callback: CallbackQuery):
             "Проверьте оплату и отправьте заявку снова."
         )
     except Exception as e:
-        print(f"VERIF PAY NO USER NOTIFY ERROR: {e}")
+        logger.exception("VERIF PAY NO USER NOTIFY ERROR: %s", e)
 
     await callback.message.answer(f"❌ Оплата по заявке {request_id} отклонена.")
     await callback.answer()
@@ -7083,7 +7318,7 @@ async def admin_verif_ok_handler(callback: CallbackQuery):
             "Ваш аккаунт теперь отмечен как 🛂 Паспорт подтвержден."
         )
     except Exception as e:
-        print(f"VERIF APPROVED USER NOTIFY ERROR: {e}")
+        logger.exception("VERIF APPROVED USER NOTIFY ERROR: %s", e)
 
     await callback.message.answer(f"✅ Заявка {request_id} одобрена.")
     await callback.answer()
@@ -7118,7 +7353,7 @@ async def admin_verif_no_handler(callback: CallbackQuery):
             reply_markup=verification_retry_kb(request_id)
         )
     except Exception as e:
-        print(f"VERIF REJECTED USER NOTIFY ERROR: {e}")
+        logger.exception("VERIF REJECTED USER NOTIFY ERROR: %s", e)
 
     await callback.message.answer(f"❌ Заявка {request_id} отклонена.")
     await callback.answer()
@@ -7136,6 +7371,12 @@ async def reply_contact_handler(callback: CallbackQuery, state: FSMContext):
         if target_user_id == callback.from_user.id:
             await callback.answer("Нельзя ответить самому себе", show_alert=True)
             return
+
+        if is_user_blocked(target_user_id, callback.from_user.id) or is_user_blocked(callback.from_user.id, target_user_id):
+            await callback.answer("Диалог недоступен", show_alert=True)
+            return
+
+        mark_chat_read(callback.from_user.id, target_user_id, post_id)
 
         await state.clear()
         await state.set_state(ContactFlow.message_text)
@@ -7159,7 +7400,7 @@ async def reply_contact_handler(callback: CallbackQuery, state: FSMContext):
         await callback.answer()
 
     except Exception as e:
-        print(f"REPLY_CONTACT_HANDLER ERROR: {e}")
+        logger.exception("REPLY_CONTACT_HANDLER ERROR: %s", e)
         await callback.answer("Ошибка ответа", show_alert=True)
         
 
@@ -7188,6 +7429,10 @@ async def relay_message(message: Message, state: FSMContext):
 
     if target_user_id == message.from_user.id:
         await message.answer("Нельзя отправить сообщение самому себе.")
+        return
+
+    if is_user_blocked(target_user_id, message.from_user.id) or is_user_blocked(message.from_user.id, target_user_id):
+        await message.answer("Диалог недоступен.")
         return
 
     try:
@@ -7236,7 +7481,7 @@ async def relay_message(message: Message, state: FSMContext):
         await message.answer("✅ Сообщение отправлено.")
 
     except Exception as e:
-        print(f"RELAY MESSAGE ERROR: {e}")
+        logger.exception("RELAY MESSAGE ERROR: %s", e)
         await message.answer(
             "Не удалось отправить сообщение. Возможно, пользователь еще не запускал бота.",
             reply_markup=main_menu(message.from_user.id)
@@ -7328,7 +7573,7 @@ async def offer_deal_confirm_handler(callback: CallbackQuery):
         await callback.answer()
 
     except Exception as e:
-        print(f"OFFER_DEAL_CONFIRM_HANDLER ERROR: {e}")
+        logger.exception("OFFER_DEAL_CONFIRM_HANDLER ERROR: %s", e)
         await callback.answer("Ошибка", show_alert=True)
 
 
@@ -7338,7 +7583,7 @@ async def offer_deal_cancel_handler(callback: CallbackQuery):
     try:
         await callback.message.answer("❌ Открытие сделки отменено.")
     except Exception as e:
-        print(f"OFFER_DEAL_CANCEL_HANDLER ERROR: {e}")
+        logger.exception("OFFER_DEAL_CANCEL_HANDLER ERROR: %s", e)
         
 
 @router.callback_query(F.data.startswith("offer_deal:"))
@@ -7411,7 +7656,7 @@ async def offer_deal_handler(callback: CallbackQuery):
                 )
             )
         except Exception as e:
-            print(f"OFFER DEAL NOTIFY ERROR: {e}")
+            logger.exception("OFFER DEAL NOTIFY ERROR: %s", e)
 
         await callback.message.answer(
             "📨 Заявка на сделку отправлена владельцу объявления.\n"
@@ -7420,7 +7665,7 @@ async def offer_deal_handler(callback: CallbackQuery):
         await callback.answer("Готово")
 
     except Exception as e:
-        print(f"OFFER_DEAL_HANDLER ERROR: {e}")
+        logger.exception("OFFER_DEAL_HANDLER ERROR: %s", e)
         await callback.answer("Ошибка при создании заявки", show_alert=True)
 
 
@@ -7541,7 +7786,7 @@ async def deal_request_accept_handler(callback: CallbackQuery):
                 ])
             )
         except Exception as e:
-            print(f"DEAL ACCEPT NOTIFY REQUESTER ERROR: {e}")
+            logger.exception("DEAL ACCEPT NOTIFY REQUESTER ERROR: %s", e)
 
         await callback.message.answer(
             f"✅ Сделка открыта.\n\n"
@@ -7556,7 +7801,7 @@ async def deal_request_accept_handler(callback: CallbackQuery):
         await callback.answer("Сделка открыта")
 
     except Exception as e:
-        print(f"DEAL_REQUEST_ACCEPT_HANDLER ERROR: {e}")
+        logger.exception("DEAL_REQUEST_ACCEPT_HANDLER ERROR: %s", e)
         await callback.answer("Ошибка при подтверждении сделки", show_alert=True)
     
 
@@ -7724,7 +7969,7 @@ async def dispute_reason_input(message: Message, state: FSMContext):
             reply_markup=dispute_actions_kb(dispute, against_user_id)
         )
     except Exception as e:
-        print(f"DISPUTE NOTIFY TARGET ERROR: {e}")
+        logger.exception("DISPUTE NOTIFY TARGET ERROR: %s", e)
 
     await message.answer(
         "✅ Спор открыт.\n\n"
@@ -7797,7 +8042,7 @@ async def dispute_response_input(message: Message, state: FSMContext):
             reply_markup=dispute_actions_kb(updated_dispute, dispute["opened_by_user_id"])
         )
     except Exception as e:
-        print(f"DISPUTE NOTIFY OPENER ERROR: {e}")
+        logger.exception("DISPUTE NOTIFY OPENER ERROR: %s", e)
 
     await message.answer(
         "✅ Ваш ответ отправлен.\n\n"
@@ -7853,7 +8098,7 @@ async def dispute_resolve_handler(callback: CallbackQuery):
             reply_markup=deal_open_kb(completed_deal, dispute["against_user_id"])
         )
     except Exception as e:
-        print(f"DISPUTE RESOLVE NOTIFY ERROR: {e}")
+        logger.exception("DISPUTE RESOLVE NOTIFY ERROR: %s", e)
 
     await callback.message.answer(
         f"✅ <b>Сделка завершена</b>\n\n{dispute_text(updated_dispute)}"
@@ -7939,7 +8184,7 @@ async def dispute_unresolved_handler(callback: CallbackQuery):
             reply_markup=dispute_failed_against_kb(failed_deal["id"])
         )
     except Exception as e:
-        print(f"DISPUTE UNRESOLVED NOTIFY ERROR: {e}")
+        logger.exception("DISPUTE UNRESOLVED NOTIFY ERROR: %s", e)
 
     await callback.answer()
     
@@ -7983,9 +8228,169 @@ async def open_my_deal(callback: CallbackQuery):
         await callback.answer()
 
     except Exception as e:
-        print(f"DEAL OPEN ERROR: {e}")
+        logger.exception("DEAL OPEN ERROR: %s", e)
         await callback.answer("Ошибка открытия сделки", show_alert=True)
     
+
+
+
+def user_posts_page(user_id: int, limit: int = MY_POSTS_PAGE_SIZE, offset: int = 0) -> List[sqlite3.Row]:
+    with closing(connect_db()) as conn:
+        return conn.execute("""
+            SELECT * FROM posts
+            WHERE user_id=? AND status != 'deleted'
+            ORDER BY created_at DESC
+            LIMIT ? OFFSET ?
+        """, (user_id, limit, offset)).fetchall()
+
+
+def count_user_posts(user_id: int) -> int:
+    with closing(connect_db()) as conn:
+        row = conn.execute("SELECT COUNT(*) AS c FROM posts WHERE user_id=? AND status != 'deleted'", (user_id,)).fetchone()
+        return int(row["c"] or 0)
+
+
+def pager_kb(prefix: str, offset: int, page_size: int, total: int) -> InlineKeyboardMarkup:
+    rows = []
+    nav = []
+    if offset > 0:
+        nav.append(InlineKeyboardButton(text="⬅️", callback_data=f"{prefix}:{max(0, offset - page_size)}"))
+    if offset + page_size < total:
+        nav.append(InlineKeyboardButton(text="➡️", callback_data=f"{prefix}:{offset + page_size}"))
+    if nav:
+        rows.append(nav)
+    return InlineKeyboardMarkup(inline_keyboard=rows or [[InlineKeyboardButton(text="Ок", callback_data="noop")]])
+
+
+async def render_recent_posts_page(target, offset: int = 0):
+    rows = get_recent_posts(POSTS_PAGE_SIZE, offset=offset)
+    total = count_recent_posts()
+    if not rows:
+        await target.answer("Пока нет новых объявлений.")
+        return
+    for row in rows:
+        await send_post_card(target, row, with_age=True)
+    if total > POSTS_PAGE_SIZE:
+        await target.answer(f"Показано {offset + 1}-{offset + len(rows)} из {total}", reply_markup=pager_kb("recentpage", offset, POSTS_PAGE_SIZE, total))
+
+
+async def render_my_posts_page(target, user_id: int, offset: int = 0):
+    posts = user_posts_page(user_id, MY_POSTS_PAGE_SIZE, offset)
+    total = count_user_posts(user_id)
+    if not posts:
+        await target.answer("У вас пока нет объявлений.", reply_markup=main_menu(user_id))
+        return
+    await target.answer("📋 Ваши объявления:", reply_markup=my_posts_kb(posts))
+    if total > MY_POSTS_PAGE_SIZE:
+        await target.answer(f"Показано {offset + 1}-{offset + len(posts)} из {total}", reply_markup=pager_kb("mypostspage", offset, MY_POSTS_PAGE_SIZE, total))
+
+
+@router.callback_query(F.data.startswith("recentpage:"))
+async def recent_page_callback(callback: CallbackQuery):
+    offset = int(callback.data.split(":", 1)[1])
+    await render_recent_posts_page(callback.message, offset)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("mypostspage:"))
+async def my_posts_page_callback(callback: CallbackQuery):
+    offset = int(callback.data.split(":", 1)[1])
+    await render_my_posts_page(callback.message, callback.from_user.id, offset)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("editpost:"))
+async def edit_post_entry(callback: CallbackQuery, state: FSMContext):
+    post_id = int(callback.data.split(":", 1)[1])
+    row = owner_only(callback, post_id)
+    if not row:
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+    await state.clear()
+    await state.update_data(edit_post_id=post_id)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Описание", callback_data=f"editfield:description:{post_id}")],
+        [InlineKeyboardButton(text="Контакт", callback_data=f"editfield:contact_note:{post_id}")],
+        [InlineKeyboardButton(text="Вес", callback_data=f"editfield:weight_kg:{post_id}")],
+    ])
+    await callback.message.answer("Выберите, что изменить:", reply_markup=kb)
+    await callback.answer()
+
+
+class EditPostFlow(StatesGroup):
+    waiting_value = State()
+
+
+@router.callback_query(F.data.startswith("editfield:"))
+async def edit_post_field_pick(callback: CallbackQuery, state: FSMContext):
+    _, field, post_id = callback.data.split(":")
+    row = owner_only(callback, int(post_id))
+    if not row:
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+    await state.set_state(EditPostFlow.waiting_value)
+    await state.update_data(edit_post_id=int(post_id), edit_field=field)
+    await callback.message.answer("Введите новое значение:")
+    await callback.answer()
+
+
+@router.message(EditPostFlow.waiting_value)
+async def edit_post_value_input(message: Message, state: FSMContext):
+    data = await state.get_data()
+    post_id = data.get("edit_post_id")
+    field = data.get("edit_field")
+    if not post_id or not field:
+        await state.clear()
+        return
+    value = (message.text or "").strip()
+    if field == "contact_note" and value == "-":
+        value = None
+    ok = update_post_record(post_id, message.from_user.id, {field: value})
+    await state.clear()
+    if not ok:
+        await message.answer("Не удалось обновить объявление.")
+        return
+    row = get_post(post_id)
+    await message.answer("✅ Объявление обновлено.", reply_markup=main_menu(message.from_user.id))
+    if row:
+        await send_post_card(message, row, reply_markup=post_actions_kb(post_id, row["status"]))
+
+
+@router.callback_query(F.data.startswith("blockuser:"))
+async def block_user_callback(callback: CallbackQuery):
+    target_user_id = int(callback.data.split(":", 1)[1])
+    if add_user_to_blacklist(callback.from_user.id, target_user_id):
+        await callback.answer("Пользователь заблокирован", show_alert=True)
+    else:
+        await callback.answer("Не удалось выполнить действие", show_alert=True)
+
+
+async def expire_soon_posts_notify(bot: Bot):
+    while True:
+        try:
+            warn_before = now_ts() + EXPIRE_WARN_DAYS * 86400
+            with closing(connect_db()) as conn:
+                rows = conn.execute("""
+                    SELECT p.*, u.username, u.full_name
+                    FROM posts p
+                    LEFT JOIN users u ON u.user_id = p.user_id
+                    WHERE p.status IN ('active','inactive')
+                      AND p.expires_at IS NOT NULL
+                      AND p.expires_at <= ?
+                      AND p.expires_at > ?
+                      AND (p.expire_warned_at IS NULL OR p.expire_warned_at = 0)
+                    LIMIT 100
+                """, (warn_before, now_ts())).fetchall()
+            for row in rows:
+                try:
+                    await bot.send_message(row["user_id"], f"⌛ Объявление ID {row['id']} скоро истечет. Откройте 'Мои объявления', чтобы активировать его снова.", reply_markup=main_menu(row["user_id"]))
+                except Exception as e:
+                    logger.exception("EXPIRE SOON NOTIFY ERROR: %s", e)
+                with closing(connect_db()) as conn, conn:
+                    conn.execute("UPDATE posts SET expire_warned_at=? WHERE id=?", (now_ts(), row["id"]))
+        except Exception as e:
+            logger.exception("EXPIRE SOON LOOP ERROR: %s", e)
+        await asyncio.sleep(3600)
 
 @router.callback_query(F.data == "noop")
 async def noop(callback: CallbackQuery):
@@ -8015,10 +8420,13 @@ async def main():
     dp = Dispatcher(storage=MemoryStorage())
     dp.include_router(router)
 
-    asyncio.create_task(expire_old_posts(bot))
-    asyncio.create_task(global_coincidence_loop(bot))
-    asyncio.create_task(dispute_timeout_loop(bot))
+    async def on_startup():
+        asyncio.create_task(expire_old_posts(bot))
+        asyncio.create_task(global_coincidence_loop(bot))
+        asyncio.create_task(dispute_timeout_loop(bot))
+        asyncio.create_task(expire_soon_posts_notify(bot))
 
+    await on_startup()
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 

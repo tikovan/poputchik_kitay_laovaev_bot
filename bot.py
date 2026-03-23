@@ -75,6 +75,7 @@ def _init_wxpay() -> Optional[WeChatPay]:
         logger.warning("WeChat Pay не настроен")
         return None
     try:
+        os.makedirs("/tmp/wechat_certs", exist_ok=True)
         return WeChatPay(
             wechatpay_type=WeChatPayType.NATIVE,
             mchid=WECHAT_MCHID,
@@ -83,7 +84,7 @@ def _init_wxpay() -> Optional[WeChatPay]:
             apiv3_key=WECHAT_API_KEY_V3,
             appid="",
             notify_url=WECHAT_NOTIFY_URL,
-            cert_dir=None,
+            cert_dir="/tmp/wechat_certs",
             logger=logger,
             partner_mode=False,
             proxy=None,

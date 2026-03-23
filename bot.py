@@ -8880,7 +8880,7 @@ async def fulfill_wechat_order(order_id: str, bot: Bot):
             logger.exception("FULFILL BUMP NOTIFY: %s", e)
 
 
-sync def main():
+async def main():
     if not BOT_TOKEN:
         raise RuntimeError("Set BOT_TOKEN env var")
 

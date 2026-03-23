@@ -30,6 +30,11 @@ from aiogram.types import (
 )
 from dotenv import load_dotenv
 
+import io
+import qrcode
+from aiohttp import web
+from wechatpayv3 import WeChatPay, WeChatPayType
+
 load_dotenv()
 
 logging.basicConfig(
@@ -53,6 +58,41 @@ CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME", "")
 BOT_USERNAME = os.getenv("BOT_USERNAME", "Poputchik_china_bot").lstrip("@")
 ADMIN_IDS = {474671704}
 MODERATION_ENABLED = False
+
+
+# ─── WeChat Pay ───────────────────────────────────────────────
+WECHAT_MCHID = os.getenv("WECHAT_MCHID", "")
+WECHAT_CERT_SERIAL = os.getenv("WECHAT_CERT_SERIAL", "")
+WECHAT_API_KEY_V3 = os.getenv("WECHAT_API_KEY_V3", "")
+WECHAT_NOTIFY_URL = os.getenv("WECHAT_NOTIFY_URL", "")
+WECHAT_CERT_PEM = os.getenv("WECHAT_CERT_PEM", "").replace("\\n", "\n")
+WECHAT_KEY_PEM = os.getenv("WECHAT_KEY_PEM", "").replace("\\n", "\n")
+WECHAT_PRICE_VERIFICATION = int(os.getenv("WECHAT_PRICE_VERIFICATION", "5000"))
+WECHAT_PRICE_BUMP = int(os.getenv("WECHAT_PRICE_BUMP", "1000"))
+
+def _init_wxpay() -> Optional[WeChatPay]:
+    if not all([WECHAT_MCHID, WECHAT_CERT_SERIAL, WECHAT_API_KEY_V3, WECHAT_KEY_PEM]):
+        logger.warning("WeChat Pay не настроен")
+        return None
+    try:
+        return WeChatPay(
+            wechatpay_type=WeChatPayType.NATIVE,
+            mchid=WECHAT_MCHID,
+            private_key=WECHAT_KEY_PEM,
+            cert_serial_no=WECHAT_CERT_SERIAL,
+            apiv3_key=WECHAT_API_KEY_V3,
+            appid="",
+            notify_url=WECHAT_NOTIFY_URL,
+            cert_dir=None,
+            logger=logger,
+            partner_mode=False,
+            proxy=None,
+        )
+    except Exception as e:
+        logger.exception("WXPAY INIT ERROR: %s", e)
+        return None
+
+wxpay: Optional[WeChatPay] = None
 
 
 BUMP_PRICE_TEXT = os.getenv(
@@ -86,6 +126,96 @@ EXPIRE_WARN_DAYS = int(os.getenv("EXPIRE_WARN_DAYS", "3"))
 MAX_POSTS_PER_10_MIN = int(os.getenv("MAX_POSTS_PER_10_MIN", "3"))
 PROFILE_CACHE_TTL = int(os.getenv("PROFILE_CACHE_TTL", "300"))
 SQLITE_BUSY_TIMEOUT_MS = int(os.getenv("SQLITE_BUSY_TIMEOUT_MS", "5000"))
+
+# ─── WeChat Pay функции ───────────────────────────────────────
+
+def save_wechat_order(order_id, user_id, amount_fen, order_type, reference_id=None):
+    with closing(connect_db()) as conn, conn:
+        conn.execute("""
+            INSERT OR IGNORE INTO wechat_orders
+            (order_id, user_id, amount_fen, order_type, reference_id, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (order_id, user_id, amount_fen, order_type, reference_id, now_ts()))
+
+def get_wechat_order(order_id):
+    with closing(connect_db()) as conn:
+        return conn.execute(
+            "SELECT * FROM wechat_orders WHERE order_id=?", (order_id,)
+        ).fetchone()
+
+def mark_wechat_order_paid(order_id):
+    with closing(connect_db()) as conn, conn:
+        conn.execute(
+            "UPDATE wechat_orders SET status='paid', paid_at=? WHERE order_id=?",
+            (now_ts(), order_id)
+        )
+
+async def create_wechat_qr(order_id, amount_fen, description):
+    if not wxpay:
+        return None
+    try:
+        code, message = wxpay.pay(
+            description=description,
+            out_trade_no=order_id,
+            amount={"total": amount_fen, "currency": "CNY"},
+            pay_type=WeChatPayType.NATIVE,
+        )
+        if code == 200 and message.get("code_url"):
+            return message["code_url"]
+        logger.error("WXPAY ERROR: code=%s message=%s", code, message)
+        return None
+    except Exception as e:
+        logger.exception("WXPAY EXCEPTION: %s", e)
+        return None
+
+async def send_wechat_payment_message(message, order_id, amount_fen, description, order_type, reference_id):
+    if not wxpay:
+        await message.answer(
+            "⚠️ Онлайн оплата временно недоступна.\n"
+            "Свяжитесь с администратором."
+        )
+        return
+
+    amount_cny = amount_fen / 100
+    qr_url = await create_wechat_qr(order_id, amount_fen, description)
+
+    if not qr_url:
+        await message.answer("⚠️ Не удалось создать платёж. Попробуйте позже.")
+        return
+
+    save_wechat_order(order_id, message.from_user.id, amount_fen, order_type, reference_id)
+
+    try:
+        qr = qrcode.QRCode(version=1, box_size=10, border=4)
+        qr.add_data(qr_url)
+        qr.make(fit=True)
+        img = qr.make_image(fill_color="black", back_color="white")
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        buf.seek(0)
+
+        from aiogram.types import BufferedInputFile
+        await message.answer_photo(
+            photo=BufferedInputFile(buf.read(), filename="pay.png"),
+            caption=(
+                f"💚 <b>Оплата через WeChat Pay</b>\n\n"
+                f"<b>{description}</b>\n"
+                f"<b>Сумма:</b> {amount_cny:.0f} CNY\n"
+                f"<b>Заказ:</b> <code>{order_id}</code>\n\n"
+                "📱 Откройте WeChat\n"
+                "➕ Нажмите +\n"
+                "📷 Сканировать\n\n"
+                "✅ Доступ откроется автоматически после оплаты"
+            )
+        )
+    except Exception as e:
+        logger.exception("WXPAY QR SEND ERROR: %s", e)
+        await message.answer(
+            f"💚 <b>WeChat Pay</b>\n\n"
+            f"Сумма: {amount_cny:.0f} CNY\n"
+            f"Заказ: <code>{order_id}</code>\n\n"
+            f"Ссылка: <code>{qr_url}</code>"
+        )
 
 router = Router()
 
@@ -889,6 +1019,22 @@ def init_db():
         CREATE UNIQUE INDEX IF NOT EXISTS idx_coincidence_unique_pair
         ON coincidence_notifications(post_a_id, post_b_id)
         """)
+
+        conn.executescript("""
+    CREATE TABLE IF NOT EXISTS wechat_orders (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        order_id TEXT NOT NULL UNIQUE,
+        user_id INTEGER NOT NULL,
+        amount_fen INTEGER NOT NULL,
+        order_type TEXT NOT NULL,
+        reference_id INTEGER,
+        status TEXT NOT NULL DEFAULT 'pending',
+        created_at INTEGER NOT NULL,
+        paid_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_wechat_orders_user
+    ON wechat_orders(user_id, status);
+""")
 
         # ---- ensure columns ----
 
@@ -5012,7 +5158,6 @@ async def verify_start_handler(callback: CallbackQuery):
         return
 
     req = get_latest_verification_request(callback.from_user.id)
-
     if req and req["status"] in (
         VERIF_STATUS_AWAITING_PAYMENT,
         VERIF_STATUS_PAYMENT_REVIEW,
@@ -5024,17 +5169,15 @@ async def verify_start_handler(callback: CallbackQuery):
     else:
         request_id = create_verification_request(callback.from_user.id)
 
-    await callback.message.answer(
-    f"💳 <b>Оплата верификации</b>\n\n"
-    f"<b>Заявка:</b> #{request_id}\n"
-    f"<b>Стоимость:</b> {VERIFICATION_PRICE_AMOUNT} {VERIFICATION_PRICE_CURRENCY}\n\n"
-    f"Для совершения оплаты напишите администратору в WeChat:\n\n"
-    f"👤 <b>WeChat:</b> tikovan\n\n"
-    f"Напишите администратору:\n"
-    f"<code>Оплата верификации #{request_id}</code>\n\n"
-    f"После оплаты нажмите кнопку <b>«✅ Я оплатил»</b> ниже.",
-    reply_markup=verification_pay_kb(request_id)
- )
+    order_id = f"verif_{callback.from_user.id}_{request_id}_{now_ts()}"
+    await send_wechat_payment_message(
+        message=callback.message,
+        order_id=order_id,
+        amount_fen=WECHAT_PRICE_VERIFICATION,
+        description="Верификация аккаунта Попутчик Китай",
+        order_type="verification",
+        reference_id=request_id
+    )
     await callback.answer()
 
 
@@ -6173,27 +6316,96 @@ async def activate_post(callback: CallbackQuery, bot: Bot):
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("bump:"))
-async def bump_post(callback: CallbackQuery):
-    post_id = int(callback.data.split(":")[1])
-    row = owner_only(callback, post_id)
-    if not row:
-        await callback.answer("Нет доступа", show_alert=True)
+# ─── WeChat Pay функции ───────────────────────────────────────
+
+def save_wechat_order(order_id, user_id, amount_fen, order_type, reference_id=None):
+    with closing(connect_db()) as conn, conn:
+        conn.execute("""
+            INSERT OR IGNORE INTO wechat_orders
+            (order_id, user_id, amount_fen, order_type, reference_id, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (order_id, user_id, amount_fen, order_type, reference_id, now_ts()))
+
+def get_wechat_order(order_id):
+    with closing(connect_db()) as conn:
+        return conn.execute(
+            "SELECT * FROM wechat_orders WHERE order_id=?", (order_id,)
+        ).fetchone()
+
+def mark_wechat_order_paid(order_id):
+    with closing(connect_db()) as conn, conn:
+        conn.execute(
+            "UPDATE wechat_orders SET status='paid', paid_at=? WHERE order_id=?",
+            (now_ts(), order_id)
+        )
+
+async def create_wechat_qr(order_id, amount_fen, description):
+    if not wxpay:
+        return None
+    try:
+        code, message = wxpay.pay(
+            description=description,
+            out_trade_no=order_id,
+            amount={"total": amount_fen, "currency": "CNY"},
+            pay_type=WeChatPayType.NATIVE,
+        )
+        if code == 200 and message.get("code_url"):
+            return message["code_url"]
+        logger.error("WXPAY ERROR: code=%s message=%s", code, message)
+        return None
+    except Exception as e:
+        logger.exception("WXPAY EXCEPTION: %s", e)
+        return None
+
+async def send_wechat_payment_message(message, order_id, amount_fen, description, order_type, reference_id):
+    if not wxpay:
+        await message.answer(
+            "⚠️ Онлайн оплата временно недоступна.\n"
+            "Свяжитесь с администратором."
+        )
         return
-    if row["status"] != STATUS_ACTIVE:
-        await callback.answer("Поднимать можно только активное объявление", show_alert=True)
+
+    amount_cny = amount_fen / 100
+    qr_url = await create_wechat_qr(order_id, amount_fen, description)
+
+    if not qr_url:
+        await message.answer("⚠️ Не удалось создать платёж. Попробуйте позже.")
         return
 
-    order_id = create_bump_order(callback.from_user.id, post_id)
+    save_wechat_order(order_id, message.from_user.id, amount_fen, order_type, reference_id)
 
-    await callback.message.answer(
-        f"💰 Поднятие объявления стоит {BUMP_PRICE_AMOUNT} {BUMP_PRICE_CURRENCY}.\n\n"
-        "Оплатите через WeChat / Alipay и отправьте скрин администратору.\n"
-        "После подтверждения оплаты объявление будет поднято выше.\n\n"
-        f"ID заказа: <b>{order_id}</b>"
-    )
-    await callback.answer("Заявка создана")
+    try:
+        qr = qrcode.QRCode(version=1, box_size=10, border=4)
+        qr.add_data(qr_url)
+        qr.make(fit=True)
+        img = qr.make_image(fill_color="black", back_color="white")
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        buf.seek(0)
 
+        from aiogram.types import BufferedInputFile
+        await message.answer_photo(
+            photo=BufferedInputFile(buf.read(), filename="pay.png"),
+            caption=(
+                f"💚 <b>Оплата через WeChat Pay</b>\n\n"
+                f"<b>{description}</b>\n"
+                f"<b>Сумма:</b> {amount_cny:.0f} CNY\n"
+                f"<b>Заказ:</b> <code>{order_id}</code>\n\n"
+                "📱 Откройте WeChat\n"
+                "➕ Нажмите +\n"
+                "📷 Сканировать\n\n"
+                "✅ Доступ откроется автоматически после оплаты"
+            )
+        )
+    except Exception as e:
+        logger.exception("WXPAY QR SEND ERROR: %s", e)
+        await message.answer(
+            f"💚 <b>WeChat Pay</b>\n\n"
+            f"Сумма: {amount_cny:.0f} CNY\n"
+            f"Заказ: <code>{order_id}</code>\n\n"
+            f"Ссылка: <code>{qr_url}</code>"
+        )
+        
 
 @router.message(F.text == "💰 Поднять объявление")
 async def bump_info(message: Message):
@@ -8582,12 +8794,105 @@ async def expire_soon_posts_notify(bot: Bot):
 async def noop(callback: CallbackQuery):
     await callback.answer()
 
+# ─── WeChat Webhook ───────────────────────────────────────────
 
-async def main():
+async def wechat_notify_handler(request: web.Request) -> web.Response:
+    try:
+        body = await request.read()
+        headers = dict(request.headers)
+
+        if not wxpay:
+            return web.json_response({"code": "FAIL"})
+
+        result = wxpay.callback(headers=headers, body=body)
+        if not result:
+            return web.json_response({"code": "FAIL"})
+
+        if result.get("event_type") != "TRANSACTION.SUCCESS":
+            return web.json_response({"code": "SUCCESS"})
+
+        resource = result.get("resource", {})
+        out_trade_no = resource.get("out_trade_no", "")
+        trade_state = resource.get("trade_state", "")
+
+        if trade_state == "SUCCESS":
+            asyncio.create_task(
+                fulfill_wechat_order(out_trade_no, request.app["bot"])
+            )
+
+        return web.json_response({"code": "SUCCESS"})
+
+    except Exception as e:
+        logger.exception("WXPAY NOTIFY ERROR: %s", e)
+        return web.json_response({"code": "FAIL"})
+
+
+async def fulfill_wechat_order(order_id: str, bot: Bot):
+    order = get_wechat_order(order_id)
+    if not order or order["status"] == "paid":
+        return
+
+    mark_wechat_order_paid(order_id)
+
+    user_id = order["user_id"]
+    order_type = order["order_type"]
+    reference_id = order["reference_id"]
+    amount_cny = order["amount_fen"] / 100
+
+    if order_type == "verification":
+        set_verification_status(reference_id, VERIF_STATUS_DOCS_PENDING, mark_paid=True)
+        try:
+            await bot.send_message(
+                user_id,
+                f"✅ <b>Оплата подтверждена — {amount_cny:.0f} CNY</b>\n\n"
+                "Теперь загрузите фото паспорта.",
+                reply_markup=verification_upload_passport_kb(reference_id)
+            )
+        except Exception as e:
+            logger.exception("FULFILL VERIF NOTIFY: %s", e)
+
+        for admin_id in ADMIN_IDS:
+            try:
+                await bot.send_message(
+                    admin_id,
+                    f"💚 Верификация оплачена\n"
+                    f"USER: {user_id}\n"
+                    f"Заявка: #{reference_id}\n"
+                    f"Сумма: {amount_cny:.0f} CNY"
+                )
+            except Exception:
+                pass
+
+    elif order_type == "bump":
+        with closing(connect_db()) as conn, conn:
+            conn.execute(
+                "UPDATE posts SET bumped_at=?, updated_at=? WHERE id=?",
+                (now_ts(), now_ts(), reference_id)
+            )
+        try:
+            await bot.send_message(
+                user_id,
+                f"✅ <b>Оплата подтверждена — {amount_cny:.0f} CNY</b>\n\n"
+                "🔼 Ваше объявление поднято в топ!"
+            )
+            await try_update_channel_post(bot, reference_id)
+        except Exception as e:
+            logger.exception("FULFILL BUMP NOTIFY: %s", e)
+
+
+sync def main():
     if not BOT_TOKEN:
         raise RuntimeError("Set BOT_TOKEN env var")
 
     init_db()
+
+    # Инициализация WeChat Pay
+    global wxpay
+    wxpay = _init_wxpay()
+    if wxpay:
+        logger.info("WeChat Pay инициализирован")
+    else:
+        logger.warning("WeChat Pay не инициализирован")
 
     bot = Bot(
         BOT_TOKEN,
@@ -8606,6 +8911,18 @@ async def main():
     dp = Dispatcher(storage=MemoryStorage())
     dp.include_router(router)
 
+    # Webhook сервер для WeChat Pay
+    app = web.Application()
+    app["bot"] = bot
+    app.router.add_post("/wechat/notify", wechat_notify_handler)
+    app.router.add_get("/health", lambda r: web.Response(text="ok"))
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", 8080)
+    await site.start()
+    logger.info("Webhook сервер на порту 8080")
+
     async def on_startup():
         asyncio.create_task(expire_old_posts(bot))
         asyncio.create_task(global_coincidence_loop(bot))
@@ -8617,5 +8934,5 @@ async def main():
     await dp.start_polling(bot)
 
 
-if __name__ == "__main__":
+if name == "__main__":
     asyncio.run(main())

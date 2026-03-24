@@ -6323,6 +6323,56 @@ async def activate_post(callback: CallbackQuery, bot: Bot):
     await callback.answer()
 
 
+@router.callback_query(F.data.startswith("bump:"))
+async def bump_post_handler(callback: CallbackQuery):
+    post_id = int(callback.data.split(":")[1])
+    row = owner_only(callback, post_id)
+    if not row:
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    if row["status"] != STATUS_ACTIVE:
+        await callback.answer("Объявление должно быть активным", show_alert=True)
+        return
+
+    order_id = f"bump_{callback.from_user.id}_{post_id}_{now_ts()}"
+
+    if wxpay:
+        await send_wechat_payment_message(
+            message=callback.message,
+            order_id=order_id,
+            amount_fen=WECHAT_PRICE_BUMP,
+            description=f"Поднятие объявления #{post_id}",
+            order_type="bump",
+            reference_id=post_id
+        )
+    else:
+        # Без WeChat Pay — создаём ручной заказ
+        order_id_db = create_bump_order(callback.from_user.id, post_id)
+        await callback.message.answer(
+            f"{BUMP_PRICE_TEXT}\n\n"
+            f"Стоимость: {BUMP_PRICE_AMOUNT} {BUMP_PRICE_CURRENCY}\n"
+            f"Номер заявки: {order_id_db}\n\n"
+            "После оплаты администратор поднимет ваше объявление.",
+            reply_markup=admin_contact_kb(order_id_db)
+        )
+        for admin_id in ADMIN_IDS:
+            try:
+                await callback.bot.send_message(
+                    admin_id,
+                    f"💰 Заявка на поднятие объявления\n\n"
+                    f"Пользователь: {callback.from_user.id}\n"
+                    f"Объявление ID: {post_id}\n"
+                    f"Заявка: #{order_id_db}\n"
+                    f"Сумма: {BUMP_PRICE_AMOUNT} {BUMP_PRICE_CURRENCY}",
+                    reply_markup=admin_bump_orders_kb(order_id_db, post_id)
+                )
+            except Exception as e:
+                logger.exception("BUMP NOTIFY ADMIN ERROR: %s", e)
+
+    await callback.answer()
+
+
 # ─── WeChat Pay функции ───────────────────────────────────────
 
 def save_wechat_order(order_id, user_id, amount_fen, order_type, reference_id=None):

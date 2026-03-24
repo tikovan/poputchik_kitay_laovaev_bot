@@ -71,11 +71,17 @@ WECHAT_PRICE_VERIFICATION = int(os.getenv("WECHAT_PRICE_VERIFICATION", "5000"))
 WECHAT_PRICE_BUMP = int(os.getenv("WECHAT_PRICE_BUMP", "1000"))
 
 def _init_wxpay() -> Optional[WeChatPay]:
-    if not all([WECHAT_MCHID, WECHAT_CERT_SERIAL, WECHAT_API_KEY_V3, WECHAT_KEY_PEM]):
+    if not all([WECHAT_MCHID, WECHAT_CERT_SERIAL, WECHAT_API_KEY_V3, WECHAT_KEY_PEM, WECHAT_CERT_PEM]):
         logger.warning("WeChat Pay не настроен")
         return None
     try:
         os.makedirs("/tmp/wechat_certs", exist_ok=True)
+        
+        # Сохраняем платформенный сертификат вручную
+        cert_path = f"/tmp/wechat_certs/{WECHAT_CERT_SERIAL}.pem"
+        with open(cert_path, "w") as f:
+            f.write(WECHAT_CERT_PEM)
+        
         return WeChatPay(
             wechatpay_type=WeChatPayType.NATIVE,
             mchid=WECHAT_MCHID,

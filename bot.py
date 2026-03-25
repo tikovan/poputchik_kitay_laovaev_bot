@@ -1005,6 +1005,34 @@ def unban_user(user_id: int):
     invalidate_user_profile_cache(user_id)
 
 
+def get_user_posts_with_channel_messages(user_id: int) -> List[sqlite3.Row]:
+    with closing(connect_db()) as conn:
+        return conn.execute("""
+            SELECT p.*, u.username, u.full_name
+            FROM posts p
+            LEFT JOIN users u ON u.user_id = p.user_id
+            WHERE p.user_id=?
+              AND p.channel_message_id IS NOT NULL
+        """, (user_id,)).fetchall()
+
+
+async def hide_user_posts_from_channel(bot: Bot, user_id: int):
+    rows = get_user_posts_with_channel_messages(user_id)
+    for row in rows:
+        await remove_post_from_channel(bot, row)
+
+    with closing(connect_db()) as conn, conn:
+        conn.execute(
+            "UPDATE posts SET channel_message_id=NULL WHERE user_id=? AND channel_message_id IS NOT NULL",
+            (user_id,)
+        )
+
+
+async def ban_user_with_cleanup(bot: Bot, user_id: int):
+    await hide_user_posts_from_channel(bot, user_id)
+    ban_user(user_id)
+
+
 def anti_spam_check(user_id: int) -> Optional[str]:
     with closing(connect_db()) as conn, conn:
         row = conn.execute("SELECT is_banned, last_action_at FROM users WHERE user_id=?", (user_id,)).fetchone()
@@ -1022,7 +1050,7 @@ def anti_spam_check(user_id: int) -> Optional[str]:
 def active_post_count(user_id: int) -> int:
     with closing(connect_db()) as conn:
         row = conn.execute(
-            "SELECT COUNT(*) AS c FROM posts WHERE user_id=? AND status IN ('pending','active','inactive')",
+            "SELECT COUNT(*) AS c FROM posts WHERE user_id=? AND status IN ('pending','active')",
             (user_id,)
         ).fetchone()
         return int(row["c"])
@@ -1780,6 +1808,20 @@ def cities_select_kb(prefix: str, country: str, include_back: bool = True):
     return with_back(rows, include_back)
 
 
+def subscription_cities_kb(prefix: str, country: str):
+    cities = COUNTRY_CITIES_RU.get(country, [])
+    rows, row = [], []
+    for city in cities:
+        row.append(InlineKeyboardButton(text=city, callback_data=f"{prefix}:{city}"))
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append([InlineKeyboardButton(text="Не важно", callback_data=f"{prefix}:__skip__")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def weight_select_kb():
     rows = chunk_buttons([(w, w) for w in POPULAR_WEIGHTS], "weightpick", 2)
     rows.append([InlineKeyboardButton(text=MANUAL_WEIGHT, callback_data="weightpick:__manual__")])
@@ -2438,7 +2480,9 @@ class ContactFlow(StatesGroup):
 class SubscriptionFlow(StatesGroup):
     looking_for = State()
     from_country = State()
+    from_city = State()
     to_country = State()
+    to_city = State()
 
 
 class ReviewFlow(StatesGroup):
@@ -2606,7 +2650,8 @@ def admin_stats_text() -> str:
     with closing(connect_db()) as conn:
         users_count = conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"]
         active_posts = conn.execute(
-            "SELECT COUNT(*) AS c FROM posts WHERE status='active'"
+            "SELECT COUNT(*) AS c FROM posts WHERE status='active' AND (expires_at IS NULL OR expires_at > ?)",
+            (now_ts(),)
         ).fetchone()["c"]
         pending_posts = conn.execute(
             "SELECT COUNT(*) AS c FROM posts WHERE status='pending'"
@@ -2658,6 +2703,7 @@ def verify_user(user_id: int):
                 verification_type='passport'
             WHERE user_id=?
         """, (now_ts(), user_id))
+    invalidate_user_profile_cache(user_id)
 
 
 def unverify_user(user_id: int):
@@ -2669,6 +2715,7 @@ def unverify_user(user_id: int):
                 verification_type=NULL
             WHERE user_id=?
         """, (user_id,))
+    invalidate_user_profile_cache(user_id)
         
 
 def get_latest_verification_request(user_id: int) -> Optional[sqlite3.Row]:
@@ -3047,11 +3094,21 @@ def update_post_record(post_id: int, user_id: int, updates: dict) -> bool:
     if not payload:
         return False
     payload["updated_at"] = now_ts()
-    if "travel_date" in payload:
-        payload["expires_at"] = calculate_post_expires_at(now_ts(), payload.get("travel_date"), POST_TTL_DAYS)
-    sets = ", ".join(f"{key}=?" for key in payload.keys())
-    params = list(payload.values()) + [post_id, user_id]
     with closing(connect_db()) as conn, conn:
+        if "travel_date" in payload:
+            row = conn.execute(
+                "SELECT created_at FROM posts WHERE id=? AND user_id=?",
+                (post_id, user_id)
+            ).fetchone()
+            if not row:
+                return False
+            payload["expires_at"] = calculate_post_expires_at(
+                int(row["created_at"] or now_ts()),
+                payload.get("travel_date"),
+                POST_TTL_DAYS
+            )
+        sets = ", ".join(f"{key}=?" for key in payload.keys())
+        params = list(payload.values()) + [post_id, user_id]
         cur = conn.execute(f"UPDATE posts SET {sets} WHERE id=? AND user_id=?", tuple(params))
         return cur.rowcount > 0
 
@@ -3755,7 +3812,7 @@ async def dispute_timeout_loop(bot: Bot):
                     """, (dispute["against_user_id"],))
 
                 # ограничение аккаунта
-                ban_user(dispute["against_user_id"])
+                await ban_user_with_cleanup(bot, dispute["against_user_id"])
 
                 try:
                     await bot.send_message(
@@ -3927,15 +3984,6 @@ def render_user_admin_card(user_row) -> str:
     )
 
 
-def set_user_ban_status(user_id: int, is_banned: int):
-    with closing(connect_db()) as conn, conn:
-        conn.execute("""
-            UPDATE users
-            SET is_banned = ?
-            WHERE user_id = ?
-        """, (is_banned, user_id))
-
-
 def get_post_owner_user_id(post_id: int):
     with closing(connect_db()) as conn:
         row = conn.execute("""
@@ -3963,37 +4011,6 @@ def admin_user_moderation_kb(target_user_id: int, is_banned: int):
         ]
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-
-def fmt_ts(ts: int | None) -> str:
-    if not ts:
-        return "—"
-    try:
-        return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
-    except Exception:
-        return str(ts)
-
-
-def render_user_admin_card(user_row) -> str:
-    if not user_row:
-        return "Пользователь не найден."
-
-    username_text = f"@{user_row['username']}" if user_row["username"] else "—"
-    full_name_text = user_row["full_name"] or "—"
-    banned_text = "Да 🚫" if user_row["is_banned"] else "Нет ✅"
-    verified_text = "Да" if user_row["is_verified"] else "Нет"
-
-    return (
-        "👤 <b>Профиль пользователя</b>\n\n"
-        f"ID: <code>{user_row['user_id']}</code>\n"
-        f"Username: {username_text}\n"
-        f"Имя: {full_name_text}\n"
-        f"Забанен: {banned_text}\n"
-        f"Верифицирован: {verified_text}\n"
-        f"Onboarding: {user_row['onboarding_completed']}\n"
-        f"Пропуски ответа по спорам: {user_row['dispute_no_response_count']}\n"
-        f"Создан: {fmt_ts(user_row['created_at'])}"
-    )
 
 
 def admin_contact_kb():
@@ -4228,7 +4245,7 @@ async def admin_ban_handler(message: Message):
         await message.answer("Пользователь не найден.")
         return
 
-    ban_user(target_user_id)
+    await ban_user_with_cleanup(message.bot, target_user_id)
     await message.answer(f"🚫 Пользователь <code>{target_user_id}</code> забанен.")
 
 
@@ -4745,7 +4762,10 @@ async def admin_toggle_ban_handler(callback: CallbackQuery):
         return
 
     new_status = 0 if user_row["is_banned"] else 1
-    set_user_ban_status(target_user_id, new_status)
+    if new_status == 1:
+        await ban_user_with_cleanup(callback.bot, target_user_id)
+    else:
+        unban_user(target_user_id)
 
     updated_row = get_user_row(target_user_id)
 
@@ -4775,7 +4795,7 @@ async def admin_ban_post_owner(callback: CallbackQuery):
         await callback.answer("Объявление не найдено", show_alert=True)
         return
 
-    ban_user(row["user_id"])
+    await ban_user_with_cleanup(callback.bot, row["user_id"])
 
     try:
         await callback.bot.send_message(
@@ -5246,7 +5266,7 @@ async def admin_ban_user_cmd(message: Message):
         return
 
     user_id = int(parts[1])
-    ban_user(user_id)
+    await ban_user_with_cleanup(message.bot, user_id)
     await message.answer(f"⛔ Пользователь {user_id} забанен.")
     
 
@@ -5922,6 +5942,7 @@ async def review_text_input(message: Message, state: FSMContext):
                 review_text,
                 now_ts()
             ))
+        invalidate_user_profile_cache(reviewed_user_id)
 
         await message.answer("✅ Отзыв сохранен.", reply_markup=main_menu(message.from_user.id))
 
@@ -5976,6 +5997,13 @@ async def deal_confirm_handler(callback: CallbackQuery):
         user_id = callback.from_user.id
         if user_id not in (deal["owner_user_id"], deal["requester_user_id"]):
             await callback.answer("Нет доступа", show_alert=True)
+            return
+
+        if not can_confirm_deal_now(deal):
+            await callback.answer(
+                f"Подтвердить завершение можно через {time_left_until_deal_confirm(deal)}",
+                show_alert=True
+            )
             return
 
         owner_confirmed = int(deal["owner_confirmed"] or 0)
@@ -6611,6 +6639,15 @@ async def sub_type(callback: CallbackQuery, state: FSMContext):
 async def sub_from(callback: CallbackQuery, state: FSMContext):
     country = callback.data.split(":", 1)[1]
     await state.update_data(from_country=country)
+    await state.set_state(SubscriptionFlow.from_city)
+    await callback.message.answer("Выберите город отправления:", reply_markup=subscription_cities_kb("subfromcity", country))
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("subfromcity:"))
+async def sub_from_city(callback: CallbackQuery, state: FSMContext):
+    city = callback.data.split(":", 1)[1]
+    await state.update_data(from_city=None if city == "__skip__" else city)
     await state.set_state(SubscriptionFlow.to_country)
     await callback.message.answer("Выберите страну назначения:", reply_markup=countries_kb("subto"))
     await callback.answer()
@@ -6619,11 +6656,28 @@ async def sub_from(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data.startswith("subto:"))
 async def sub_to(callback: CallbackQuery, state: FSMContext):
     country = callback.data.split(":", 1)[1]
+    await state.update_data(to_country=country)
+    await state.set_state(SubscriptionFlow.to_city)
+    await callback.message.answer("Выберите город назначения:", reply_markup=subscription_cities_kb("subtocity", country))
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("subtocity:"))
+async def sub_to_city(callback: CallbackQuery, state: FSMContext):
+    city = callback.data.split(":", 1)[1]
+    await state.update_data(to_city=None if city == "__skip__" else city)
     data = await state.get_data()
-    add_route_subscription(callback.from_user.id, data["post_type"], data["from_country"], country)
+    add_route_subscription(
+        callback.from_user.id,
+        data["post_type"],
+        data["from_country"],
+        data["to_country"],
+        data.get("from_city"),
+        data.get("to_city"),
+    )
     await state.clear()
     await callback.message.answer(
-        f"✅ Подписка сохранена: {data['from_country']} → {country}\n"
+        f"✅ Подписка сохранена: {data['from_country']} → {data['to_country']}\n"
         "Бот будет присылать новые подходящие объявления.",
         reply_markup=main_menu(callback.from_user.id)
     )
@@ -6830,7 +6884,7 @@ async def admin_ban_user_direct(callback: CallbackQuery):
         return
 
     user_id = int(callback.data.split(":")[1])
-    ban_user(user_id)
+    await ban_user_with_cleanup(callback.bot, user_id)
 
     try:
         await callback.bot.send_message(
@@ -6876,21 +6930,7 @@ async def admin_user_lookup_input(message: Message, state: FSMContext):
         await state.clear()
         return
 
-    avg_rating, reviews_count = user_rating_summary(user_id)
-
-    text = (
-        f"👤 <b>Профиль пользователя</b>\n\n"
-        f"<b>USER_ID:</b> {user_id}\n"
-        f"<b>Username:</b> @{html.escape(user['username']) if user['username'] else 'нет'}\n"
-        f"<b>Имя:</b> {html.escape(user['full_name'] or 'не указано')}\n"
-        f"<b>Верификация:</b> {'да' if user['is_verified'] else 'нет'}\n"
-        f"<b>Бан:</b> {'да' if user['is_banned'] else 'нет'}\n"
-        f"<b>Объявлений всего:</b> {profile['posts_count']}\n"
-        f"<b>Активных объявлений:</b> {profile['active_posts']}\n"
-        f"<b>Завершенных сделок:</b> {profile['completed_deals']}\n"
-        f"<b>Жалоб на пользователя:</b> {profile['complaints_received']}\n"
-        f"<b>Рейтинг:</b> {avg_rating:.1f} ({reviews_count} {reviews_word(reviews_count)})\n"
-    )
+    text = build_admin_user_profile_text(user_id)
 
     await message.answer(
         text,
@@ -6913,21 +6953,7 @@ async def admin_open_user_profile(callback: CallbackQuery):
         await callback.answer("Пользователь не найден", show_alert=True)
         return
 
-    avg_rating, reviews_count = user_rating_summary(user_id)
-
-    text = (
-        f"👤 <b>Профиль пользователя</b>\n\n"
-        f"<b>USER_ID:</b> {user_id}\n"
-        f"<b>Username:</b> @{html.escape(user['username']) if user['username'] else 'нет'}\n"
-        f"<b>Имя:</b> {html.escape(user['full_name'] or 'не указано')}\n"
-        f"<b>Верификация:</b> {'да' if user['is_verified'] else 'нет'}\n"
-        f"<b>Бан:</b> {'да' if user['is_banned'] else 'нет'}\n"
-        f"<b>Объявлений всего:</b> {profile['posts_count']}\n"
-        f"<b>Активных объявлений:</b> {profile['active_posts']}\n"
-        f"<b>Завершенных сделок:</b> {profile['completed_deals']}\n"
-        f"<b>Жалоб на пользователя:</b> {profile['complaints_received']}\n"
-        f"<b>Рейтинг:</b> {avg_rating:.1f} ({reviews_count} {reviews_word(reviews_count)})\n"
-    )
+    text = build_admin_user_profile_text(user_id)
 
     await callback.message.answer(
         text,
@@ -6967,7 +6993,7 @@ async def admin_user_ban_btn(callback: CallbackQuery):
         return
 
     user_id = int(callback.data.split(":")[1])
-    ban_user(user_id)
+    await ban_user_with_cleanup(callback.bot, user_id)
     await callback.message.answer(f"🚫 Пользователь {user_id} забанен.")
     await callback.answer()
 
@@ -7094,7 +7120,7 @@ async def admin_complaint_ban_user(callback: CallbackQuery):
             return
 
         user_id = int(raw_user_id)
-        ban_user(user_id)
+        await ban_user_with_cleanup(callback.bot, user_id)
 
         try:
             await callback.bot.send_message(
@@ -8207,6 +8233,7 @@ async def dispute_unresolved_handler(callback: CallbackQuery):
             SET failed_dispute_count = COALESCE(failed_dispute_count, 0) + 1
             WHERE user_id=?
         """, (dispute["against_user_id"],))
+    invalidate_user_profile_cache(dispute["against_user_id"])
 
     updated_dispute = get_dispute(dispute_id)
     failed_deal = get_deal(dispute["deal_id"])

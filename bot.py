@@ -6073,22 +6073,21 @@ async def admin_ban_user_cmd(message: Message):
 
 @router.callback_query(F.data == "create_back")
 async def create_back_handler(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+
     current_state = await state.get_state()
     step_name = get_current_create_step_name(current_state)
 
     if not step_name:
-        await callback.answer("Назад недоступно", show_alert=True)
         return
 
     idx = STEP_ORDER.index(step_name)
     if idx == 0:
-        await callback.answer("Это первый шаг", show_alert=True)
         return
 
     prev_step = STEP_ORDER[idx - 1]
     await clear_step_data_from(state, prev_step)
     await render_create_step(prev_step, callback.message, state)
-    await callback.answer()
 
 
 @router.callback_query(F.data.startswith("support:"))

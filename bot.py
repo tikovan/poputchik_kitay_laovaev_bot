@@ -4530,41 +4530,41 @@ async def render_create_step(step: str, message: Message, state: FSMContext):
         await state.set_state(CreatePost.from_country)
         await message.answer(
             form_text(post_type, 1, "Выберите страну отправления"),
-            reply_markup=country_kb()
+            reply_markup=country_select_kb("from_country_pick")
         )
 
     elif step == "from_city":
         await state.set_state(CreatePost.from_city)
         await message.answer(
-            form_text(post_type, 2, "Выберите город отправления"),
-            reply_markup=city_kb(data.get("from_country"))
+            form_text(post_type, 2, f"Выберите город отправления в стране {data.get('from_country', '')}"),
+            reply_markup=cities_select_kb("from_city_pick", data.get("from_country"), include_back=True)
         )
 
     elif step == "to_country":
         await state.set_state(CreatePost.to_country)
         await message.answer(
             form_text(post_type, 3, "Выберите страну назначения"),
-            reply_markup=country_kb()
+            reply_markup=country_select_kb("to_country_pick")
         )
 
     elif step == "to_city":
         await state.set_state(CreatePost.to_city)
         await message.answer(
-            form_text(post_type, 4, "Выберите город назначения"),
-            reply_markup=city_kb(data.get("to_country"))
+            form_text(post_type, 4, f"Выберите город назначения в стране {data.get('to_country', '')}"),
+            reply_markup=cities_select_kb("to_city_pick", data.get("to_country"), include_back=True)
         )
 
     elif step == "delivery_date":
         await state.set_state(CreatePost.travel_date)
         await message.answer(
-            form_text(post_type, 5, "Выберите дату"),
+            form_text(post_type, 5, "Выберите дату поездки / отправки"),
             reply_markup=date_select_kb()
         )
 
     elif step == "weight":
         await state.set_state(CreatePost.weight)
         await message.answer(
-            form_text(post_type, 6, "Выберите вес"),
+            form_text(post_type, 6, "Выберите вес или объём"),
             reply_markup=weight_select_kb()
         )
 
@@ -6131,7 +6131,7 @@ async def admin_ban_user_cmd(message: Message):
     await message.answer(f"⛔ Пользователь {user_id} забанен.")
     
 
-@router.callback_query(F.data == "create_back")
+@@router.callback_query(F.data == "create_back")
 async def create_back_handler(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 

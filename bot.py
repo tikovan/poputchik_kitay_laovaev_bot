@@ -1322,13 +1322,14 @@ def build_admin_user_profile_text(user_id: int) -> Optional[str]:
         f"<b>Имя:</b> {html.escape(user['full_name'] or 'не указано')}\n"
         f"<b>Верификация:</b> {'да' if user['is_verified'] else 'нет'}\n"
         f"<b>Бан:</b> {'да' if user['is_banned'] else 'нет'}\n"
+        f"<b>Карго-партнер:</b> {'да' if user['is_cargo'] else 'нет'}\n"
         f"<b>Объявлений всего:</b> {profile['posts_count']}\n"
         f"<b>Активных объявлений:</b> {profile['active_posts']}\n"
         f"<b>Завершенных сделок:</b> {profile['completed_deals']}\n"
         f"<b>Жалоб на пользователя:</b> {profile['complaints_received']}\n"
         f"<b>Рейтинг:</b> {avg_rating:.1f} ({reviews_count} {reviews_word(reviews_count)})\n"
     )
-
+    
 
 async def show_user_posts(target, user_id: int):
     with closing(connect_db()) as conn:
@@ -7596,10 +7597,15 @@ async def admin_open_user_profile(callback: CallbackQuery):
 
     await callback.message.answer(
         text,
-        reply_markup=admin_user_actions_kb(user_id, bool(user["is_verified"]), bool(user["is_banned"]))
+        reply_markup=admin_user_actions_kb(
+            user_id,
+            bool(user["is_verified"]),
+            bool(user["is_banned"]),
+            bool(user["is_cargo"])
+        )
     )
     await callback.answer()
-
+    
 
 @router.callback_query(F.data.startswith("admin_user_verify:"))
 async def admin_user_verify_btn(callback: CallbackQuery):

@@ -5460,7 +5460,7 @@ async def support_bug_input(message: Message, state: FSMContext):
     await state.clear()
 
 
-@router.message()
+@router.message(StateFilter(None))
 async def forward_hold_user_messages_to_admin(message: Message, state: FSMContext):
 
     current_state = await state.get_state()

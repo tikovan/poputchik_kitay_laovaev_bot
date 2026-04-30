@@ -7037,7 +7037,7 @@ async def admin_user_lookup_start(callback: CallbackQuery, state: FSMContext):
 
     await state.clear()
     await state.set_state(AdminFlow.user_lookup)
-    await callback.message.answer("Введите USER_ID пользователя:")
+    await callback.message.answer("Введите USER_ID, @username или имя пользователя:")
     await callback.answer()
 
 
@@ -7047,16 +7047,54 @@ async def admin_user_lookup_input(message: Message, state: FSMContext):
         await state.clear()
         return
 
-    text = (message.text or "").strip()
-    if not text.isdigit():
-        await message.answer("Введите корректный USER_ID числом.")
+    query = (message.text or "").strip()
+
+    if not query:
+        await message.answer("Введите USER_ID, @username или имя пользователя.")
         return
 
-    user_id = int(text)
-    profile = get_user_profile_full(user_id)
-    user = profile["user"]
+    user = None
+
+    # 1. По USER_ID
+    if query.isdigit():
+        user = find_user_by_id(int(query))
+
+    # 2. По @username
+    elif query.startswith("@"):
+        user = find_user_by_username(query)
+
+    # 3. По имени / username без @ / части имени
+    else:
+        users = search_users(query, limit=5)
+
+        if len(users) == 1:
+            user = users[0]
+
+        elif len(users) > 1:
+            lines = ["🔎 Найдено несколько пользователей:\n"]
+
+            for u in users:
+                username = f"@{html.escape(u['username'])}" if u["username"] else "без username"
+                full_name = html.escape(u["full_name"] or "без имени")
+
+                lines.append(
+                    f"👤 {full_name} — {username}\n"
+                    f"ID: <code>{u['user_id']}</code>\n"
+                )
+
+            await message.answer("\n".join(lines))
+            return
 
     if not user:
+        await message.answer("❌ Пользователь не найден. Попробуйте USER_ID или @username.")
+        return
+
+    user_id = int(user["user_id"])
+
+    profile = get_user_profile_full(user_id)
+    profile_user = profile["user"]
+
+    if not profile_user:
         await message.answer("Пользователь не найден.")
         await state.clear()
         return
@@ -7065,10 +7103,15 @@ async def admin_user_lookup_input(message: Message, state: FSMContext):
 
     await message.answer(
         text,
-        reply_markup=admin_user_actions_kb(user_id, bool(user["is_verified"]), bool(user["is_banned"]))
+        reply_markup=admin_user_actions_kb(
+            user_id,
+            bool(profile_user["is_verified"]),
+            bool(profile_user["is_banned"])
+        )
     )
-    await state.clear()
 
+    await state.clear()
+    
 
 @router.callback_query(F.data.startswith("admin_user:"))
 async def admin_open_user_profile(callback: CallbackQuery):

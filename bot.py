@@ -879,6 +879,14 @@ def init_db():
             created_at INTEGER NOT NULL,
             UNIQUE(lead_id, cargo_user_id)
         );
+
+        CREATE TABLE IF NOT EXISTS user_blacklist (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            blocked_user_id INTEGER NOT NULL,
+            created_at INTEGER NOT NULL,
+            UNIQUE(user_id, blocked_user_id)
+        );
         """)
 
         conn.execute("""

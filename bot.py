@@ -1854,8 +1854,10 @@ def with_back(rows: List[List[InlineKeyboardButton]], include_back: bool = True)
 
 
 def back_only_kb():
-    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="create_back")]])
-
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="back:cargo")]
+    ])
+    
 
 def countries_kb(prefix: str):
     return InlineKeyboardMarkup(inline_keyboard=chunk_buttons(COUNTRY_OPTIONS, prefix, 2))
@@ -3802,6 +3804,18 @@ def get_cargo_lead(lead_id: int):
         """, (lead_id,)).fetchone()
 
 
+def format_cargo_delivery_date(value: Optional[str]) -> str:
+    if not value:
+        return "не указано"
+
+    value = str(value).strip()
+
+    if re.match(r"^\d{2}\.\d{2}\.\d{4}$", value):
+        return f"до {html.escape(value)}"
+
+    return html.escape(value)
+
+
 def cargo_lead_preview_text(lead) -> str:
     photo_line = ""
     if "photo_file_id" in lead.keys() and lead["photo_file_id"]:
@@ -3811,7 +3825,7 @@ def cargo_lead_preview_text(lead) -> str:
         "🚚 <b>Новая заявка на доставку</b>\n\n"
         f"<b>Заявка:</b> #{lead['id']}\n"
         f"<b>Маршрут:</b> {html.escape(lead['from_place'])} → {html.escape(lead['to_place'])}\n"
-        f"<b>Когда нужно доставить:</b> {html.escape(lead['delivery_date'] or 'не указано')}\n"
+        f"<b>Когда нужно доставить:</b> {format_cargo_delivery_date(lead['delivery_date'])}\n"
         f"<b>Вес/объем:</b> {html.escape(lead['weight'] or 'не указан')}\n"
         f"<b>Груз:</b> {html.escape(lead['cargo_desc'] or 'не указано')}"
         f"{photo_line}\n\n"
@@ -3829,7 +3843,7 @@ def cargo_lead_contact_text(lead) -> str:
         "📩 <b>Контакт клиента</b>\n\n"
         f"<b>Заявка:</b> #{lead['id']}\n"
         f"<b>Маршрут:</b> {html.escape(lead['from_place'])} → {html.escape(lead['to_place'])}\n"
-        f"<b>Когда нужно доставить:</b> {html.escape(lead['delivery_date'] or 'не указано')}\n"
+        f"<b>Когда нужно доставить:</b> {format_cargo_delivery_date(lead['delivery_date'])}\n"
         f"<b>Вес/объем:</b> {html.escape(lead['weight'] or 'не указан')}\n"
         f"<b>Груз:</b> {html.escape(lead['cargo_desc'] or 'не указано')}"
         f"{photo_line}\n\n"
@@ -3873,6 +3887,40 @@ async def cargo_view_photo_handler(callback: CallbackQuery):
         photo=lead["photo_file_id"],
         caption=f"🖼 Фото груза по заявке #{lead_id}"
     )
+    await callback.answer()
+
+
+CARGO_STEP_BACK = {
+    "from_country": None,
+    "from_city": "from_country",
+    "to_country": "from_city",
+    "to_city": "to_country",
+    "delivery_date": "to_city",
+    "weight": "delivery_date",
+    "weight_manual": "weight",
+    "description": "weight",
+    "photo_choice": "description",
+    "photo_upload": "photo_choice",
+    "contact": "photo_choice",
+}
+
+
+@router.callback_query(F.data == "back:cargo")
+async def cargo_back(callback: CallbackQuery, state: FSMContext):
+    current_state = await state.get_state()
+
+    if not current_state:
+        await callback.answer("Назад недоступно", show_alert=True)
+        return
+
+    current_step = current_state.split(":")[-1]
+    prev_step = CARGO_STEP_BACK.get(current_step)
+
+    if not prev_step:
+        await callback.answer("Назад недоступно", show_alert=True)
+        return
+
+    await render_cargo_step(prev_step, callback.message, state)
     await callback.answer()
     
 
@@ -4818,7 +4866,9 @@ async def cargo_delivery_date(callback: CallbackQuery, state: FSMContext):
     elif value == "week":
         delivery_date = (today + timedelta(days=7)).strftime("%d.%m.%Y")
     elif value == "month":
-        delivery_date = (today + timedelta(days=30)).strftime("%d.%m.%Y")
+        start = today.strftime("%d.%m.%Y")
+        end = (today + timedelta(days=30)).strftime("%d.%m.%Y")
+        delivery_date = f"{start} - {end}"
     else:
         delivery_date = value
 

@@ -3932,7 +3932,7 @@ async def cargo_back(callback: CallbackQuery, state: FSMContext):
         await callback.answer("Назад недоступно", show_alert=True)
         return
 
-    current_step = current_state.split(":")[-1]
+    current_step = current_state.split(":")[-1] if ":" in current_state else current_state
     prev_step = CARGO_STEP_BACK.get(current_step)
 
     if not prev_step:
@@ -4962,6 +4962,25 @@ async def cargo_weight_manual(message: Message, state: FSMContext):
 
     await state.update_data(weight=weight)
     await render_cargo_step("description", message, state)
+
+
+@router.message()
+async def cargo_weight_fallback(message: Message, state: FSMContext):
+    current_state = await state.get_state()
+
+    if not current_state:
+        return
+
+    # если пользователь в ручном вводе веса
+    if "weight_manual" in current_state:
+        weight = (message.text or "").strip()
+
+        if len(weight) < 1:
+            await message.answer("Введите вес или объём.", reply_markup=back_only_kb())
+            return
+
+        await state.update_data(weight=weight)
+        await render_cargo_step("description", message, state)
 
 
 @router.message(CargoLeadFlow.from_country_manual)

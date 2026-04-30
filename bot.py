@@ -4613,7 +4613,7 @@ async def admin_contact_message(message: Message, state: FSMContext):
     await state.clear()
 
 
-@router.message(F.text == "🚚 Нужна доставка")
+@router.message(F.text == "🚀 Быстрая доставка (карго)")
 async def cargo_lead_start(message: Message, state: FSMContext):
     upsert_user(message)
 

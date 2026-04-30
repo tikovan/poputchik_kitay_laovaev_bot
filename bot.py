@@ -1978,6 +1978,15 @@ def date_select_kb():
     ])
 
 
+def cargo_date_select_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="В течение недели", callback_data="datepick:week")],
+        [InlineKeyboardButton(text="В течение месяца", callback_data="datepick:month")],
+        [InlineKeyboardButton(text="✏️ Указать точную дату", callback_data="datepick:manual")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="back:cargo")],
+    ])
+
+
 def photo_choice_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📷 Добавить фото посылки", callback_data="photo_choice:add")],
@@ -3892,12 +3901,22 @@ async def cargo_view_photo_handler(callback: CallbackQuery):
 
 CARGO_STEP_BACK = {
     "from_country": None,
+    "from_country_manual": "from_country",
+
     "from_city": "from_country",
+    "from_city_manual": "from_city",
+
     "to_country": "from_city",
+    "to_country_manual": "to_country",
+
     "to_city": "to_country",
+    "to_city_manual": "to_city",
+
     "delivery_date": "to_city",
+
     "weight": "delivery_date",
     "weight_manual": "weight",
+
     "description": "weight",
     "photo_choice": "description",
     "photo_upload": "photo_choice",
@@ -4826,6 +4845,16 @@ async def cargo_lead_start(message: Message, state: FSMContext):
 @router.callback_query(F.data.startswith("cargo_from_country:"))
 async def cargo_from_country(callback: CallbackQuery, state: FSMContext):
     country = callback.data.split(":", 1)[1]
+
+    if country == "__manual__":
+        await state.set_state(CargoLeadFlow.from_country_manual)
+        await callback.message.answer(
+            cargo_form_text(1, "Введите страну отправления вручную"),
+            reply_markup=back_only_kb()
+        )
+        await callback.answer()
+        return
+
     await state.update_data(from_country=country)
     await render_cargo_step("from_city", callback.message, state)
     await callback.answer()
@@ -4834,6 +4863,16 @@ async def cargo_from_country(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data.startswith("cargo_from_city:"))
 async def cargo_from_city(callback: CallbackQuery, state: FSMContext):
     city = callback.data.split(":", 1)[1]
+
+    if city == "__manual__":
+        await state.set_state(CargoLeadFlow.from_city_manual)
+        await callback.message.answer(
+            cargo_form_text(2, "Введите город вручную"),
+            reply_markup=back_only_kb()
+        )
+        await callback.answer()
+        return
+
     await state.update_data(from_city=city)
     await render_cargo_step("to_country", callback.message, state)
     await callback.answer()
@@ -4842,6 +4881,16 @@ async def cargo_from_city(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data.startswith("cargo_to_country:"))
 async def cargo_to_country(callback: CallbackQuery, state: FSMContext):
     country = callback.data.split(":", 1)[1]
+
+    if country == "__manual__":
+        await state.set_state(CargoLeadFlow.to_country_manual)
+        await callback.message.answer(
+            cargo_form_text(3, "Введите страну назначения"),
+            reply_markup=back_only_kb()
+        )
+        await callback.answer()
+        return
+
     await state.update_data(to_country=country)
     await render_cargo_step("to_city", callback.message, state)
     await callback.answer()
@@ -4850,6 +4899,16 @@ async def cargo_to_country(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data.startswith("cargo_to_city:"))
 async def cargo_to_city(callback: CallbackQuery, state: FSMContext):
     city = callback.data.split(":", 1)[1]
+
+    if city == "__manual__":
+        await state.set_state(CargoLeadFlow.to_city_manual)
+        await callback.message.answer(
+            cargo_form_text(4, "Введите город назначения"),
+            reply_markup=back_only_kb()
+        )
+        await callback.answer()
+        return
+
     await state.update_data(to_city=city)
     await render_cargo_step("delivery_date", callback.message, state)
     await callback.answer()
@@ -4858,13 +4917,18 @@ async def cargo_to_city(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data.startswith("datepick:"), CargoLeadFlow.delivery_date)
 async def cargo_delivery_date(callback: CallbackQuery, state: FSMContext):
     value = callback.data.split(":", 1)[1]
-
     today = datetime.now()
 
-    if value == "today":
-        delivery_date = today.strftime("%d.%m.%Y")
-    elif value == "week":
-        delivery_date = (today + timedelta(days=7)).strftime("%d.%m.%Y")
+    if value == "manual":
+        await callback.message.answer(
+            cargo_form_text(5, "Введите дату вручную.\n\nНапример: 15.05.2026"),
+            reply_markup=back_only_kb()
+        )
+        await callback.answer()
+        return
+
+    if value == "week":
+        delivery_date = f"до {(today + timedelta(days=7)).strftime('%d.%m.%Y')}"
     elif value == "month":
         start = today.strftime("%d.%m.%Y")
         end = (today + timedelta(days=30)).strftime("%d.%m.%Y")
@@ -4876,27 +4940,17 @@ async def cargo_delivery_date(callback: CallbackQuery, state: FSMContext):
     await render_cargo_step("weight", callback.message, state)
     await callback.answer()
 
-@router.callback_query(F.data.startswith("cargo_weight:"), CargoLeadFlow.weight)
-async def cargo_weight(callback: CallbackQuery, state: FSMContext):
-    weight = callback.data.split(":", 1)[1]
 
-    if weight == "__manual__":
-        await state.set_state(CargoLeadFlow.weight_manual)
-        await callback.message.answer(
-            cargo_form_text(
-                6,
-                "Введите вес или объём вручную.\n\n"
-                "Например: 35 кг, 2 коробки, 0.5 куба"
-            ),
-            reply_markup=back_only_kb()
-        )
-        await callback.answer()
+@router.message(CargoLeadFlow.delivery_date)
+async def cargo_delivery_date_manual(message: Message, state: FSMContext):
+    text = (message.text or "").strip()
+
+    if len(text) < 3:
+        await message.answer("Введите дату.", reply_markup=back_only_kb())
         return
 
-    await state.update_data(weight=weight)
-    await render_cargo_step("description", callback.message, state)
-    await callback.answer()
-
+    await state.update_data(delivery_date=text)
+    await render_cargo_step("weight", message, state)
 
 @router.message(CargoLeadFlow.weight_manual)
 async def cargo_weight_manual(message: Message, state: FSMContext):
@@ -4908,6 +4962,30 @@ async def cargo_weight_manual(message: Message, state: FSMContext):
 
     await state.update_data(weight=weight)
     await render_cargo_step("description", message, state)
+
+
+@router.message(CargoLeadFlow.from_country_manual)
+async def cargo_from_country_manual(message: Message, state: FSMContext):
+    await state.update_data(from_country=message.text.strip())
+    await render_cargo_step("from_city", message, state)
+
+
+@router.message(CargoLeadFlow.from_city_manual)
+async def cargo_from_city_manual(message: Message, state: FSMContext):
+    await state.update_data(from_city=message.text.strip())
+    await render_cargo_step("to_country", message, state)
+
+
+@router.message(CargoLeadFlow.to_country_manual)
+async def cargo_to_country_manual(message: Message, state: FSMContext):
+    await state.update_data(to_country=message.text.strip())
+    await render_cargo_step("to_city", message, state)
+
+
+@router.message(CargoLeadFlow.to_city_manual)
+async def cargo_to_city_manual(message: Message, state: FSMContext):
+    await state.update_data(to_city=message.text.strip())
+    await render_cargo_step("delivery_date", message, state)
     
 
 @router.message(CargoLeadFlow.description)

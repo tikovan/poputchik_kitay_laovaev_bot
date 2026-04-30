@@ -7216,7 +7216,7 @@ async def admin_user_unhold_btn(callback: CallbackQuery):
     try:
         await callback.bot.send_message(
             user_id,
-            "✅ Проверка снята. Ваш аккаунт снова доступен."
+            "✅ Проверка снята. Ваш аккаунт снова доступен. Ваши обьявления были деактивированы. Для активации или создания нового обьявления перейдите в Мои Обьявления."
         )
     except Exception as e:
         logger.warning("Не удалось отправить сообщение о снятии HOLD пользователю %s: %s", user_id, e)

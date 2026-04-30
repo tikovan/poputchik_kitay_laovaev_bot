@@ -3953,12 +3953,9 @@ async def cargo_back(callback: CallbackQuery, state: FSMContext):
     if not prev_step:
         await callback.answer("Назад недоступно", show_alert=True)
         return
-await state.set_state(CreatePost.photo_choice)
-await message.answer(
-    form_text(post_type, 8, "Хотите добавить фото посылки? Это необязательно."),
-    reply_markup=photo_choice_kb()
-)
 
+    await render_cargo_step(prev_step, callback.message, state)
+    await callback.answer()
 async def safe_publish(bot: Bot, post_id: int):
     try:
         coro = publish_to_channel(bot, post_id)
@@ -6557,9 +6554,10 @@ async def enter_description(message: Message, state: FSMContext):
         )
         return
 
-    await state.update_data(description=desc[:1000])
+    data = await state.get_data()
+    post_type = data.get("post_type", TYPE_PARCEL)
 
-    post_type = (await state.get_data()).get("post_type", TYPE_PARCEL)
+    await state.update_data(description=desc[:1000])
 
     await state.set_state(CreatePost.photo_choice)
     await message.answer(

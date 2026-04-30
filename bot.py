@@ -1,6 +1,6 @@
 import asyncio
 import html
-import os 
+import os
 import re
 import sqlite3
 import time
@@ -4814,6 +4814,10 @@ async def global_main_menu_router(message: Message, state: FSMContext):
 
     if text == "📦 Отправить посылку":
         await add_parcel(message, state)
+        return
+
+    if text == "🚀 Быстрая доставка (карго)":
+        await cargo_lead_start(message, state)
         return
 
     if text == "🔎 Найти совпадения":

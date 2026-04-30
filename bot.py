@@ -7576,20 +7576,20 @@ async def admin_user_lookup_input(message: Message, state: FSMContext):
         await state.clear()
         return
 
-    text = build_admin_user_profile_text(user_id)
+       text = build_admin_user_profile_text(user_id)
 
-   await message.answer(
-    text,
-    reply_markup=admin_user_actions_kb(
-        user_id,
-        bool(profile_user["is_verified"]),
-        bool(profile_user["is_banned"]),
-        bool(profile_user["is_cargo"])
+    await message.answer(
+        text,
+        reply_markup=admin_user_actions_kb(
+            user_id,
+            bool(profile_user["is_verified"]),
+            bool(profile_user["is_banned"]),
+            bool(profile_user["is_cargo"])
+        )
     )
-)
 
     await state.clear()
-    
+
 
 @router.callback_query(F.data.startswith("admin_user:"))
 async def admin_open_user_profile(callback: CallbackQuery):

@@ -6548,16 +6548,24 @@ async def weight_manual_input(message: Message, state: FSMContext):
 
 @router.message(CreatePost.description)
 async def enter_description(message: Message, state: FSMContext):
-    if await block_menu_text_during_form(message, state):
-        return
-
     desc = (message.text or "").strip()
+
     if len(desc) < 3:
-        await message.answer("Описание слишком короткое. Напишите подробнее.", reply_markup=back_only_kb())
+        await message.answer(
+            "Описание слишком короткое. Напишите подробнее.",
+            reply_markup=back_only_kb()
+        )
         return
 
     await state.update_data(description=desc[:1000])
-    await render_cargo_step("photo_choice", message, state)
+
+    post_type = (await state.get_data()).get("post_type", TYPE_PARCEL)
+
+    await state.set_state(CreatePost.photo_choice)
+    await message.answer(
+        form_text(post_type, 8, "Хотите добавить фото посылки? Это необязательно."),
+        reply_markup=photo_choice_kb()
+    )
     
 
 @router.callback_query(F.data.startswith("photo_choice:"))

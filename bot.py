@@ -4476,7 +4476,7 @@ async def render_cargo_step(target_step: str, target_message: Message, state: FS
             "Шаг 6 / 9\n"
             "━━━━━━━━━━━━━━\n\n"
             "Выберите вес или объём груза",
-            reply_markup=weight_select_kb()
+            reply_markup=cargo_weight_select_kb()
         )
         return
 
@@ -5855,7 +5855,7 @@ async def create_back_handler(callback: CallbackQuery, state: FSMContext):
 
     prev_step = STEP_ORDER[idx - 1]
     await clear_step_data_from(state, prev_step)
-    await render_create_step(prev_step, callback.message, state)
+    await render_cargo_step(prev_step, callback.message, state)
     await callback.answer()
 
 
@@ -6322,7 +6322,7 @@ async def enter_description(message: Message, state: FSMContext):
         return
 
     await state.update_data(description=desc[:1000])
-    await render_create_step("photo_choice", message, state)
+    await render_cargo_step("photo_choice", message, state)
     
 
 @router.callback_query(F.data.startswith("photo_choice:"))

@@ -4837,9 +4837,9 @@ async def cargo_contact(message: Message, state: FSMContext):
         await message.answer("Укажите корректный контакт.")
         return
 
-    data = await state.get_data()
+        data = await state.get_data()
 
-       try:
+    try:
         lead_id = create_cargo_lead(
             user_id=message.from_user.id,
             from_place=f"{data.get('from_country', '')}, {data.get('from_city', '')}",
@@ -4850,10 +4850,6 @@ async def cargo_contact(message: Message, state: FSMContext):
             contact=contact,
             photo_file_id=data.get("photo_file_id")
         )
-    except Exception as e:
-        logger.exception("CARGO SAVE ERROR: %s", e)
-        await message.answer(f"❌ Ошибка при сохранении заявки: {e}")
-        return
     except Exception as e:
         logger.exception("CARGO SAVE ERROR: %s", e)
         await message.answer(f"❌ Ошибка при сохранении заявки: {e}")

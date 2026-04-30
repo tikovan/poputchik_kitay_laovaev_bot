@@ -1903,6 +1903,35 @@ def weight_select_kb():
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def cargo_weight_select_kb():
+    rows = []
+    weights = ["0.5 кг", "1 кг", "2 кг", "3 кг", "5 кг", "10 кг", "20 кг", "Более 20 кг"]
+
+    for i in range(0, len(weights), 2):
+        row = []
+        for w in weights[i:i+2]:
+            row.append(
+                InlineKeyboardButton(
+                    text=w,
+                    callback_data=f"cargo_weight:{w}"
+                )
+            )
+        rows.append(row)
+
+    rows.append([
+        InlineKeyboardButton(
+            text="✏️ Указать другой вес",
+            callback_data="cargo_weight:__manual__"
+        )
+    ])
+
+    rows.append([
+        InlineKeyboardButton(text="⬅️ Назад", callback_data="back:cargo")
+    ])
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def edit_weight_select_kb(post_id: int):
     rows = []
     row = []
@@ -4740,7 +4769,7 @@ async def cargo_delivery_date(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("weightpick:"), CargoLeadFlow.weight)
+@router.callback_query(F.data.startswith("cargo_weight:"), CargoLeadFlow.weight)
 async def cargo_weight(callback: CallbackQuery, state: FSMContext):
     weight = callback.data.split(":", 1)[1]
 
@@ -4784,15 +4813,6 @@ async def cargo_description(message: Message, state: FSMContext):
 
     await state.update_data(description=text[:1000])
     await render_cargo_step("photo_choice", message, state)
-
-    await message.answer(
-        "🚀 <b>Быстрая доставка (карго)</b>\n\n"
-        "━━━━━━━━━━━━━━\n"
-        "Шаг 7 / 8\n"
-        "━━━━━━━━━━━━━━\n\n"
-        "Хотите добавить фото груза?",
-        reply_markup=cargo_photo_choice_kb()
-    )
 
 
 @router.callback_query(F.data.startswith("cargo_photo_choice:"), CargoLeadFlow.photo_choice)
@@ -6303,18 +6323,6 @@ async def enter_description(message: Message, state: FSMContext):
 
     await state.update_data(description=desc[:1000])
     await render_create_step("photo_choice", message, state)
-
-
-@router.message(CargoLeadFlow.description)
-async def cargo_description(message: Message, state: FSMContext):
-    text = (message.text or "").strip()
-
-    if len(text) < 3:
-        await message.answer("Опишите груз более подробно.")
-        return
-
-    await state.update_data(description=text[:1000])
-    await render_cargo_step("photo_choice", message, state)
     
 
 @router.callback_query(F.data.startswith("photo_choice:"))

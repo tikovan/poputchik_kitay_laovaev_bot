@@ -7576,7 +7576,7 @@ async def admin_user_lookup_input(message: Message, state: FSMContext):
         await state.clear()
         return
 
-       text = build_admin_user_profile_text(user_id)
+    text = build_admin_user_profile_text(user_id)
 
     await message.answer(
         text,

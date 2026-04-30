@@ -3803,32 +3803,60 @@ def get_cargo_lead(lead_id: int):
 
 
 def cargo_lead_preview_text(lead) -> str:
+    photo_line = ""
+    if "photo_file_id" in lead.keys() and lead["photo_file_id"]:
+        photo_line = "\n<b>Фото:</b> прикреплено, доступно по кнопке ниже\n"
+
     return (
         "🚚 <b>Новая заявка на доставку</b>\n\n"
+        f"<b>Заявка:</b> #{lead['id']}\n"
         f"<b>Маршрут:</b> {html.escape(lead['from_place'])} → {html.escape(lead['to_place'])}\n"
+        f"<b>Когда нужно доставить:</b> {html.escape(lead['delivery_date'] or 'не указано')}\n"
         f"<b>Вес/объем:</b> {html.escape(lead['weight'] or 'не указан')}\n"
-        f"<b>Груз:</b> {html.escape(lead['cargo_desc'])}\n\n"
+        f"<b>Груз:</b> {html.escape(lead['cargo_desc'] or 'не указано')}"
+        f"{photo_line}\n"
         "Контакт клиента скрыт.\n"
         "Нажмите кнопку ниже, чтобы получить контакт."
     )
 
 
 def cargo_lead_contact_text(lead) -> str:
+    photo_line = ""
+    if "photo_file_id" in lead.keys() and lead["photo_file_id"]:
+        photo_line = "\n<b>Фото:</b> прикреплено, доступно по кнопке ниже\n"
+
     return (
         "📩 <b>Контакт клиента</b>\n\n"
         f"<b>Заявка:</b> #{lead['id']}\n"
         f"<b>Маршрут:</b> {html.escape(lead['from_place'])} → {html.escape(lead['to_place'])}\n"
+        f"<b>Когда нужно доставить:</b> {html.escape(lead['delivery_date'] or 'не указано')}\n"
         f"<b>Вес/объем:</b> {html.escape(lead['weight'] or 'не указан')}\n"
-        f"<b>Груз:</b> {html.escape(lead['cargo_desc'])}\n\n"
+        f"<b>Груз:</b> {html.escape(lead['cargo_desc'] or 'не указано')}"
+        f"{photo_line}\n"
         f"<b>Контакт:</b> {html.escape(lead['contact'])}"
     )
 
 
 def cargo_lead_kb(lead_id: int):
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📩 Получить контакт клиента", callback_data=f"cargo_get_contact:{lead_id}")]
-    ])
+    lead = get_cargo_lead(lead_id)
 
+    rows = [
+        [InlineKeyboardButton(
+            text="📩 Получить контакт клиента",
+            callback_data=f"cargo_get_contact:{lead_id}"
+        )]
+    ]
+
+    if lead and "photo_file_id" in lead.keys() and lead["photo_file_id"]:
+        rows.append([
+            InlineKeyboardButton(
+                text="🖼 Посмотреть фото",
+                callback_data=f"cargo_view_photo:{lead_id}"
+            )
+        ])
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+    
 
 async def safe_publish(bot: Bot, post_id: int):
     try:
@@ -3959,12 +3987,9 @@ async def notify_cargo_users(bot: Bot, lead_id: int):
         try:
             await bot.send_message(
                 admin_id,
-                "🆕 <b>Новая карго-заявка</b>\n\n" + cargo_lead_contact_text(lead)
+                "🆕 <b>Новая карго-заявка</b>\n\n" + cargo_lead_contact_text(lead),
+                reply_markup=cargo_lead_kb(lead_id)
             )
-
-            # 👇 ДОБАВИЛИ ФОТО
-            if "photo_file_id" in lead.keys() and lead["photo_file_id"]:
-                await bot.send_photo(admin_id, lead["photo_file_id"])
 
         except Exception as e:
             logger.warning("Не удалось отправить cargo lead админу %s: %s", admin_id, e)
@@ -3977,10 +4002,6 @@ async def notify_cargo_users(bot: Bot, lead_id: int):
                 cargo_lead_preview_text(lead),
                 reply_markup=cargo_lead_kb(lead_id)
             )
-
-            # 👇 ДОБАВИЛИ ФОТО
-            if "photo_file_id" in lead.keys() and lead["photo_file_id"]:
-                await bot.send_photo(cargo["user_id"], lead["photo_file_id"])
 
         except Exception as e:
             logger.warning("Не удалось отправить cargo lead карго %s: %s", cargo["user_id"], e)
@@ -4897,6 +4918,22 @@ async def cargo_contact(message: Message, state: FSMContext):
         await notify_cargo_users(message.bot, lead_id)
     except Exception as e:
         logger.exception("CARGO NOTIFY ERROR: %s", e)
+
+
+@router.callback_query(F.data.startswith("cargo_view_photo:"))
+async def cargo_view_photo_handler(callback: CallbackQuery):
+    lead_id = int(callback.data.split(":", 1)[1])
+    lead = get_cargo_lead(lead_id)
+
+    if not lead or not lead["photo_file_id"]:
+        await callback.answer("Фото не найдено", show_alert=True)
+        return
+
+    await callback.message.answer_photo(
+        photo=lead["photo_file_id"],
+        caption=f"🖼 Фото груза по заявке #{lead_id}"
+    )
+    await callback.answer()
     
 
 @router.inline_query()

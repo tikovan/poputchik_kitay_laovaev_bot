@@ -846,56 +846,54 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_deals_requester 
         ON deals(requester_user_id, status, created_at);
         """)
-
-
         conn.executescript("""
-        CREATE TABLE IF NOT EXISTS chat_messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            post_id INTEGER NOT NULL,
-            deal_id INTEGER,
-            from_user_id INTEGER NOT NULL,
-            to_user_id INTEGER NOT NULL,
-            message_text TEXT NOT NULL,
-            created_at INTEGER NOT NULL,
-            is_read INTEGER NOT NULL DEFAULT 0
-        );
+CREATE TABLE IF NOT EXISTS chat_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    post_id INTEGER NOT NULL,
+    deal_id INTEGER,
+    from_user_id INTEGER NOT NULL,
+    to_user_id INTEGER NOT NULL,
+    message_text TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    is_read INTEGER NOT NULL DEFAULT 0
+);
 
-       conn.executescript("""
-    CREATE TABLE IF NOT EXISTS cargo_leads (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER NOT NULL,
-        from_place TEXT NOT NULL,
-        to_place TEXT NOT NULL,
-        weight TEXT,
-        cargo_desc TEXT NOT NULL,
-        contact TEXT NOT NULL,
-        status TEXT NOT NULL DEFAULT 'new',
-        created_at INTEGER NOT NULL
-    );
+CREATE TABLE IF NOT EXISTS cargo_leads (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    from_place TEXT NOT NULL,
+    to_place TEXT NOT NULL,
+    weight TEXT,
+    cargo_desc TEXT NOT NULL,
+    contact TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'new',
+    created_at INTEGER NOT NULL
+);
 
-    CREATE TABLE IF NOT EXISTS cargo_lead_access (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        lead_id INTEGER NOT NULL,
-        cargo_user_id INTEGER NOT NULL,
-        created_at INTEGER NOT NULL,
-        UNIQUE(lead_id, cargo_user_id)
-    );
+CREATE TABLE IF NOT EXISTS cargo_lead_access (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    lead_id INTEGER NOT NULL,
+    cargo_user_id INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    UNIQUE(lead_id, cargo_user_id)
+);
 """)
 
 conn.execute("""
-    CREATE INDEX IF NOT EXISTS idx_cargo_leads_created
-    ON cargo_leads(created_at)
+CREATE INDEX IF NOT EXISTS idx_cargo_leads_created
+ON cargo_leads(created_at)
 """)
 
 conn.execute("""
-    CREATE INDEX IF NOT EXISTS idx_cargo_leads_status
-    ON cargo_leads(status)
+CREATE INDEX IF NOT EXISTS idx_cargo_leads_status
+ON cargo_leads(status)
 """)
 
 conn.execute("""
-    CREATE INDEX IF NOT EXISTS idx_cargo_lead_access_lead
-    ON cargo_lead_access(lead_id)
+CREATE INDEX IF NOT EXISTS idx_cargo_lead_access_lead
+ON cargo_lead_access(lead_id)
 """)
+
 
         # ---- ensure columns ----
 

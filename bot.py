@@ -1954,6 +1954,13 @@ def photo_choice_kb():
     ])
 
 
+def cargo_photo_choice_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📸 Добавить фото", callback_data="cargo_photo_choice:add")],
+        [InlineKeyboardButton(text="⏭ Без фото", callback_data="cargo_photo_choice:skip")],
+    ])
+
+
 def my_posts_kb(posts: List[sqlite3.Row]):
     rows = []
 
@@ -3914,7 +3921,7 @@ async def notify_cargo_users(bot: Bot, lead_id: int):
             )
 
             # 👇 ДОБАВИЛИ ФОТО
-            if lead["photo_file_id"]:
+            if "photo_file_id" in lead.keys() and lead["photo_file_id"]:
                 await bot.send_photo(admin_id, lead["photo_file_id"])
 
         except Exception as e:
@@ -3930,7 +3937,7 @@ async def notify_cargo_users(bot: Bot, lead_id: int):
             )
 
             # 👇 ДОБАВИЛИ ФОТО
-            if lead["photo_file_id"]:
+            if "photo_file_id" in lead.keys() and lead["photo_file_id"]:
                 await bot.send_photo(cargo["user_id"], lead["photo_file_id"])
 
         except Exception as e:
@@ -4797,11 +4804,11 @@ async def cargo_description(message: Message, state: FSMContext):
         "Шаг 7 / 8\n"
         "━━━━━━━━━━━━━━\n\n"
         "Хотите добавить фото груза?",
-        reply_markup=photo_choice_kb()
+        reply_markup=cargo_photo_choice_kb()
     )
 
 
-@router.callback_query(F.data.startswith("photo_choice:"), CargoLeadFlow.photo_choice)
+@router.callback_query(F.data.startswith("cargo_photo_choice:"), CargoLeadFlow.photo_choice)
 async def cargo_photo_choice(callback: CallbackQuery, state: FSMContext):
     action = callback.data.split(":", 1)[1]
 

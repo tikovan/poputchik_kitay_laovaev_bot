@@ -3805,7 +3805,7 @@ def get_cargo_lead(lead_id: int):
 def cargo_lead_preview_text(lead) -> str:
     photo_line = ""
     if "photo_file_id" in lead.keys() and lead["photo_file_id"]:
-        photo_line = "\n<b>Фото:</b> прикреплено, доступно по кнопке ниже\n"
+        photo_line = "\n<b>Фото:</b> прикреплено, доступно по кнопке ниже"
 
     return (
         "🚚 <b>Новая заявка на доставку</b>\n\n"
@@ -3814,16 +3814,16 @@ def cargo_lead_preview_text(lead) -> str:
         f"<b>Когда нужно доставить:</b> {html.escape(lead['delivery_date'] or 'не указано')}\n"
         f"<b>Вес/объем:</b> {html.escape(lead['weight'] or 'не указан')}\n"
         f"<b>Груз:</b> {html.escape(lead['cargo_desc'] or 'не указано')}"
-        f"{photo_line}\n"
-        "Контакт клиента скрыт.\n"
+        f"{photo_line}\n\n"
+        "🔒 <b>Контакт клиента скрыт.</b>\n"
         "Нажмите кнопку ниже, чтобы получить контакт."
     )
-
+    
 
 def cargo_lead_contact_text(lead) -> str:
     photo_line = ""
     if "photo_file_id" in lead.keys() and lead["photo_file_id"]:
-        photo_line = "\n<b>Фото:</b> прикреплено, доступно по кнопке ниже\n"
+        photo_line = "\n<b>Фото:</b> прикреплено, доступно по кнопке ниже"
 
     return (
         "📩 <b>Контакт клиента</b>\n\n"
@@ -3832,19 +3832,21 @@ def cargo_lead_contact_text(lead) -> str:
         f"<b>Когда нужно доставить:</b> {html.escape(lead['delivery_date'] or 'не указано')}\n"
         f"<b>Вес/объем:</b> {html.escape(lead['weight'] or 'не указан')}\n"
         f"<b>Груз:</b> {html.escape(lead['cargo_desc'] or 'не указано')}"
-        f"{photo_line}\n"
+        f"{photo_line}\n\n"
         f"<b>Контакт:</b> {html.escape(lead['contact'])}"
     )
-
+    
 
 def cargo_lead_kb(lead_id: int):
     lead = get_cargo_lead(lead_id)
 
     rows = [
-        [InlineKeyboardButton(
-            text="📩 Получить контакт клиента",
-            callback_data=f"cargo_get_contact:{lead_id}"
-        )]
+        [
+            InlineKeyboardButton(
+                text="📩 Получить контакт клиента",
+                callback_data=f"cargo_get_contact:{lead_id}"
+            )
+        ]
     ]
 
     if lead and "photo_file_id" in lead.keys() and lead["photo_file_id"]:
@@ -3856,6 +3858,22 @@ def cargo_lead_kb(lead_id: int):
         ])
 
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@router.callback_query(F.data.startswith("cargo_view_photo:"))
+async def cargo_view_photo_handler(callback: CallbackQuery):
+    lead_id = int(callback.data.split(":", 1)[1])
+    lead = get_cargo_lead(lead_id)
+
+    if not lead or not lead["photo_file_id"]:
+        await callback.answer("Фото не найдено", show_alert=True)
+        return
+
+    await callback.message.answer_photo(
+        photo=lead["photo_file_id"],
+        caption=f"🖼 Фото груза по заявке #{lead_id}"
+    )
+    await callback.answer()
     
 
 async def safe_publish(bot: Bot, post_id: int):
@@ -3987,12 +4005,11 @@ async def notify_cargo_users(bot: Bot, lead_id: int):
         try:
             await bot.send_message(
                 admin_id,
-                "🆕 <b>Новая карго-заявка</b>\n\n" + cargo_lead_contact_text(lead),
+                "🆕 <b> Вам пришел новый карго-лид</b>\n\n" + cargo_lead_contact_text(lead),
                 reply_markup=cargo_lead_kb(lead_id)
             )
-
         except Exception as e:
-            logger.warning("Не удалось отправить cargo lead админу %s: %s", admin_id, e)
+            logger.warning("Не удалось отправить cargo лид админу %s: %s", admin_id, e)
 
     # ---- КАРГО ----
     for cargo in cargo_users:
@@ -4002,10 +4019,9 @@ async def notify_cargo_users(bot: Bot, lead_id: int):
                 cargo_lead_preview_text(lead),
                 reply_markup=cargo_lead_kb(lead_id)
             )
-
         except Exception as e:
-            logger.warning("Не удалось отправить cargo lead карго %s: %s", cargo["user_id"], e)
-
+            logger.warning("Не удалось отправить cargo лид карго %s: %s", cargo["user_id"], e)
+            
 
 async def run_global_coincidence_scan(bot: Bot):
     try:
@@ -4795,10 +4811,20 @@ async def cargo_to_city(callback: CallbackQuery, state: FSMContext):
 async def cargo_delivery_date(callback: CallbackQuery, state: FSMContext):
     value = callback.data.split(":", 1)[1]
 
-    await state.update_data(delivery_date=value)
+    today = datetime.now()
+
+    if value == "today":
+        delivery_date = today.strftime("%d.%m.%Y")
+    elif value == "week":
+        delivery_date = (today + timedelta(days=7)).strftime("%d.%m.%Y")
+    elif value == "month":
+        delivery_date = (today + timedelta(days=30)).strftime("%d.%m.%Y")
+    else:
+        delivery_date = value
+
+    await state.update_data(delivery_date=delivery_date)
     await render_cargo_step("weight", callback.message, state)
     await callback.answer()
-
 
 @router.callback_query(F.data.startswith("cargo_weight:"), CargoLeadFlow.weight)
 async def cargo_weight(callback: CallbackQuery, state: FSMContext):

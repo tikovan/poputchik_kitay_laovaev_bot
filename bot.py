@@ -3731,13 +3731,21 @@ def get_cargo_users():
         """).fetchall()
 
 
-def create_cargo_lead(user_id: int, from_place: str, to_place: str, weight: str, cargo_desc: str, contact: str) -> int:
+def create_cargo_lead(
+    user_id: int,
+    from_place: str,
+    to_place: str,
+    weight: str,
+    cargo_desc: str,
+    contact: str,
+    photo_file_id: Optional[str] = None
+) -> int:
     with closing(connect_db()) as conn, conn:
         cur = conn.execute("""
             INSERT INTO cargo_leads (
-                user_id, from_place, to_place, weight, cargo_desc, contact, created_at
+                user_id, from_place, to_place, weight, cargo_desc, contact, photo_file_id, created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             user_id,
             from_place,
@@ -3745,6 +3753,7 @@ def create_cargo_lead(user_id: int, from_place: str, to_place: str, weight: str,
             weight,
             cargo_desc,
             contact,
+            photo_file_id,
             now_ts()
         ))
         return int(cur.lastrowid)
@@ -4861,15 +4870,20 @@ async def cargo_contact(message: Message, state: FSMContext):
 
     data = await state.get_data()
 
-    lead_id = create_cargo_lead(
-        user_id=message.from_user.id,
-        from_place=f"{data.get('from_country', '')}, {data.get('from_city', '')}",
-        to_place=f"{data.get('to_country', '')}, {data.get('to_city', '')}",
-        weight=data.get("weight") or "",
-        cargo_desc=data.get("description") or "",
-        contact=contact,
-        photo_file_id=data.get("photo_file_id")
-    )
+    try:
+        lead_id = create_cargo_lead(
+            user_id=message.from_user.id,
+            from_place=f"{data.get('from_country', '')}, {data.get('from_city', '')}",
+            to_place=f"{data.get('to_country', '')}, {data.get('to_city', '')}",
+            weight=data.get("weight") or "",
+            cargo_desc=data.get("description") or "",
+            contact=contact,
+            photo_file_id=data.get("photo_file_id")
+        )
+    except Exception as e:
+        logger.exception("CARGO SAVE ERROR: %s", e)
+        await message.answer(f"❌ Ошибка при сохранении заявки: {e}")
+        return
 
     await state.clear()
 
@@ -4879,7 +4893,10 @@ async def cargo_contact(message: Message, state: FSMContext):
         reply_markup=main_menu(message.from_user.id)
     )
 
-    await notify_cargo_users(message.bot, lead_id)
+    try:
+        await notify_cargo_users(message.bot, lead_id)
+    except Exception as e:
+        logger.exception("CARGO NOTIFY ERROR: %s", e)
     
 
 @router.inline_query()

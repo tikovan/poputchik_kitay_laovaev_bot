@@ -912,6 +912,9 @@ def init_db():
         ensure_column(conn, "posts", "expire_warned_at", "expire_warned_at INTEGER")
         ensure_column(conn, "route_subscriptions", "from_city", "from_city TEXT")
         ensure_column(conn, "route_subscriptions", "to_city", "to_city TEXT")
+        ensure_column(conn, "users", "review_status", "review_status TEXT DEFAULT 'clear'")
+        ensure_column(conn, "users", "review_requested_at", "review_requested_at INTEGER")
+        ensure_column(conn, "users", "review_admin_id", "review_admin_id INTEGER")
 
         conn.execute("CREATE INDEX IF NOT EXISTS idx_chat_messages_to_read ON chat_messages(to_user_id, is_read, created_at)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_chat_messages_post ON chat_messages(post_id, created_at)")
@@ -1005,6 +1008,18 @@ def unban_user(user_id: int):
     invalidate_user_profile_cache(user_id)
 
 
+def unhold_user(user_id: int):
+    with closing(connect_db()) as conn, conn:
+        conn.execute("""
+            UPDATE users
+            SET review_status='clear',
+                review_requested_at=NULL,
+                review_admin_id=NULL
+            WHERE user_id=?
+        """, (user_id,))
+    invalidate_user_profile_cache(user_id)
+
+
 def get_user_posts_with_channel_messages(user_id: int) -> List[sqlite3.Row]:
     with closing(connect_db()) as conn:
         return conn.execute("""
@@ -1033,11 +1048,53 @@ async def ban_user_with_cleanup(bot: Bot, user_id: int):
     ban_user(user_id)
 
 
+async def hold_user_with_cleanup(bot: Bot, user_id: int, admin_id: int):
+    await hide_user_posts_from_channel(bot, user_id)
+
+    with closing(connect_db()) as conn, conn:
+        conn.execute("""
+            UPDATE users
+            SET review_status='hold',
+                review_requested_at=?,
+                review_admin_id=?
+            WHERE user_id=?
+        """, (now_ts(), admin_id, user_id))
+
+        conn.execute("""
+            UPDATE posts
+            SET status=?, updated_at=?
+            WHERE user_id=? AND status IN ('active','pending','inactive')
+        """, (STATUS_INACTIVE, now_ts(), user_id))
+
+    invalidate_user_profile_cache(user_id)
+
+    text = (
+        "⚠️ <b>Ваш аккаунт временно ограничен для проверки.</b>\n\n"
+        "Это стандартная мера безопасности сервиса.\n\n"
+        "Чтобы продолжить использование, отправьте прямо сюда в бот:\n\n"
+        "1. Короткое селфи-видео до 5 секунд\n"
+        "— лицо должно совпадать с вашей аватаркой\n\n"
+        "2. Контакт для связи\n"
+        "— желательно WeChat ID\n\n"
+        "После проверки доступ может быть восстановлен."
+    )
+
+    try:
+        await bot.send_message(user_id, text)
+    except Exception as e:
+        logger.warning("Не удалось отправить HOLD сообщение пользователю %s: %s", user_id, e)
+
+
 def anti_spam_check(user_id: int) -> Optional[str]:
     with closing(connect_db()) as conn, conn:
-        row = conn.execute("SELECT is_banned, last_action_at FROM users WHERE user_id=?", (user_id,)).fetchone()
+        row = conn.execute(
+            "SELECT is_banned, last_action_at, review_status FROM users WHERE user_id=?",
+            (user_id,)
+        ).fetchone()
         if not row:
             return None
+        if row["is_banned"]:
+            return "Ваш аккаунт ограничен администратором."
         if row["is_banned"]:
             return "Ваш аккаунт ограничен администратором."
         last_action_at = row["last_action_at"] or 0
@@ -2633,15 +2690,49 @@ def admin_bump_orders_kb(order_id: int, post_id: int):
 def admin_user_actions_kb(user_id: int, is_verified: bool, is_banned: bool):
     rows = []
 
+    # Верификация
     if is_verified:
-        rows.append([InlineKeyboardButton(text="↩️ Снять верификацию", callback_data=f"admin_user_unverify:{user_id}")])
+        rows.append([
+            InlineKeyboardButton(
+                text="↩️ Снять верификацию",
+                callback_data=f"admin_user_unverify:{user_id}"
+            )
+        ])
     else:
-        rows.append([InlineKeyboardButton(text="✅ Верифицировать", callback_data=f"admin_user_verify:{user_id}")])
+        rows.append([
+            InlineKeyboardButton(
+                text="✅ Верифицировать",
+                callback_data=f"admin_user_verify:{user_id}"
+            )
+        ])
 
+    # HOLD (проверка) — ВСЕГДА доступна
+    rows.append([
+        InlineKeyboardButton(
+            text="⚠️ На проверку",
+            callback_data=f"admin_user_hold:{user_id}"
+        ),
+        InlineKeyboardButton(
+            text="✅ Снять проверку",
+            callback_data=f"admin_user_unhold:{user_id}"
+        )
+    ])
+
+    # Бан
     if is_banned:
-        rows.append([InlineKeyboardButton(text="♻️ Разбанить", callback_data=f"admin_user_unban:{user_id}")])
+        rows.append([
+            InlineKeyboardButton(
+                text="♻️ Разбанить",
+                callback_data=f"admin_user_unban:{user_id}"
+            )
+        ])
     else:
-        rows.append([InlineKeyboardButton(text="🚫 Забанить", callback_data=f"admin_user_ban:{user_id}")])
+        rows.append([
+            InlineKeyboardButton(
+                text="🚫 Забанить",
+                callback_data=f"admin_user_ban:{user_id}"
+            )
+        ])
 
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -5362,6 +5453,46 @@ async def support_bug_input(message: Message, state: FSMContext):
     await state.clear()
 
 
+@router.message()
+async def forward_hold_user_messages_to_admin(message: Message):
+    if not message.from_user:
+        return
+
+    user_id = message.from_user.id
+
+    if is_admin(user_id):
+        return
+
+    with closing(connect_db()) as conn:
+        row = conn.execute("""
+            SELECT review_status, username, full_name
+            FROM users
+            WHERE user_id=?
+        """, (user_id,)).fetchone()
+
+    if not row or row["review_status"] != "hold":
+        return
+
+    admin_text = (
+        "⚠️ <b>Сообщение от пользователя на проверке</b>\n\n"
+        f"<b>USER_ID:</b> {user_id}\n"
+        f"<b>Username:</b> @{html.escape(row['username']) if row['username'] else 'нет'}\n"
+        f"<b>Имя:</b> {html.escape(row['full_name'] or 'не указано')}\n\n"
+        "Ниже переслано его сообщение."
+    )
+
+    for admin_id in ADMIN_IDS:
+        try:
+            await message.bot.send_message(admin_id, admin_text)
+            await message.forward(admin_id)
+        except Exception as e:
+            logger.warning("Не удалось переслать HOLD сообщение админу %s: %s", admin_id, e)
+
+    await message.answer(
+        "✅ Данные отправлены администратору. После проверки доступ может быть восстановлен."
+    )
+
+
 @router.message(SupportFlow.help_text)
 async def support_help_input(message: Message, state: FSMContext):
     text = (message.text or "").strip()
@@ -7007,6 +7138,38 @@ async def admin_user_unban_btn(callback: CallbackQuery):
     user_id = int(callback.data.split(":")[1])
     unban_user(user_id)
     await callback.message.answer(f"♻️ Пользователь {user_id} разбанен.")
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("admin_user_hold:"))
+async def admin_user_hold_btn(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    user_id = int(callback.data.split(":")[1])
+    await hold_user_with_cleanup(callback.bot, user_id, callback.from_user.id)
+
+    await callback.message.answer(f"⚠️ Пользователь {user_id} поставлен на проверку.")
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("admin_user_unhold:"))
+async def admin_user_unhold_btn(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    user_id = int(callback.data.split(":")[1])
+    unhold_user(user_id)
+
+    try:
+        await callback.bot.send_message(
+            user_id,
+            "✅ Проверка снята. Ваш аккаунт снова доступен."
+        )
+    except Exception as e:
+        logger.warning("Не удалось отправить сообщение о снятии HOLD пользователю %s: %s", user_id, e)
+
+    await callback.message.answer(f"✅ Проверка пользователя {user_id} снята.")
     await callback.answer()
 
 @router.callback_query(F.data == "admin:complaints")

@@ -1857,6 +1857,11 @@ def with_back(rows: List[List[InlineKeyboardButton]], include_back: bool = True)
 
 def back_only_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="create_back")]
+    ])
+
+def cargo_back_only_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="back:cargo")]
     ])
     
@@ -3940,10 +3945,11 @@ async def cargo_back(callback: CallbackQuery, state: FSMContext):
     if not prev_step:
         await callback.answer("Назад недоступно", show_alert=True)
         return
-
-    await render_cargo_step(prev_step, callback.message, state)
-    await callback.answer()
-    
+await state.set_state(CreatePost.photo_choice)
+await message.answer(
+    form_text(post_type, 8, "Хотите добавить фото посылки? Это необязательно."),
+    reply_markup=photo_choice_kb()
+)
 
 async def safe_publish(bot: Bot, post_id: int):
     try:
@@ -4604,7 +4610,7 @@ async def render_cargo_step(target_step: str, target_message: Message, state: FS
             "Шаг 7 / 9\n"
             "━━━━━━━━━━━━━━\n\n"
             "Опишите груз подробно\nЧто за товар / объём / упаковка / срочность",
-            reply_markup=back_only_kb()
+            reply_markup=cargo_back_only_kb()
         )
         return
 
@@ -4629,7 +4635,7 @@ async def render_cargo_step(target_step: str, target_message: Message, state: FS
             "━━━━━━━━━━━━━━\n\n"
             "Укажите контакт для связи.\n\n"
             "Лучше Telegram или WeChat ID.",
-            reply_markup=back_only_kb()
+            reply_markup=cargo_back_only_kb()
         )
         return
         
@@ -4852,7 +4858,7 @@ async def cargo_from_country(callback: CallbackQuery, state: FSMContext):
         await state.set_state(CargoLeadFlow.from_country_manual)
         await callback.message.answer(
             cargo_form_text(1, "Введите страну отправления вручную"),
-            reply_markup=back_only_kb()
+            reply_markup=cargo_back_only_kb()
         )
         await callback.answer()
         return
@@ -4870,7 +4876,7 @@ async def cargo_from_city(callback: CallbackQuery, state: FSMContext):
         await state.set_state(CargoLeadFlow.from_city_manual)
         await callback.message.answer(
             cargo_form_text(2, "Введите город вручную"),
-            reply_markup=back_only_kb()
+            reply_markup=cargo_back_only_kb()
         )
         await callback.answer()
         return
@@ -4888,7 +4894,7 @@ async def cargo_to_country(callback: CallbackQuery, state: FSMContext):
         await state.set_state(CargoLeadFlow.to_country_manual)
         await callback.message.answer(
             cargo_form_text(3, "Введите страну назначения"),
-            reply_markup=back_only_kb()
+            reply_markup=cargo_back_only_kb()
         )
         await callback.answer()
         return
@@ -4906,7 +4912,7 @@ async def cargo_to_city(callback: CallbackQuery, state: FSMContext):
         await state.set_state(CargoLeadFlow.to_city_manual)
         await callback.message.answer(
             cargo_form_text(4, "Введите город назначения"),
-            reply_markup=back_only_kb()
+            reply_markup=cargo_back_only_kb()
         )
         await callback.answer()
         return
@@ -4924,7 +4930,7 @@ async def cargo_delivery_date(callback: CallbackQuery, state: FSMContext):
     if value == "manual":
         await callback.message.answer(
             cargo_form_text(5, "Введите дату вручную.\n\nНапример: 15.05.2026"),
-            reply_markup=back_only_kb()
+            reply_markup=cargo_back_only_kb()
         )
         await callback.answer()
         return
@@ -4948,7 +4954,7 @@ async def cargo_delivery_date_manual(message: Message, state: FSMContext):
     text = (message.text or "").strip()
 
     if len(text) < 3:
-        await message.answer("Введите дату.", reply_markup=back_only_kb())
+        await message.answer("Введите дату.", reply_markup=cargo_back_only_kb()
         return
 
     await state.update_data(delivery_date=text)
@@ -4959,11 +4965,40 @@ async def cargo_weight_manual(message: Message, state: FSMContext):
     weight = (message.text or "").strip()
 
     if len(weight) < 1:
-        await message.answer("Введите вес или объём.", reply_markup=back_only_kb())
+        await message.answer("Введите вес или объём.", reply_markup=cargo_back_only_kb()
         return
 
     await state.update_data(weight=weight)
     await render_cargo_step("description", message, state)
+
+
+# --- Cargo обработчики ---
+
+@router.callback_query(F.data.startswith("cargo_date:"), CargoLeadFlow.delivery_date)
+async def cargo_date(...):
+    ...
+
+# 👉 ВСТАВЬ СЮДА
+@router.callback_query(F.data.startswith("cargo_weight:"), CargoLeadFlow.weight)
+async def cargo_weight(callback: CallbackQuery, state: FSMContext):
+    weight = callback.data.split(":", 1)[1]
+
+    if weight == "__manual__":
+        await state.set_state(CargoLeadFlow.weight_manual)
+        await callback.message.answer(
+            cargo_form_text(6, "Введите вес или объём вручную.\n\nНапример: 35 кг, 2 коробки, 0.5 куба"),
+            reply_markup=cargo_back_only_kb()
+        )
+        await callback.answer()
+        return
+
+    await state.update_data(weight=weight)
+    await render_cargo_step("description", callback.message, state)
+    await callback.answer()
+
+
+@router.message(CargoLeadFlow.weight_manual)
+async def cargo_weight_manual(...):
 
 
 @router.message(CargoLeadFlow.from_country_manual)
@@ -5013,7 +5048,7 @@ async def cargo_photo_choice(callback: CallbackQuery, state: FSMContext):
                 8,
                 "Отправьте одно фото груза."
             ),
-            reply_markup=back_only_kb()
+            reply_markup=cargo_back_only_kb()
         )
         await callback.answer()
         return
@@ -5028,7 +5063,7 @@ async def cargo_photo_upload(message: Message, state: FSMContext):
     if not message.photo:
         await message.answer(
             "Отправьте фото груза.",
-            reply_markup=back_only_kb()
+            reply_markup=cargo_back_only_kb()
         )
         return
 
@@ -6479,7 +6514,7 @@ async def pick_weight(callback: CallbackQuery, state: FSMContext):
     if value == "__manual__":
         await state.set_state(CreatePost.weight_manual)
         await callback.message.answer(
-            form_text(post_type, 6, "Введите свой вес / объём\nНапример: 7 кг"),
+            form_text(post_type, 6, "Введите вес / объём\nНапример: 7 кг"),
             reply_markup=back_only_kb()
         )
         await callback.answer()

@@ -4980,14 +4980,7 @@ async def cargo_weight_manual(message: Message, state: FSMContext):
     await render_cargo_step("description", message, state)
 
 
-# --- Cargo обработчики ---
-
-@router.callback_query(F.data.startswith("cargo_date:"), CargoLeadFlow.delivery_date)
-async def cargo_date(...):
-    ...
-
-# 👉 ВСТАВЬ СЮДА
-@router.callback_query(F.data.startswith("cargo_weight:"), CargoLeadFlow.weight)
+@@router.callback_query(F.data.startswith("cargo_weight:"), CargoLeadFlow.weight)
 async def cargo_weight(callback: CallbackQuery, state: FSMContext):
     weight = callback.data.split(":", 1)[1]
 
@@ -5006,7 +4999,15 @@ async def cargo_weight(callback: CallbackQuery, state: FSMContext):
 
 
 @router.message(CargoLeadFlow.weight_manual)
-async def cargo_weight_manual(...):
+async def cargo_weight_manual(message: Message, state: FSMContext):
+    weight = (message.text or "").strip()
+
+    if len(weight) < 1:
+        await message.answer("Введите вес или объём.", reply_markup=cargo_back_only_kb())
+        return
+
+    await state.update_data(weight=weight)
+    await render_cargo_step("description", message, state)
 
 
 @router.message(CargoLeadFlow.from_country_manual)

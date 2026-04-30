@@ -3695,7 +3695,6 @@ def set_user_cargo(user_id: int, is_cargo: bool = True):
             (1 if is_cargo else 0, user_id)
         )
 
-
 def is_cargo_user(user_id: int) -> bool:
     with closing(connect_db()) as conn:
         row = conn.execute(

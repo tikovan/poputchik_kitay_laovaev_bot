@@ -242,12 +242,13 @@ STEP_ORDER = [
     "from_city",
     "to_country",
     "to_city",
-    "travel_date",
+    "delivery_date",  
     "weight",
     "description",
     "photo_choice",
-    "contact_note",
+    "contact",         
 ]
+
 STEP_NUMBERS = {name: i + 1 for i, name in enumerate(STEP_ORDER)}
 
 MAIN_MENU_TEXTS = {
@@ -1803,11 +1804,12 @@ async def send_post_card_to_user(
         row["user_id"]
     )
 
+    # ✅ ИСПРАВЛЕНО: убран сломанный блок с cargo/lead
     await bot.send_message(
-    cargo["user_id"],
-    cargo_lead_preview_text(lead),
-    reply_markup=cargo_lead_kb(lead_id)
-)
+        user_id,
+        text,
+        reply_markup=kb
+    )
     
 
 async def show_onboarding_screen(target, screen: int):
@@ -4962,25 +4964,6 @@ async def cargo_weight_manual(message: Message, state: FSMContext):
 
     await state.update_data(weight=weight)
     await render_cargo_step("description", message, state)
-
-
-@router.message()
-async def cargo_weight_fallback(message: Message, state: FSMContext):
-    current_state = await state.get_state()
-
-    if not current_state:
-        return
-
-    # если пользователь в ручном вводе веса
-    if "weight_manual" in current_state:
-        weight = (message.text or "").strip()
-
-        if len(weight) < 1:
-            await message.answer("Введите вес или объём.", reply_markup=back_only_kb())
-            return
-
-        await state.update_data(weight=weight)
-        await render_cargo_step("description", message, state)
 
 
 @router.message(CargoLeadFlow.from_country_manual)

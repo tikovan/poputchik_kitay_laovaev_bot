@@ -3941,29 +3941,21 @@ CARGO_STEP_BACK = {
 
 @router.callback_query(F.data == "back:cargo")
 async def cargo_back(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+
     current_state = await state.get_state()
 
     if not current_state:
-        await callback.answer("Назад недоступно", show_alert=True)
         return
 
     current_step = current_state.split(":")[-1] if ":" in current_state else current_state
     prev_step = CARGO_STEP_BACK.get(current_step)
 
     if not prev_step:
-        await callback.answer("Назад недоступно", show_alert=True)
         return
 
     await render_cargo_step(prev_step, callback.message, state)
-    await callback.answer()
-async def safe_publish(bot: Bot, post_id: int):
-    try:
-        coro = publish_to_channel(bot, post_id)
-        if coro:
-            await coro
-    except Exception as e:
-        logger.exception("CHANNEL PUBLISH ERROR: %s", e)
-
+    
 
 async def remove_post_from_channel(bot: Bot, row):
     if not CHANNEL_USERNAME or not row:
@@ -4529,6 +4521,74 @@ def cargo_form_text(step: int, prompt: str) -> str:
         f"{prompt}"
     )
 
+
+async def render_create_step(step: str, message: Message, state: FSMContext):
+    data = await state.get_data()
+    post_type = data.get("post_type", TYPE_PARCEL)
+
+    if step == "from_country":
+        await state.set_state(CreatePost.from_country)
+        await message.answer(
+            form_text(post_type, 1, "Выберите страну отправления"),
+            reply_markup=country_kb()
+        )
+
+    elif step == "from_city":
+        await state.set_state(CreatePost.from_city)
+        await message.answer(
+            form_text(post_type, 2, "Выберите город отправления"),
+            reply_markup=city_kb(data.get("from_country"))
+        )
+
+    elif step == "to_country":
+        await state.set_state(CreatePost.to_country)
+        await message.answer(
+            form_text(post_type, 3, "Выберите страну назначения"),
+            reply_markup=country_kb()
+        )
+
+    elif step == "to_city":
+        await state.set_state(CreatePost.to_city)
+        await message.answer(
+            form_text(post_type, 4, "Выберите город назначения"),
+            reply_markup=city_kb(data.get("to_country"))
+        )
+
+    elif step == "delivery_date":
+        await state.set_state(CreatePost.travel_date)
+        await message.answer(
+            form_text(post_type, 5, "Выберите дату"),
+            reply_markup=date_select_kb()
+        )
+
+    elif step == "weight":
+        await state.set_state(CreatePost.weight)
+        await message.answer(
+            form_text(post_type, 6, "Выберите вес"),
+            reply_markup=weight_select_kb()
+        )
+
+    elif step == "description":
+        await state.set_state(CreatePost.description)
+        await message.answer(
+            form_text(post_type, 7, "Опишите посылку или что готовы взять"),
+            reply_markup=back_only_kb()
+        )
+
+    elif step == "photo_choice":
+        await state.set_state(CreatePost.photo_choice)
+        await message.answer(
+            form_text(post_type, 8, "Хотите добавить фото посылки? Это необязательно."),
+            reply_markup=photo_choice_kb()
+        )
+
+    elif step == "contact":
+        await state.set_state(CreatePost.contact_note)
+        await message.answer(
+            form_text(post_type, 9, "Оставьте контакт для связи"),
+            reply_markup=back_only_kb()
+        )
+        
 
 async def render_cargo_step(target_step: str, target_message: Message, state: FSMContext):
     data = await state.get_data()
@@ -6088,7 +6148,7 @@ async def create_back_handler(callback: CallbackQuery, state: FSMContext):
     prev_step = STEP_ORDER[idx - 1]
     await clear_step_data_from(state, prev_step)
     await render_create_step(prev_step, callback.message, state)
-
+    
 
 @router.callback_query(F.data.startswith("support:"))
 async def support_router(callback: CallbackQuery, state: FSMContext):

@@ -253,6 +253,7 @@ STEP_NUMBERS = {name: i + 1 for i, name in enumerate(STEP_ORDER)}
 MAIN_MENU_TEXTS = {
     "✈️ Взять посылку",
     "📦 Отправить посылку",
+    "🚀 Быстрая доставка (карго)",
     "🔎 Найти совпадения",
     "📋 Мои объявления",
     "🤝 Мои сделки",
@@ -859,36 +860,42 @@ def init_db():
             is_read INTEGER NOT NULL DEFAULT 0
         );
 
-        CREATE TABLE IF NOT EXISTS user_blacklist (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            blocked_user_id INTEGER NOT NULL,
-            created_at INTEGER NOT NULL,
-            UNIQUE(user_id, blocked_user_id)
-        );
-        """)
+       conn.executescript("""
+    CREATE TABLE IF NOT EXISTS cargo_leads (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        from_place TEXT NOT NULL,
+        to_place TEXT NOT NULL,
+        weight TEXT,
+        cargo_desc TEXT NOT NULL,
+        contact TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'new',
+        created_at INTEGER NOT NULL
+    );
 
-        # ---- дополнительные индексы для ускорения ----
+    CREATE TABLE IF NOT EXISTS cargo_lead_access (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        lead_id INTEGER NOT NULL,
+        cargo_user_id INTEGER NOT NULL,
+        created_at INTEGER NOT NULL,
+        UNIQUE(lead_id, cargo_user_id)
+    );
+""")
 
-        conn.execute("""
-        CREATE INDEX IF NOT EXISTS idx_posts_expires_at
-        ON posts(expires_at)
-        """)
+conn.execute("""
+    CREATE INDEX IF NOT EXISTS idx_cargo_leads_created
+    ON cargo_leads(created_at)
+""")
 
-        conn.execute("""
-        CREATE INDEX IF NOT EXISTS idx_posts_status_created
-        ON posts(status, created_at)
-        """)
+conn.execute("""
+    CREATE INDEX IF NOT EXISTS idx_cargo_leads_status
+    ON cargo_leads(status)
+""")
 
-        conn.execute("""
-        CREATE INDEX IF NOT EXISTS idx_posts_status_route
-        ON posts(status, post_type, from_country, to_country)
-        """)
-
-        conn.execute("""
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_coincidence_unique_pair
-        ON coincidence_notifications(post_a_id, post_b_id)
-        """)
+conn.execute("""
+    CREATE INDEX IF NOT EXISTS idx_cargo_lead_access_lead
+    ON cargo_lead_access(lead_id)
+""")
 
         # ---- ensure columns ----
 
@@ -915,6 +922,8 @@ def init_db():
         ensure_column(conn, "users", "review_status", "review_status TEXT DEFAULT 'clear'")
         ensure_column(conn, "users", "review_requested_at", "review_requested_at INTEGER")
         ensure_column(conn, "users", "review_admin_id", "review_admin_id INTEGER")
+        ensure_column(conn, "users", "is_cargo", "is_cargo INTEGER DEFAULT 0")
+        ensure_column(conn, "users", "cargo_company_name", "cargo_company_name TEXT")
 
         conn.execute("CREATE INDEX IF NOT EXISTS idx_chat_messages_to_read ON chat_messages(to_user_id, is_read, created_at)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_chat_messages_post ON chat_messages(post_id, created_at)")
@@ -2481,6 +2490,7 @@ def dispute_actions_kb(dispute: sqlite3.Row, viewer_user_id: int) -> InlineKeybo
 def main_menu(user_id: Optional[int] = None):
     keyboard = [
         [KeyboardButton(text="✈️ Взять посылку"), KeyboardButton(text="📦 Отправить посылку")],
+        [KeyboardButton(text="🚀 Быстрая доставка (карго)")],
         [KeyboardButton(text="🔎 Найти совпадения"), KeyboardButton(text="📋 Мои объявления")],
         [KeyboardButton(text="🤝 Мои сделки"), KeyboardButton(text="🔔 Подписки")],
         [KeyboardButton(text="🆕 Новые объявления"), KeyboardButton(text="🔥 Популярные маршруты")],
@@ -2577,6 +2587,13 @@ class AdminContactFlow(StatesGroup):
 class VerificationFlow(StatesGroup):
     passport_photo = State()
     selfie_photo = State()
+
+class CargoLeadFlow(StatesGroup):
+    from_place = State()
+    to_place = State()
+    weight = State()
+    cargo_desc = State()
+    contact = State()
     
 
 def is_main_menu_text(text: str) -> bool:
@@ -2694,7 +2711,7 @@ def admin_bump_orders_kb(order_id: int, post_id: int):
     ])
 
 
-def admin_user_actions_kb(user_id: int, is_verified: bool, is_banned: bool):
+def admin_user_actions_kb(user_id: int, is_verified: bool, is_banned: bool, is_cargo: bool = False):
     rows = []
 
     # Верификация
@@ -2713,7 +2730,7 @@ def admin_user_actions_kb(user_id: int, is_verified: bool, is_banned: bool):
             )
         ])
 
-    # HOLD (проверка) — ВСЕГДА доступна
+    # HOLD (проверка)
     rows.append([
         InlineKeyboardButton(
             text="⚠️ На проверку",
@@ -2724,6 +2741,22 @@ def admin_user_actions_kb(user_id: int, is_verified: bool, is_banned: bool):
             callback_data=f"admin_user_unhold:{user_id}"
         )
     ])
+
+    # Карго-партнер
+    if is_cargo:
+        rows.append([
+            InlineKeyboardButton(
+                text="❌ Убрать карго",
+                callback_data=f"admin_user_remove_cargo:{user_id}"
+            )
+        ])
+    else:
+        rows.append([
+            InlineKeyboardButton(
+                text="🚀 Сделать карго",
+                callback_data=f"admin_user_make_cargo:{user_id}"
+            )
+        ])
 
     # Бан
     if is_banned:
@@ -3657,6 +3690,89 @@ def publish_to_channel(bot: Bot, post_id: int):
     return _send()
 
 
+    def set_user_cargo(user_id: int, is_cargo: bool = True):
+    with closing(connect_db()) as conn, conn:
+        conn.execute(
+            "UPDATE users SET is_cargo=? WHERE user_id=?",
+            (1 if is_cargo else 0, user_id)
+        )
+
+
+def is_cargo_user(user_id: int) -> bool:
+    with closing(connect_db()) as conn:
+        row = conn.execute(
+            "SELECT is_cargo FROM users WHERE user_id=?",
+            (user_id,)
+        ).fetchone()
+    return bool(row and row["is_cargo"])
+
+
+def get_cargo_users():
+    with closing(connect_db()) as conn:
+        return conn.execute("""
+            SELECT user_id, username, full_name
+            FROM users
+            WHERE is_cargo=1 AND is_banned=0
+        """).fetchall()
+
+
+def create_cargo_lead(user_id: int, from_place: str, to_place: str, weight: str, cargo_desc: str, contact: str) -> int:
+    with closing(connect_db()) as conn, conn:
+        cur = conn.execute("""
+            INSERT INTO cargo_leads (
+                user_id, from_place, to_place, weight, cargo_desc, contact, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (
+            user_id,
+            from_place,
+            to_place,
+            weight,
+            cargo_desc,
+            contact,
+            now_ts()
+        ))
+        return int(cur.lastrowid)
+
+
+def get_cargo_lead(lead_id: int):
+    with closing(connect_db()) as conn:
+        return conn.execute("""
+            SELECT cl.*, u.username, u.full_name
+            FROM cargo_leads cl
+            LEFT JOIN users u ON u.user_id = cl.user_id
+            WHERE cl.id=?
+        """, (lead_id,)).fetchone()
+
+
+def cargo_lead_preview_text(lead) -> str:
+    return (
+        "🚚 <b>Новая заявка на доставку</b>\n\n"
+        f"<b>Маршрут:</b> {html.escape(lead['from_place'])} → {html.escape(lead['to_place'])}\n"
+        f"<b>Вес/объем:</b> {html.escape(lead['weight'] or 'не указан')}\n"
+        f"<b>Груз:</b> {html.escape(lead['cargo_desc'])}\n\n"
+        "Контакт клиента скрыт.\n"
+        "Нажмите кнопку ниже, чтобы получить контакт."
+    )
+
+
+def cargo_lead_contact_text(lead) -> str:
+    return (
+        "📩 <b>Контакт клиента</b>\n\n"
+        f"<b>Заявка:</b> #{lead['id']}\n"
+        f"<b>Маршрут:</b> {html.escape(lead['from_place'])} → {html.escape(lead['to_place'])}\n"
+        f"<b>Вес/объем:</b> {html.escape(lead['weight'] or 'не указан')}\n"
+        f"<b>Груз:</b> {html.escape(lead['cargo_desc'])}\n\n"
+        f"<b>Контакт:</b> {html.escape(lead['contact'])}"
+    )
+
+
+def cargo_lead_kb(lead_id: int):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📩 Получить контакт клиента", callback_data=f"cargo_get_contact:{lead_id}")]
+    ])
+
+
 async def safe_publish(bot: Bot, post_id: int):
     try:
         coro = publish_to_channel(bot, post_id)
@@ -3772,6 +3888,35 @@ async def notify_subscribers(bot: Bot, post_id: int):
             )
         except Exception as e:
             logger.exception("SUBSCRIBER SEND ERROR: %s", e)
+
+
+async def notify_cargo_users(bot: Bot, lead_id: int):
+    lead = get_cargo_lead(lead_id)
+    if not lead:
+        return
+
+    cargo_users = get_cargo_users()
+
+    # Админу всегда отправляем полную заявку
+    for admin_id in ADMIN_IDS:
+        try:
+            await bot.send_message(
+                admin_id,
+                "🆕 <b>Новая карго-заявка</b>\n\n" + cargo_lead_contact_text(lead)
+            )
+        except Exception as e:
+            logger.warning("Не удалось отправить cargo lead админу %s: %s", admin_id, e)
+
+    # Карго отправляем без контакта
+    for cargo in cargo_users:
+        try:
+            await bot.send_message(
+                cargo["user_id"],
+                cargo_lead_preview_text(lead),
+                reply_markup=cargo_lead_kb(lead_id)
+            )
+        except Exception as e:
+            logger.warning("Не удалось отправить cargo lead карго %s: %s", cargo["user_id"], e)
 
 
 async def run_global_coincidence_scan(bot: Bot):
@@ -4469,6 +4614,122 @@ async def admin_contact_message(message: Message, state: FSMContext):
         "Он свяжется с вами напрямую в Telegram."
     )
     await state.clear()
+
+
+@router.message(F.text == "🚚 Нужна доставка")
+async def cargo_lead_start(message: Message, state: FSMContext):
+    upsert_user(message)
+
+    spam = anti_spam_check(message.from_user.id)
+    if spam:
+        await message.answer(spam)
+        return
+
+    await state.clear()
+    await state.set_state(CargoLeadFlow.from_place)
+
+    await message.answer(
+        "🚚 <b>Заявка на доставку</b>\n\n"
+        "Укажите, откуда нужно забрать груз.\n\n"
+        "Например: Шэньчжэнь, Гуанчжоу, Иу"
+    )
+
+
+@router.message(CargoLeadFlow.from_place)
+async def cargo_lead_from_place(message: Message, state: FSMContext):
+    text = (message.text or "").strip()
+
+    if not text:
+        await message.answer("Укажите город или место отправки.")
+        return
+
+    await state.update_data(from_place=text)
+    await state.set_state(CargoLeadFlow.to_place)
+
+    await message.answer(
+        "Куда нужно доставить груз?\n\n"
+        "Например: Москва, Санкт-Петербург, Алматы"
+    )
+
+
+@router.message(CargoLeadFlow.to_place)
+async def cargo_lead_to_place(message: Message, state: FSMContext):
+    text = (message.text or "").strip()
+
+    if not text:
+        await message.answer("Укажите город или место доставки.")
+        return
+
+    await state.update_data(to_place=text)
+    await state.set_state(CargoLeadFlow.weight)
+
+    await message.answer(
+        "Укажите примерный вес или объем груза.\n\n"
+        "Например: 5 кг, 50 кг, 2 куба"
+    )
+
+
+@router.message(CargoLeadFlow.weight)
+async def cargo_lead_weight(message: Message, state: FSMContext):
+    text = (message.text or "").strip()
+
+    if not text:
+        text = "не указан"
+
+    await state.update_data(weight=text)
+    await state.set_state(CargoLeadFlow.cargo_desc)
+
+    await message.answer(
+        "Что за груз нужно доставить?\n\n"
+        "Например: одежда, электроника, образцы, мебель, оборудование"
+    )
+
+
+@router.message(CargoLeadFlow.cargo_desc)
+async def cargo_lead_desc(message: Message, state: FSMContext):
+    text = (message.text or "").strip()
+
+    if len(text) < 3:
+        await message.answer("Опишите груз чуть подробнее.")
+        return
+
+    await state.update_data(cargo_desc=text)
+    await state.set_state(CargoLeadFlow.contact)
+
+    await message.answer(
+        "Укажите контакт для связи.\n\n"
+        "Лучше всего: Telegram или WeChat ID."
+    )
+
+
+@router.message(CargoLeadFlow.contact)
+async def cargo_lead_contact(message: Message, state: FSMContext):
+    contact = (message.text or "").strip()
+
+    if len(contact) < 3:
+        await message.answer("Укажите корректный контакт.")
+        return
+
+    data = await state.get_data()
+
+    lead_id = create_cargo_lead(
+        user_id=message.from_user.id,
+        from_place=data["from_place"],
+        to_place=data["to_place"],
+        weight=data.get("weight") or "",
+        cargo_desc=data["cargo_desc"],
+        contact=contact
+    )
+
+    await state.clear()
+
+    await message.answer(
+        "✅ Заявка создана.\n\n"
+        "Мы передали её карго-партнерам. Если маршрут подходит, с вами свяжутся.",
+        reply_markup=main_menu(message.from_user.id)
+    )
+
+    await notify_cargo_users(message.bot, lead_id) 
     
 
 @router.inline_query()
@@ -4932,6 +5193,33 @@ async def admin_stats_handler(callback: CallbackQuery):
         reply_markup=admin_menu_kb()
     )
     await callback.answer()
+
+
+@router.callback_query(F.data.startswith("cargo_get_contact:"))
+async def cargo_get_contact(callback: CallbackQuery):
+    user_id = callback.from_user.id
+
+    if not is_admin(user_id) and not is_cargo_user(user_id):
+        await callback.answer("Эта функция доступна только карго-партнерам.", show_alert=True)
+        return
+
+    lead_id = int(callback.data.split(":")[1])
+    lead = get_cargo_lead(lead_id)
+
+    if not lead:
+        await callback.answer("Заявка не найдена.", show_alert=True)
+        return
+
+    with closing(connect_db()) as conn, conn:
+        conn.execute("""
+            INSERT OR IGNORE INTO cargo_lead_access (
+                lead_id, cargo_user_id, created_at
+            )
+            VALUES (?, ?, ?)
+        """, (lead_id, user_id, now_ts()))
+
+    await callback.message.answer(cargo_lead_contact_text(lead))
+    await callback.answer("Контакт открыт")
     
 
 @router.callback_query(F.data.startswith("onboarding_action:"))
@@ -7191,6 +7479,31 @@ async def admin_user_unban_btn(callback: CallbackQuery):
     unban_user(user_id)
     await callback.message.answer(f"♻️ Пользователь {user_id} разбанен.")
     await callback.answer()
+
+@router.callback_query(F.data.startswith("admin_user_make_cargo:"))
+async def admin_user_make_cargo(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    user_id = int(callback.data.split(":")[1])
+    set_user_cargo(user_id, True)
+
+    await callback.message.answer(f"🚚 Пользователь {user_id} теперь карго-партнер.")
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admin_user_remove_cargo:"))
+async def admin_user_remove_cargo(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    user_id = int(callback.data.split(":")[1])
+    set_user_cargo(user_id, False)
+
+    await callback.message.answer(f"❌ Пользователь {user_id} больше не карго-партнер.")
+    await callback.answer()    
 
 @router.callback_query(F.data.startswith("admin_user_hold:"))
 async def admin_user_hold_btn(callback: CallbackQuery):

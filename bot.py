@@ -4962,7 +4962,7 @@ async def cargo_delivery_date_manual(message: Message, state: FSMContext):
     text = (message.text or "").strip()
 
     if len(text) < 3:
-        await message.answer("Введите дату.", reply_markup=cargo_back_only_kb()
+        await message.answer("Введите дату.", reply_markup=cargo_back_only_kb())
         return
 
     await state.update_data(delivery_date=text)
@@ -4973,14 +4973,14 @@ async def cargo_weight_manual(message: Message, state: FSMContext):
     weight = (message.text or "").strip()
 
     if len(weight) < 1:
-        await message.answer("Введите вес или объём.", reply_markup=cargo_back_only_kb()
+        await message.answer("Введите вес или объём.", reply_markup=cargo_back_only_kb())
         return
 
     await state.update_data(weight=weight)
     await render_cargo_step("description", message, state)
 
 
-@@router.callback_query(F.data.startswith("cargo_weight:"), CargoLeadFlow.weight)
+@router.callback_query(F.data.startswith("cargo_weight:"), CargoLeadFlow.weight)
 async def cargo_weight(callback: CallbackQuery, state: FSMContext):
     weight = callback.data.split(":", 1)[1]
 
@@ -4996,18 +4996,6 @@ async def cargo_weight(callback: CallbackQuery, state: FSMContext):
     await state.update_data(weight=weight)
     await render_cargo_step("description", callback.message, state)
     await callback.answer()
-
-
-@router.message(CargoLeadFlow.weight_manual)
-async def cargo_weight_manual(message: Message, state: FSMContext):
-    weight = (message.text or "").strip()
-
-    if len(weight) < 1:
-        await message.answer("Введите вес или объём.", reply_markup=cargo_back_only_kb())
-        return
-
-    await state.update_data(weight=weight)
-    await render_cargo_step("description", message, state)
 
 
 @router.message(CargoLeadFlow.from_country_manual)

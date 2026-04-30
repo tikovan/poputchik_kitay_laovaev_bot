@@ -4614,7 +4614,7 @@ async def render_cargo_step(target_step: str, target_message: Message, state: FS
             "Шаг 2 / 9\n"
             "━━━━━━━━━━━━━━\n\n"
             f"Выберите город отправления в стране {country}",
-            reply_markup=cities_select_kb("cargo_from_city", country, include_back=True)
+            reply_markup=cities_select_kb("cargo_from_city", country, include_back=True, back_callback="back:cargo")
         )
         return
 
@@ -4626,7 +4626,7 @@ async def render_cargo_step(target_step: str, target_message: Message, state: FS
             "Шаг 3 / 9\n"
             "━━━━━━━━━━━━━━\n\n"
             "Выберите страну назначения",
-            reply_markup=countries_select_kb("cargo_to_country", include_back=True)
+            reply_markup=countries_select_kb("cargo_to_country", include_back=True, back_callback="back:cargo")
         )
         return
 
@@ -4639,7 +4639,7 @@ async def render_cargo_step(target_step: str, target_message: Message, state: FS
             "Шаг 4 / 9\n"
             "━━━━━━━━━━━━━━\n\n"
             f"Выберите город назначения в стране {country}",
-            reply_markup=cities_select_kb("cargo_to_city", country, include_back=True)
+            reply_markup=cities_select_kb("cargo_to_city", country, include_back=True, back_callback="back:cargo")
         )
         return
 
@@ -4651,7 +4651,7 @@ async def render_cargo_step(target_step: str, target_message: Message, state: FS
             "Шаг 5 / 9\n"
             "━━━━━━━━━━━━━━\n\n"
             "Выберите желаемую дату отправки / доставки",
-            reply_markup=date_select_kb()
+            reply_markup=cargo_date_select_kb()
         )
         return
 

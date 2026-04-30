@@ -4403,6 +4403,16 @@ async def clear_step_data_from(state: FSMContext, target_step: str):
     await state.set_data(data)
 
 
+def cargo_form_text(step: int, prompt: str) -> str:
+    return (
+        "🚀 <b>Быстрая доставка (карго)</b>\n\n"
+        "━━━━━━━━━━━━━━\n"
+        f"Шаг {step} / 9\n"
+        "━━━━━━━━━━━━━━\n\n"
+        f"{prompt}"
+    )
+
+
 async def render_cargo_step(target_step: str, target_message: Message, state: FSMContext):
     data = await state.get_data()
 

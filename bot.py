@@ -1804,10 +1804,10 @@ async def send_post_card_to_user(
     )
 
     await bot.send_message(
-        user_id,
-        text,
-        reply_markup=kb
-    )
+    cargo["user_id"],
+    cargo_lead_preview_text(lead),
+    reply_markup=cargo_lead_kb(lead_id)
+)
     
 
 async def show_onboarding_screen(target, screen: int):

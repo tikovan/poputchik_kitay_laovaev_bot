@@ -4837,7 +4837,7 @@ async def cargo_contact(message: Message, state: FSMContext):
         await message.answer("Укажите корректный контакт.")
         return
 
-        data = await state.get_data()
+    data = await state.get_data()
 
     try:
         lead_id = create_cargo_lead(
@@ -6307,18 +6307,13 @@ async def enter_description(message: Message, state: FSMContext):
 
 @router.message(CargoLeadFlow.description)
 async def cargo_description(message: Message, state: FSMContext):
-    desc = (message.text or "").strip()
+    text = (message.text or "").strip()
 
-    if len(desc) < 3:
-        await message.answer(
-            "Описание слишком короткое. Напишите подробнее.",
-            reply_markup=back_only_kb()
-        )
+    if len(text) < 3:
+        await message.answer("Опишите груз более подробно.")
         return
 
-    await state.update_data(description=desc[:1000])
-
-    # 👉 ВАЖНО: переходим через render_cargo_step
+    await state.update_data(description=text[:1000])
     await render_cargo_step("photo_choice", message, state)
     
 

@@ -1091,16 +1091,23 @@ def anti_spam_check(user_id: int) -> Optional[str]:
             "SELECT is_banned, last_action_at, review_status FROM users WHERE user_id=?",
             (user_id,)
         ).fetchone()
+
         if not row:
             return None
+
         if row["is_banned"]:
             return "Ваш аккаунт ограничен администратором."
-        if row["is_banned"]:
-            return "Ваш аккаунт ограничен администратором."
+
+        if row["review_status"] == "hold":
+            return "Ваш аккаунт временно ограничен для проверки. Отправьте сюда в бот селфи-видео до 5 секунд и WeChat ID."
+
         last_action_at = row["last_action_at"] or 0
+
         if now_ts() - last_action_at < MIN_SECONDS_BETWEEN_ACTIONS:
             return "Слишком быстро. Подождите пару секунд и попробуйте снова."
+
         conn.execute("UPDATE users SET last_action_at=? WHERE user_id=?", (now_ts(), user_id))
+
     return None
 
 
@@ -5454,8 +5461,10 @@ async def support_bug_input(message: Message, state: FSMContext):
 
 
 @router.message()
-async def forward_hold_user_messages_to_admin(message: Message):
-    if not message.from_user:
+async def forward_hold_user_messages_to_admin(message: Message, state: FSMContext):
+
+    current_state = await state.get_state()
+    if current_state is not None:
         return
 
     user_id = message.from_user.id

@@ -3688,7 +3688,7 @@ def publish_to_channel(bot: Bot, post_id: int):
     return _send()
 
 
-    def set_user_cargo(user_id: int, is_cargo: bool = True):
+def set_user_cargo(user_id: int, is_cargo: bool = True):
     with closing(connect_db()) as conn, conn:
         conn.execute(
             "UPDATE users SET is_cargo=? WHERE user_id=?",

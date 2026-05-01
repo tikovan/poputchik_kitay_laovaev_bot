@@ -4480,28 +4480,27 @@ def get_current_create_step_name(state_name: Optional[str]) -> Optional[str]:
         CreatePost.to_country_manual.state: "to_country",
         CreatePost.to_city.state: "to_city",
         CreatePost.to_city_manual.state: "to_city",
-        CreatePost.travel_date.state: "travel_date",
-        CreatePost.travel_date_manual.state: "travel_date",
+        CreatePost.travel_date.state: "delivery_date",       
+        CreatePost.travel_date_manual.state: "delivery_date", 
         CreatePost.weight.state: "weight",
         CreatePost.weight_manual.state: "weight",
         CreatePost.description.state: "description",
         CreatePost.photo_choice.state: "photo_choice",
         CreatePost.photo_upload.state: "photo_choice",
-        CreatePost.contact_note.state: "contact_note",
+        CreatePost.contact_note.state: "contact",            
     }
     return mapping.get(state_name)
 
-
 CREATE_STEP_CLEANUP_KEYS = {
-    "from_country": ["from_country", "from_city", "to_country", "to_city", "travel_date", "weight_kg", "description", "photo_file_id", "contact_note"],
-    "from_city": ["from_city", "to_country", "to_city", "travel_date", "weight_kg", "description", "photo_file_id", "contact_note"],
-    "to_country": ["to_country", "to_city", "travel_date", "weight_kg", "description", "photo_file_id", "contact_note"],
-    "to_city": ["to_city", "travel_date", "weight_kg", "description", "photo_file_id", "contact_note"],
-    "travel_date": ["travel_date", "weight_kg", "description", "photo_file_id", "contact_note"],
+    "from_country": ["from_country", "from_city", "to_country", "to_city", "delivery_date", "weight_kg", "description", "photo_file_id", "contact_note"],
+    "from_city": ["from_city", "to_country", "to_city", "delivery_date", "weight_kg", "description", "photo_file_id", "contact_note"],
+    "to_country": ["to_country", "to_city", "delivery_date", "weight_kg", "description", "photo_file_id", "contact_note"],
+    "to_city": ["to_city", "delivery_date", "weight_kg", "description", "photo_file_id", "contact_note"],
+    "delivery_date": ["delivery_date", "weight_kg", "description", "photo_file_id", "contact_note"], 
     "weight": ["weight_kg", "description", "photo_file_id", "contact_note"],
     "description": ["description", "photo_file_id", "contact_note"],
     "photo_choice": ["photo_file_id", "contact_note"],
-    "contact_note": ["contact_note"],
+    "contact": ["contact_note"],  
 }
 
 
@@ -4530,7 +4529,7 @@ async def render_create_step(step: str, message: Message, state: FSMContext):
         await state.set_state(CreatePost.from_country)
         await message.answer(
             form_text(post_type, 1, "Выберите страну отправления"),
-            reply_markup=country_select_kb("from_country_pick")
+            reply_markup=countries_select_kb("from_country_pick")
         )
 
     elif step == "from_city":
@@ -4544,7 +4543,7 @@ async def render_create_step(step: str, message: Message, state: FSMContext):
         await state.set_state(CreatePost.to_country)
         await message.answer(
             form_text(post_type, 3, "Выберите страну назначения"),
-            reply_markup=country_select_kb("to_country_pick")
+            reply_markup=countries_select_kb("to_country_pick")
         )
 
     elif step == "to_city":

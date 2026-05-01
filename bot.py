@@ -5494,7 +5494,7 @@ async def admin_approve_post(callback: CallbackQuery, bot: Bot):
     except Exception:
         pass
 
-    await safe_publish(bot, post_id)
+    await publish_to_channel(bot, post_id)
     await notify_coincidence_users(bot, post_id)
     await notify_subscribers(bot, post_id)
 
@@ -6736,7 +6736,7 @@ async def finalize_post(message: Message, state: FSMContext, bot: Bot):
                 except Exception as e:
                     logger.exception("ADMIN NOTIFY ERROR: %s", e)
         else:
-            await safe_publish(bot, post_id)
+            await publish_to_channel(bot, post_id)
             await notify_coincidence_users(bot, post_id)
             await notify_subscribers(bot, post_id)
 
@@ -7104,7 +7104,7 @@ async def activate_post(callback: CallbackQuery, bot: Bot):
     )
 
     if not MODERATION_ENABLED:
-        await safe_publish(bot, post_id)
+        await publish_to_channel(bot, post_id))
         await notify_coincidence_users(bot, post_id)
         await notify_subscribers(bot, post_id)
 

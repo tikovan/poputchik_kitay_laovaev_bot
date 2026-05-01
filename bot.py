@@ -7104,7 +7104,7 @@ async def activate_post(callback: CallbackQuery, bot: Bot):
     )
 
     if not MODERATION_ENABLED:
-        await publish_to_channel(bot, post_id))
+        await publish_to_channel(bot, post_id)
         await notify_coincidence_users(bot, post_id)
         await notify_subscribers(bot, post_id)
 

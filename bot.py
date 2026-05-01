@@ -4957,6 +4957,17 @@ async def cargo_lead_start(message: Message, state: FSMContext):
         return
 
     await state.clear()
+
+    await message.answer(
+        "🚀 <b>Вы создаёте заявку на карго-доставку</b>\n\n"
+        "Это не поиск попутчика, а заявка для проверенных карго-компаний, партнеров сервиса.\n\n"
+        "Подходит для:\n"
+        "⚡ срочной доставки (например образцы)\n"
+        "💰 дорогих товаров\n"
+        "📦 коммерческих грузов\n\n"
+        "Представитель компании сможет связаться с вами и предложить условия."
+    )
+
     await render_cargo_step("from_country", message, state)
     
 

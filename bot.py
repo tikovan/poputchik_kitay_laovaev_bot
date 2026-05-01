@@ -8648,7 +8648,7 @@ async def relay_message(message: Message, state: FSMContext):
         clear_active_chat(message.from_user.id)
         return
 
-        if not text:
+    if not text:
         await message.answer("Сообщение не должно быть пустым.")
         return
 

@@ -1213,6 +1213,7 @@ def get_user_profile_short(user_id: int) -> dict:
         row = conn.execute("""
             SELECT
                 u.is_verified,
+                COALESCE(u.is_cargo, 0) AS is_cargo,
                 u.failed_dispute_count,
                 u.dispute_no_response_count,
                 u.created_at,
@@ -1233,6 +1234,7 @@ def get_user_profile_short(user_id: int) -> dict:
     if not row:
         return {
             "verified": False,
+            "is_cargo": False,
             "has_warning": False,
             "rating_line": None,
             "completed_deals": 0,
@@ -1259,6 +1261,7 @@ def get_user_profile_short(user_id: int) -> dict:
 
     return {
         "verified": bool(row["is_verified"]),
+        "is_cargo": bool(row["is_cargo"]),
         "has_warning": (
             int(row["failed_dispute_count"] or 0) > 0
             or int(row["dispute_no_response_count"] or 0) > 0
@@ -1267,7 +1270,7 @@ def get_user_profile_short(user_id: int) -> dict:
         "completed_deals": int(row["completed_deals"] or 0),
         "service_text": service_text,
     }
-
+    
 
 def get_user_profile_short_cached(user_id: int) -> dict:
     cached = get_cached_user_profile(user_id)
@@ -1765,6 +1768,9 @@ def post_text(row, for_channel: bool = False) -> str:
 
     if profile["verified"]:
         status_parts.append("🛡 Паспорт подтвержден")
+
+    if profile.get("is_cargo"):
+        status_parts.append("🚀 Карго-партнер")
 
     if profile["has_warning"]:
         status_parts.append("⚠️ Были спорные сделки")

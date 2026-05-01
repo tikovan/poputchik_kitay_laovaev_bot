@@ -1857,9 +1857,9 @@ def chunk_buttons(items: List[tuple], prefix: str, per_row: int = 2):
     return rows
 
 
-def with_back(rows: List[List[InlineKeyboardButton]], include_back: bool = True):
+def with_back(rows: List[List[InlineKeyboardButton]], include_back: bool = True, back_callback: str = "create_back"):
     if include_back:
-        rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="create_back")])
+        rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=back_callback)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -1878,13 +1878,13 @@ def countries_kb(prefix: str):
     return InlineKeyboardMarkup(inline_keyboard=chunk_buttons(COUNTRY_OPTIONS, prefix, 2))
 
 
-def countries_select_kb(prefix: str, include_back: bool = False):
+def countries_select_kb(prefix: str, include_back: bool = False, back_callback: str = "create_back"):
     rows = chunk_buttons(COUNTRY_OPTIONS, prefix, 2)
     rows.append([InlineKeyboardButton(text=MANUAL_COUNTRY, callback_data=f"{prefix}:__manual__")])
-    return with_back(rows, include_back)
+    return with_back(rows, include_back, back_callback)
+    
 
-
-def cities_select_kb(prefix: str, country: str, include_back: bool = True):
+def cities_select_kb(prefix: str, country: str, include_back: bool = True, back_callback: str = "create_back"):
     cities = COUNTRY_CITIES_RU.get(country, [])
     rows, row = [], []
     for city in cities:
@@ -1896,7 +1896,7 @@ def cities_select_kb(prefix: str, country: str, include_back: bool = True):
         rows.append(row)
     rows.append([InlineKeyboardButton(text=MANUAL_CITY, callback_data=f"{prefix}:__manual__")])
     rows.append([InlineKeyboardButton(text="Не важно", callback_data=f"{prefix}:__skip__")])
-    return with_back(rows, include_back)
+    return with_back(rows, include_back, back_callback)
 
 
 def subscription_cities_kb(prefix: str, country: str):
@@ -4916,101 +4916,165 @@ async def cargo_lead_start(message: Message, state: FSMContext):
 
 @router.callback_query(F.data.startswith("cargo_from_country:"))
 async def cargo_from_country(callback: CallbackQuery, state: FSMContext):
-    country = callback.data.split(":", 1)[1]
-
-    if country == "__manual__":
-        await state.set_state(CargoLeadFlow.from_country_manual)
-        await callback.message.answer(
-            cargo_form_text(1, "Введите страну отправления вручную"),
-            reply_markup=cargo_back_only_kb()
-        )
+    try:
         await callback.answer()
-        return
+        country = callback.data.split(":", 1)[1]
 
-    await state.update_data(from_country=country)
-    await render_cargo_step("from_city", callback.message, state)
-    await callback.answer()
+        if country == "__manual__":
+            await state.set_state(CargoLeadFlow.from_country_manual)
+            await callback.message.answer(
+                cargo_form_text(1, "Введите страну отправления вручную"),
+                reply_markup=cargo_back_only_kb()
+            )
+            return
+
+        await state.update_data(from_country=country)
+        await render_cargo_step("from_city", callback.message, state)
+
+    except Exception as e:
+        logger.exception("CARGO_FROM_COUNTRY ERROR: %s", e)
+        await callback.answer("Ошибка. Попробуйте ещё раз.", show_alert=True)
 
 
 @router.callback_query(F.data.startswith("cargo_from_city:"))
 async def cargo_from_city(callback: CallbackQuery, state: FSMContext):
-    city = callback.data.split(":", 1)[1]
-
-    if city == "__manual__":
-        await state.set_state(CargoLeadFlow.from_city_manual)
-        await callback.message.answer(
-            cargo_form_text(2, "Введите город вручную"),
-            reply_markup=cargo_back_only_kb()
-        )
+    try:
         await callback.answer()
-        return
+        city = callback.data.split(":", 1)[1]
 
-    await state.update_data(from_city=city)
-    await render_cargo_step("to_country", callback.message, state)
-    await callback.answer()
+        if city == "__manual__":
+            await state.set_state(CargoLeadFlow.from_city_manual)
+            await callback.message.answer(
+                cargo_form_text(2, "Введите город вручную"),
+                reply_markup=cargo_back_only_kb()
+            )
+            return
+
+        await state.update_data(from_city=city)
+        await render_cargo_step("to_country", callback.message, state)
+
+    except Exception as e:
+        logger.exception("CARGO_FROM_CITY ERROR: %s", e)
+        await callback.answer("Ошибка. Попробуйте ещё раз.", show_alert=True)
 
 
 @router.callback_query(F.data.startswith("cargo_to_country:"))
 async def cargo_to_country(callback: CallbackQuery, state: FSMContext):
-    country = callback.data.split(":", 1)[1]
-
-    if country == "__manual__":
-        await state.set_state(CargoLeadFlow.to_country_manual)
-        await callback.message.answer(
-            cargo_form_text(3, "Введите страну назначения"),
-            reply_markup=cargo_back_only_kb()
-        )
+    try:
         await callback.answer()
-        return
+        country = callback.data.split(":", 1)[1]
 
-    await state.update_data(to_country=country)
-    await render_cargo_step("to_city", callback.message, state)
-    await callback.answer()
+        if country == "__manual__":
+            await state.set_state(CargoLeadFlow.to_country_manual)
+            await callback.message.answer(
+                cargo_form_text(3, "Введите страну назначения"),
+                reply_markup=cargo_back_only_kb()
+            )
+            return
+
+        await state.update_data(to_country=country)
+        await render_cargo_step("to_city", callback.message, state)
+
+    except Exception as e:
+        logger.exception("CARGO_TO_COUNTRY ERROR: %s", e)
+        await callback.answer("Ошибка. Попробуйте ещё раз.", show_alert=True)
 
 
 @router.callback_query(F.data.startswith("cargo_to_city:"))
 async def cargo_to_city(callback: CallbackQuery, state: FSMContext):
-    city = callback.data.split(":", 1)[1]
-
-    if city == "__manual__":
-        await state.set_state(CargoLeadFlow.to_city_manual)
-        await callback.message.answer(
-            cargo_form_text(4, "Введите город назначения"),
-            reply_markup=cargo_back_only_kb()
-        )
+    try:
         await callback.answer()
-        return
+        city = callback.data.split(":", 1)[1]
 
-    await state.update_data(to_city=city)
-    await render_cargo_step("delivery_date", callback.message, state)
-    await callback.answer()
+        if city == "__manual__":
+            await state.set_state(CargoLeadFlow.to_city_manual)
+            await callback.message.answer(
+                cargo_form_text(4, "Введите город назначения"),
+                reply_markup=cargo_back_only_kb()
+            )
+            return
+
+        await state.update_data(to_city=city)
+        await render_cargo_step("delivery_date", callback.message, state)
+
+    except Exception as e:
+        logger.exception("CARGO_TO_CITY ERROR: %s", e)
+        await callback.answer("Ошибка. Попробуйте ещё раз.", show_alert=True)
 
 
 @router.callback_query(F.data.startswith("datepick:"), CargoLeadFlow.delivery_date)
 async def cargo_delivery_date(callback: CallbackQuery, state: FSMContext):
-    value = callback.data.split(":", 1)[1]
-    today = datetime.now()
-
-    if value == "manual":
-        await callback.message.answer(
-            cargo_form_text(5, "Введите дату вручную.\n\nНапример: 15.05.2026"),
-            reply_markup=cargo_back_only_kb()
-        )
+    try:
         await callback.answer()
-        return
+        value = callback.data.split(":", 1)[1]
+        today = datetime.now()
 
-    if value == "week":
-        delivery_date = f"до {(today + timedelta(days=7)).strftime('%d.%m.%Y')}"
-    elif value == "month":
-        start = today.strftime("%d.%m.%Y")
-        end = (today + timedelta(days=30)).strftime("%d.%m.%Y")
-        delivery_date = f"{start} - {end}"
-    else:
-        delivery_date = value
+        if value == "manual":
+            await callback.message.answer(
+                cargo_form_text(5, "Введите дату вручную.\n\nНапример: 15.05.2026"),
+                reply_markup=cargo_back_only_kb()
+            )
+            return
 
-    await state.update_data(delivery_date=delivery_date)
-    await render_cargo_step("weight", callback.message, state)
-    await callback.answer()
+        if value == "week":
+            delivery_date = f"до {(today + timedelta(days=7)).strftime('%d.%m.%Y')}"
+        elif value == "month":
+            start = today.strftime("%d.%m.%Y")
+            end = (today + timedelta(days=30)).strftime("%d.%m.%Y")
+            delivery_date = f"{start} - {end}"
+        else:
+            delivery_date = value
+
+        await state.update_data(delivery_date=delivery_date)
+        await render_cargo_step("weight", callback.message, state)
+
+    except Exception as e:
+        logger.exception("CARGO_DELIVERY_DATE ERROR: %s", e)
+        await callback.answer("Ошибка. Попробуйте ещё раз.", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("cargo_weight:"), CargoLeadFlow.weight)
+async def cargo_weight(callback: CallbackQuery, state: FSMContext):
+    try:
+        await callback.answer()
+        weight = callback.data.split(":", 1)[1]
+
+        if weight == "__manual__":
+            await state.set_state(CargoLeadFlow.weight_manual)
+            await callback.message.answer(
+                cargo_form_text(6, "Введите вес или объём вручную.\n\nНапример: 35 кг, 2 коробки, 0.5 куба"),
+                reply_markup=cargo_back_only_kb()
+            )
+            return
+
+        await state.update_data(weight=weight)
+        await render_cargo_step("description", callback.message, state)
+
+    except Exception as e:
+        logger.exception("CARGO_WEIGHT ERROR: %s", e)
+        await callback.answer("Ошибка. Попробуйте ещё раз.", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("cargo_photo_choice:"), CargoLeadFlow.photo_choice)
+async def cargo_photo_choice(callback: CallbackQuery, state: FSMContext):
+    try:
+        await callback.answer()
+        action = callback.data.split(":", 1)[1]
+
+        if action == "add":
+            await state.set_state(CargoLeadFlow.photo_upload)
+            await callback.message.answer(
+                cargo_form_text(8, "Отправьте одно фото груза."),
+                reply_markup=cargo_back_only_kb()
+            )
+            return
+
+        await state.update_data(photo_file_id=None)
+        await render_cargo_step("contact", callback.message, state)
+
+    except Exception as e:
+        logger.exception("CARGO_PHOTO_CHOICE ERROR: %s", e)
+        await callback.answer("Ошибка. Попробуйте ещё раз.", show_alert=True)
 
 
 @router.message(CargoLeadFlow.delivery_date)

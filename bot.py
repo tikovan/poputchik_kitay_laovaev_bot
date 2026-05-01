@@ -86,6 +86,8 @@ EXPIRE_WARN_DAYS = int(os.getenv("EXPIRE_WARN_DAYS", "3"))
 MAX_POSTS_PER_10_MIN = int(os.getenv("MAX_POSTS_PER_10_MIN", "3"))
 PROFILE_CACHE_TTL = int(os.getenv("PROFILE_CACHE_TTL", "300"))
 SQLITE_BUSY_TIMEOUT_MS = int(os.getenv("SQLITE_BUSY_TIMEOUT_MS", "5000"))
+MIN_SECONDS_BETWEEN_CHAT_MESSAGES = 3
+MAX_CHAT_MESSAGES_PER_10_MIN = 20
 
 router = Router()
 
@@ -627,7 +629,7 @@ def get_cached_user_profile(user_id: int) -> Optional[dict]:
     return payload
 
 
-def run_db_write(query: str, params: tuple = ()):
+async def run_db_write(query: str, params: tuple = ()):
     last_error = None
     for _ in range(3):
         try:
@@ -638,9 +640,41 @@ def run_db_write(query: str, params: tuple = ()):
             last_error = e
             if "locked" not in str(e).lower():
                 raise
-            time.sleep(0.15)
+            await asyncio.sleep(0.15)
     if last_error:
         raise last_error
+
+
+def can_send_chat_message(user_id: int) -> tuple[bool, Optional[str]]:
+    with closing(connect_db()) as conn, conn:
+        row = conn.execute(
+            "SELECT last_chat_message_at, chat_message_count_10min FROM users WHERE user_id=?",
+            (user_id,)
+        ).fetchone()
+        
+        if not row:
+            return True, None
+        
+        last_msg_at = int(row["last_chat_message_at"] or 0)
+        msg_count = int(row["chat_message_count_10min"] or 0)
+        now = now_ts()
+        
+        if now - last_msg_at > 600:
+            msg_count = 0
+        
+        if now - last_msg_at < MIN_SECONDS_BETWEEN_CHAT_MESSAGES:
+            wait = MIN_SECONDS_BETWEEN_CHAT_MESSAGES - (now - last_msg_at)
+            return False, f"Слишком быстро. Подождите {wait} сек."
+        
+        if msg_count >= MAX_CHAT_MESSAGES_PER_10_MIN:
+            return False, f"Лимит сообщений: {MAX_CHAT_MESSAGES_PER_10_MIN} в 10 минут."
+        
+        conn.execute(
+            "UPDATE users SET last_chat_message_at=?, chat_message_count_10min=? WHERE user_id=?",
+            (now, msg_count + 1, user_id)
+        )
+        
+        return True, None
 
 
 def go_my_deals_kb():
@@ -1136,6 +1170,15 @@ def active_post_count(user_id: int) -> int:
             (user_id,)
         ).fetchone()
         return int(row["c"])
+
+
+def get_user_post_limit(user_id: int) -> int:
+    """Возвращает лимит активных объявлений для пользователя."""
+    if user_id in ADMIN_IDS:
+        return 999  # или float('inf'), но лучше конкретное большое число
+    if is_user_verified(user_id):
+        return MAX_ACTIVE_POSTS_PER_USER * 2  # 10 для верифицированных
+    return MAX_ACTIVE_POSTS_PER_USER  # 5 для обычных
 
 
 def user_rating_summary(user_id: int) -> Tuple[float, int]:
@@ -4299,13 +4342,10 @@ async def begin_create(message: Message, state: FSMContext, post_type: str):
         )
         return
 
-    if (
-    message.from_user.id not in ADMIN_IDS
-    and not is_user_verified(message.from_user.id)
-    and active_post_count(message.from_user.id) >= MAX_ACTIVE_POSTS_PER_USER
-):
+    user_limit = get_user_post_limit(message.from_user.id)
+    if active_post_count(message.from_user.id) >= user_limit:
         await message.answer(
-            f"У вас уже слишком много объявлений. Лимит: {MAX_ACTIVE_POSTS_PER_USER}. Удалите или деактивируйте старые объявления.",
+            f"У вас уже слишком много объявлений. Лимит: {user_limit}. Удалите или деактивируйте старые объявления.",
             reply_markup=main_menu(message.from_user.id)
         )
         return
@@ -8608,10 +8648,21 @@ async def relay_message(message: Message, state: FSMContext):
         clear_active_chat(message.from_user.id)
         return
 
-    if not text:
+        if not text:
         await message.answer("Сообщение не должно быть пустым.")
         return
 
+    # Rate limiting
+    can_send, error_msg = can_send_chat_message(message.from_user.id)
+    if not can_send:
+        await message.answer(f"⏳ {error_msg}")
+        return
+    
+    # Валидация длины
+    if len(text) > 2000:
+        await message.answer("Сообщение слишком длинное (макс. 2000 символов).")
+        return
+        
     if target_user_id == message.from_user.id:
         await message.answer("Нельзя отправить сообщение самому себе.")
         return

@@ -1737,9 +1737,16 @@ def post_text(row, for_channel: bool = False) -> str:
 
     lines = [
         f"<b>{short_post_type(row['post_type'])}</b>",
-        f"<b>Маршрут:</b> {route}",
     ]
 
+    if profile["verified"]:
+        lines.append("")
+        lines.append("🛂 <b>ПАСПОРТ ВЕРИФИЦИРОВАН</b>")
+        lines.append("<i>📈 Объявления таких пользователей получают больше откликов</i>")
+        lines.append(f"<a href='{bot_link('verify')}'>→ Пройти верификацию</a>")
+
+    lines.append("")
+    lines.append(f"<b>Маршрут:</b> {route}")
     if row["travel_date"]:
         lines.append(f"<b>Дата:</b> {html.escape(row['travel_date'])}")
 
@@ -1766,8 +1773,6 @@ def post_text(row, for_channel: bool = False) -> str:
 
     status_parts = []
 
-    if profile["verified"]:
-        status_parts.append("🛡 Паспорт подтвержден")
 
     if profile.get("is_cargo"):
         status_parts.append("🚀 Карго-партнер")

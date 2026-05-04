@@ -9462,7 +9462,7 @@ async def dispute_resolve_handler(callback: CallbackQuery):
 @router.callback_query(F.data.startswith("dispute_unresolved:"))
 async def dispute_unresolved_handler(callback: CallbackQuery):
     dispute_id = int(callback.data.split(":")[1])
-    dispute = get_dispute(dispute_id)
+    dispute = await get_dispute(dispute_id)
 
     if not dispute:
         await callback.answer("Спор не найден", show_alert=True)
@@ -9481,34 +9481,28 @@ async def dispute_unresolved_handler(callback: CallbackQuery):
     route = post_route_title(post) if post else f"Объявление ID {deal['post_id']}"
 
     async with await connect_db() as conn:
-    await conn.execute(
-        "UPDATE disputes SET status=?, updated_at=? WHERE id=?",
-        (DISPUTE_CLOSED_UNRESOLVED, now_ts(), dispute_id)
-    )
+        await conn.execute(
+            "UPDATE disputes SET status=?, updated_at=? WHERE id=?",
+            (DISPUTE_CLOSED_UNRESOLVED, now_ts(), dispute_id)
+        )
 
-    await conn.execute(
-        "UPDATE deals SET status=?, updated_at=? WHERE id=?",
-        (DEAL_FAILED, now_ts(), dispute["deal_id"])
-    )
+        await conn.execute(
+            "UPDATE deals SET status=?, updated_at=? WHERE id=?",
+            (DEAL_FAILED, now_ts(), dispute["deal_id"])
+        )
 
-    await conn.execute("""
-        UPDATE users
-        SET failed_dispute_count = COALESCE(failed_dispute_count, 0) + 1
-        WHERE user_id=?
-    """, (dispute["against_user_id"],))
+        await conn.execute("""
+            UPDATE users
+            SET failed_dispute_count = COALESCE(failed_dispute_count, 0) + 1
+            WHERE user_id=?
+        """, (dispute["against_user_id"],))
 
-    await conn.commit()
+        await conn.commit()
 
-invalidate_user_profile_cache(dispute["against_user_id"])
-
-updated_dispute = await get_dispute(dispute_id)
-failed_deal = await get_deal(dispute["deal_id"])
     invalidate_user_profile_cache(dispute["against_user_id"])
 
-    updated_dispute = await get_dispute(dispute_id)
     failed_deal = await get_deal(dispute["deal_id"])
 
-    # уведомление тому, кто открыл спор
     await callback.message.answer(
         f"❌ <b>Спор по сделке закрыт без решения</b>\n\n"
         f"<b>Маршрут:</b> {html.escape(route)}\n"
@@ -9527,7 +9521,6 @@ failed_deal = await get_deal(dispute["deal_id"])
         reply_markup=dispute_failed_opened_by_kb(failed_deal["id"])
     )
 
-    # уведомление второй стороне
     try:
         await callback.bot.send_message(
             dispute["against_user_id"],

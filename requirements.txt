@@ -4,4 +4,3 @@ wechatpayv3
 qrcode[pil]
 aiohttp
 pillow
-import aiosqlite

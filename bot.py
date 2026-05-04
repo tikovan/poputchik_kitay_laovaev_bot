@@ -4150,7 +4150,7 @@ async def notify_subscribers(bot: Bot, post_id: int):
     if not row or row["status"] != STATUS_ACTIVE:
         return
 
-    async with await connect_db() as conn:
+async with await connect_db() as conn:
     cur = await conn.execute("""
         SELECT * FROM route_subscriptions
         WHERE post_type=?

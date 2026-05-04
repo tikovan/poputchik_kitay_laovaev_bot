@@ -5891,10 +5891,10 @@ logger.info("CREATE_START after upsert_user %.3f", time.perf_counter() - t0)
 spam = anti_spam_check(message.from_user.id)
 logger.info("CREATE_START after anti_spam_check %.3f", time.perf_counter() - t0)
 
-await state.clear()
+     await state.clear()
 logger.info("CREATE_START after state.clear %.3f", time.perf_counter() - t0)
 
-await message.answer("...", reply_markup=...)
+     await message.answer("...", reply_markup=...)
 logger.info("CREATE_START after answer %.3f", time.perf_counter() - t0)
 
 
@@ -5913,10 +5913,10 @@ logger.info("CREATE_START after upsert_user %.3f", time.perf_counter() - t0)
 spam = anti_spam_check(message.from_user.id)
 logger.info("CREATE_START after anti_spam_check %.3f", time.perf_counter() - t0)
 
-await state.clear()
+    await state.clear()
 logger.info("CREATE_START after state.clear %.3f", time.perf_counter() - t0)
 
-await message.answer("...", reply_markup=...)
+    await message.answer("...", reply_markup=...)
 logger.info("CREATE_START after answer %.3f", time.perf_counter() - t0)
       
 

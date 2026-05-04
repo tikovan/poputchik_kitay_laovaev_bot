@@ -965,8 +965,8 @@ async def init_db():
         ON cargo_lead_access(lead_id)
         """)
 
-        async def init_db():
-    conn = _db
+    async def init_db():
+        conn = _db
 
     await conn.executescript("""
     CREATE TABLE IF NOT EXISTS users (

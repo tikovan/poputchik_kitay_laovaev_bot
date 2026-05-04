@@ -84,7 +84,7 @@ MY_POSTS_PAGE_SIZE = int(os.getenv("MY_POSTS_PAGE_SIZE", "10"))
 EXPIRE_WARN_DAYS = int(os.getenv("EXPIRE_WARN_DAYS", "3"))
 MAX_POSTS_PER_10_MIN = int(os.getenv("MAX_POSTS_PER_10_MIN", "3"))
 PROFILE_CACHE_TTL = int(os.getenv("PROFILE_CACHE_TTL", "1800"))
-SQLITE_BUSY_TIMEOUT_MS = int(os.getenv("SQLITE_BUSY_TIMEOUT_MS", "5000"))
+SQLITE_BUSY_TIMEOUT_MS = int(os.getenv("SQLITE_BUSY_TIMEOUT_MS", "10000"))
 MIN_SECONDS_BETWEEN_CHAT_MESSAGES = 3
 MAX_CHAT_MESSAGES_PER_10_MIN = 20
 
@@ -710,6 +710,12 @@ def ensure_column(conn: sqlite3.Connection, table: str, column: str, ddl: str):
 
 def init_db():
     with closing(connect_db()) as conn, conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("PRAGMA temp_store=MEMORY")
+        conn.execute("PRAGMA cache_size=-64000")
+        
         conn.executescript("""
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,

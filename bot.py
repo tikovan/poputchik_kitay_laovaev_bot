@@ -8050,7 +8050,7 @@ async def contact_owner(callback: CallbackQuery, state: FSMContext):
         deal_id=None
     )
 
-   await set_active_chat(
+    await set_active_chat(
         user_id=callback.from_user.id,
         target_user_id=owner_id,
         post_id=post_id,
@@ -8065,7 +8065,7 @@ async def contact_owner(callback: CallbackQuery, state: FSMContext):
     )
 
     await callback.answer()
-
+    
 
 @router.callback_query(F.data == "admin:all_posts")
 async def admin_all_posts_handler(callback: CallbackQuery):

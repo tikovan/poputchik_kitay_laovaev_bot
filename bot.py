@@ -4357,15 +4357,17 @@ async def notify_cargo_users(bot: Bot, lead_id: int):
 async def run_global_coincidence_scan(bot: Bot):
     try:
         async with await connect_db() as conn:
-            rows = await conn.execute("""
-                SELECT p.*, u.username, u.full_name
-                FROM posts p
-                LEFT JOIN users u ON u.user_id = p.user_id
-                WHERE p.status='active'
-                  AND (p.expires_at IS NULL OR p.expires_at > ?)
-                ORDER BY COALESCE(p.bumped_at, p.created_at) DESC
-                LIMIT 300
-            """, (now_ts(),)).fetchall()
+    cur = await conn.execute("""
+        SELECT p.*, u.username, u.full_name
+        FROM posts p
+        LEFT JOIN users u ON u.user_id = p.user_id
+        WHERE p.status='active'
+          AND (p.expires_at IS NULL OR p.expires_at > ?)
+        ORDER BY COALESCE(p.bumped_at, p.created_at) DESC
+        LIMIT 300
+    """, (now_ts(),))
+
+    rows = await cur.fetchall()
 
         for row in rows:
             coincidences = await get_coincidences(
@@ -4415,7 +4417,7 @@ async def expire_old_posts(bot: Bot):
     while True:
         try:
             async with await connect_db() as conn:
-                rows = await conn.execute("""
+                cur = await conn.execute("""
                     SELECT p.*, u.username, u.full_name
                     FROM posts p
                     LEFT JOIN users u ON u.user_id = p.user_id
@@ -9919,19 +9921,22 @@ async def render_my_posts_page(target, user_id: int, offset: int = 0):
 
 
 async def db_fetchone(query: str, params: tuple = ()):
-    cur = await _db.execute(query, params)
-    return await cur.fetchone()
+    async with await connect_db() as conn:
+        cur = await conn.execute(query, params)
+        return await cur.fetchone()
 
 
 async def db_fetchall(query: str, params: tuple = ()):
-    cur = await _db.execute(query, params)
-    return await cur.fetchall()
+    async with await connect_db() as conn:
+        cur = await conn.execute(query, params)
+        return await cur.fetchall()
 
 
 async def db_execute(query: str, params: tuple = ()):
-    cur = await _db.execute(query, params)
-    await _db.commit()
-    return cur
+    async with await connect_db() as conn:
+        cur = await conn.execute(query, params)
+        await conn.commit()
+        return cur
 
 
 @router.callback_query(F.data.startswith("recentpage:"))

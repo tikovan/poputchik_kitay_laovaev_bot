@@ -10185,7 +10185,6 @@ async def main():
     if not BOT_TOKEN:
         raise RuntimeError("Set BOT_TOKEN env var")
 
-    await init_db_connection()
     await init_db()
 
     bot = Bot(

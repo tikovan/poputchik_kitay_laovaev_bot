@@ -1739,13 +1739,6 @@ def post_text(row, for_channel: bool = False) -> str:
         f"<b>{short_post_type(row['post_type'])}</b>",
     ]
 
-    if profile["verified"]:
-        verify_url = bot_link("verify")
-        lines.append("")
-        lines.append("🛂 <b>ПАСПОРТ ВЕРИФИЦИРОВАН</b>")
-        lines.append("<i>📈 Объявления таких пользователей получают больше откликов</i>")
-        lines.append(f'<a href="{verify_url}">→ Пройти верификацию</a>')
-
     lines.append("")
     lines.append(f"<b>Маршрут:</b> {route}")
    
@@ -1792,6 +1785,13 @@ def post_text(row, for_channel: bool = False) -> str:
 
     lines.append(f"📦 <b>Передач:</b> {profile['completed_deals']}")
     lines.append(f"📅 <b>В сервисе:</b> {profile['service_text']}")
+
+    if profile["verified"]:
+        verify_url = bot_link("verify")
+        lines.append("")
+        lines.append("🛂 <b>ПАСПОРТ ВЕРИФИЦИРОВАН</b>")
+        lines.append("<i>📈 Объявления таких пользователей получают больше откликов</i>")
+        lines.append(f'<a href="{verify_url}">→ Пройти верификацию</a>')
 
     lines.append("")
     lines.append(f"<b>ID объявления:</b> {row['id']}")

@@ -35,9 +35,10 @@ load_dotenv()
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-   handlers=[
-    logging.StreamHandler(),
-],
+    handlers=[
+        logging.FileHandler("bot.log", encoding="utf-8"),
+        logging.StreamHandler(),
+    ],
 )
 logger = logging.getLogger("poputchik_bot")
 
@@ -83,8 +84,8 @@ INLINE_PAGE_SIZE = int(os.getenv("INLINE_PAGE_SIZE", "10"))
 MY_POSTS_PAGE_SIZE = int(os.getenv("MY_POSTS_PAGE_SIZE", "10"))
 EXPIRE_WARN_DAYS = int(os.getenv("EXPIRE_WARN_DAYS", "3"))
 MAX_POSTS_PER_10_MIN = int(os.getenv("MAX_POSTS_PER_10_MIN", "3"))
-PROFILE_CACHE_TTL = int(os.getenv("PROFILE_CACHE_TTL", "1800"))
-SQLITE_BUSY_TIMEOUT_MS = int(os.getenv("SQLITE_BUSY_TIMEOUT_MS", "10000"))
+PROFILE_CACHE_TTL = int(os.getenv("PROFILE_CACHE_TTL", "300"))
+SQLITE_BUSY_TIMEOUT_MS = int(os.getenv("SQLITE_BUSY_TIMEOUT_MS", "5000"))
 MIN_SECONDS_BETWEEN_CHAT_MESSAGES = 3
 MAX_CHAT_MESSAGES_PER_10_MIN = 20
 
@@ -592,13 +593,14 @@ def post_deeplink(post_id: int) -> str:
 
 
 def connect_db():
-    conn = sqlite3.connect(
-        DB_PATH,
-        timeout=max(5, SQLITE_BUSY_TIMEOUT_MS // 1000),
-        check_same_thread=False
-    )
+    conn = sqlite3.connect(DB_PATH, timeout=max(5, SQLITE_BUSY_TIMEOUT_MS // 1000), check_same_thread=False)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
     conn.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA temp_store=MEMORY")
+    conn.execute("PRAGMA cache_size=-64000")
     return conn
 
 
@@ -710,12 +712,6 @@ def ensure_column(conn: sqlite3.Connection, table: str, column: str, ddl: str):
 
 def init_db():
     with closing(connect_db()) as conn, conn:
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        conn.execute("PRAGMA foreign_keys=ON")
-        conn.execute("PRAGMA temp_store=MEMORY")
-        conn.execute("PRAGMA cache_size=-64000")
-        
         conn.executescript("""
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
@@ -1741,11 +1737,9 @@ def post_text(row, for_channel: bool = False) -> str:
 
     lines = [
         f"<b>{short_post_type(row['post_type'])}</b>",
+        f"<b>Маршрут:</b> {route}",
     ]
 
-    lines.append("")
-    lines.append(f"<b>Маршрут:</b> {route}")
-   
     if row["travel_date"]:
         lines.append(f"<b>Дата:</b> {html.escape(row['travel_date'])}")
 
@@ -1772,6 +1766,8 @@ def post_text(row, for_channel: bool = False) -> str:
 
     status_parts = []
 
+    if profile["verified"]:
+        status_parts.append("🛡 Паспорт подтвержден")
 
     if profile.get("is_cargo"):
         status_parts.append("🚀 Карго-партнер")
@@ -1789,13 +1785,6 @@ def post_text(row, for_channel: bool = False) -> str:
 
     lines.append(f"📦 <b>Передач:</b> {profile['completed_deals']}")
     lines.append(f"📅 <b>В сервисе:</b> {profile['service_text']}")
-
-    if profile["verified"]:
-        verify_url = bot_link("verify")
-        lines.append("")
-        lines.append("🛂 <b>ПАСПОРТ ВЕРИФИЦИРОВАН</b>")
-        lines.append("<i>📈 Объявления таких пользователей получают больше откликов</i>")
-        lines.append(f'<a href="{verify_url}">→ Пройти верификацию</a>')
 
     lines.append("")
     lines.append(f"<b>ID объявления:</b> {row['id']}")

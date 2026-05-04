@@ -592,15 +592,20 @@ def post_deeplink(post_id: int) -> str:
     return bot_link(f"post_{post_id}")
 
 
-def connect_db():
-    conn = sqlite3.connect(DB_PATH, timeout=max(5, SQLITE_BUSY_TIMEOUT_MS // 1000), check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
-    conn.execute("PRAGMA synchronous=NORMAL")
-    conn.execute("PRAGMA foreign_keys=ON")
-    conn.execute("PRAGMA temp_store=MEMORY")
-    conn.execute("PRAGMA cache_size=-64000")
+import aiosqlite
+
+async def connect_db():
+    conn = await aiosqlite.connect(
+        DB_PATH, 
+        timeout=max(5, SQLITE_BUSY_TIMEOUT_MS // 1000)
+    )
+    conn.row_factory = aiosqlite.Row
+    await conn.execute("PRAGMA journal_mode=WAL")
+    await conn.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
+    await conn.execute("PRAGMA synchronous=NORMAL")
+    await conn.execute("PRAGMA foreign_keys=ON")
+    await conn.execute("PRAGMA temp_store=MEMORY")
+    await conn.execute("PRAGMA cache_size=-64000")
     return conn
 
 
@@ -633,10 +638,11 @@ async def run_db_write(query: str, params: tuple = ()):
     last_error = None
     for _ in range(3):
         try:
-            with closing(connect_db()) as conn, conn:
-                cur = conn.execute(query, params)
+            async with await connect_db() as conn:
+                cur = await conn.execute(query, params)
+                await conn.commit()  # ← don't forget commit for writes!
                 return cur
-        except sqlite3.OperationalError as e:
+        except aiosqlite.OperationalError as e:
             last_error = e
             if "locked" not in str(e).lower():
                 raise
@@ -645,37 +651,39 @@ async def run_db_write(query: str, params: tuple = ()):
         raise last_error
 
 
-def can_send_chat_message(user_id: int) -> tuple[bool, Optional[str]]:
-    with closing(connect_db()) as conn, conn:
-        row = conn.execute(
+async def can_send_chat_message(user_id: int) -> tuple[bool, Optional[str]]:
+    async with await connect_db() as conn:
+        cur = await conn.execute(
             "SELECT last_chat_message_at, chat_message_count_10min FROM users WHERE user_id=?",
             (user_id,)
-        ).fetchone()
-        
+        )
+        row = await cur.fetchone()
+
         if not row:
             return True, None
-        
+
         last_msg_at = int(row["last_chat_message_at"] or 0)
         msg_count = int(row["chat_message_count_10min"] or 0)
         now = now_ts()
-        
+
         if now - last_msg_at > 600:
             msg_count = 0
-        
+
         if now - last_msg_at < MIN_SECONDS_BETWEEN_CHAT_MESSAGES:
             wait = MIN_SECONDS_BETWEEN_CHAT_MESSAGES - (now - last_msg_at)
             return False, f"Слишком быстро. Подождите {wait} сек."
-        
+
         if msg_count >= MAX_CHAT_MESSAGES_PER_10_MIN:
             return False, f"Лимит сообщений: {MAX_CHAT_MESSAGES_PER_10_MIN} в 10 минут."
-        
-        conn.execute(
+
+        await conn.execute(
             "UPDATE users SET last_chat_message_at=?, chat_message_count_10min=? WHERE user_id=?",
             (now, msg_count + 1, user_id)
         )
-        
-        return True, None
+        await conn.commit()
 
+        return True, None
+        
 
 def go_my_deals_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -704,15 +712,18 @@ def admin_complaint_actions_kb(complaint_id: int, post_id: int, owner_user_id: O
     return InlineKeyboardMarkup(inline_keyboard=rows)
     
 
-def ensure_column(conn: sqlite3.Connection, table: str, column: str, ddl: str):
-    cols = [r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+async def ensure_column(conn, table: str, column: str, ddl: str):
+    cur = await conn.execute(f"PRAGMA table_info({table})")
+    rows = await cur.fetchall()
+    cols = [r["name"] for r in rows]
+
     if column not in cols:
-        conn.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
+        await conn.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
 
 
-def init_db():
-    with closing(connect_db()) as conn, conn:
-        conn.executescript("""
+async def init_db():
+    async with await connect_db() as conn:
+        await conn.executescript("""
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
             username TEXT,
@@ -882,7 +893,7 @@ def init_db():
         ON deals(requester_user_id, status, created_at);
         """)
 
-        conn.executescript("""
+        await conn.executescript("""
         CREATE TABLE IF NOT EXISTS chat_messages (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             post_id INTEGER NOT NULL,
@@ -923,188 +934,185 @@ def init_db():
         );
         """)
 
-        conn.execute("""
+        await conn.execute("""
         CREATE INDEX IF NOT EXISTS idx_cargo_leads_created
         ON cargo_leads(created_at)
         """)
 
-        conn.execute("""
+        await conn.execute("""
         CREATE INDEX IF NOT EXISTS idx_cargo_leads_status
         ON cargo_leads(status)
         """)
 
-        conn.execute("""
+        await conn.execute("""
         CREATE INDEX IF NOT EXISTS idx_cargo_lead_access_lead
         ON cargo_lead_access(lead_id)
         """)
 
         # ---- ensure columns ----
 
-        ensure_column(conn, "users", "is_verified", "is_verified INTEGER DEFAULT 0")
-        ensure_column(conn, "users", "is_banned", "is_banned INTEGER DEFAULT 0")
-        ensure_column(conn, "users", "last_action_at", "last_action_at INTEGER DEFAULT 0")
-        ensure_column(conn, "users", "dispute_no_response_count", "dispute_no_response_count INTEGER DEFAULT 0")
-        ensure_column(conn, "users", "failed_dispute_count", "failed_dispute_count INTEGER DEFAULT 0")
-        ensure_column(conn, "posts", "expires_at", "expires_at INTEGER")
-        ensure_column(conn, "posts", "photo_file_id", "photo_file_id TEXT")
-        ensure_column(conn, "deals", "initiator_user_id", "initiator_user_id INTEGER")
-        ensure_column(conn, "deals", "owner_confirmed", "owner_confirmed INTEGER DEFAULT 0")
-        ensure_column(conn, "deals", "requester_confirmed", "requester_confirmed INTEGER DEFAULT 0")
-        ensure_column(conn, "deals", "updated_at", "updated_at INTEGER DEFAULT 0")
-        ensure_column(conn, "users", "onboarding_completed", "onboarding_completed INTEGER DEFAULT 0")
-        ensure_column(conn, "users", "active_chat_target_user_id", "active_chat_target_user_id INTEGER")
-        ensure_column(conn, "users", "active_chat_post_id", "active_chat_post_id INTEGER")
-        ensure_column(conn, "users", "active_chat_deal_id", "active_chat_deal_id INTEGER")
-        ensure_column(conn, "users", "verified_at", "verified_at INTEGER")
-        ensure_column(conn, "users", "verification_type", "verification_type TEXT")
-        ensure_column(conn, "posts", "expire_warned_at", "expire_warned_at INTEGER")
-        ensure_column(conn, "route_subscriptions", "from_city", "from_city TEXT")
-        ensure_column(conn, "route_subscriptions", "to_city", "to_city TEXT")
-        ensure_column(conn, "users", "review_status", "review_status TEXT DEFAULT 'clear'")
-        ensure_column(conn, "users", "review_requested_at", "review_requested_at INTEGER")
-        ensure_column(conn, "users", "review_admin_id", "review_admin_id INTEGER")
-        ensure_column(conn, "users", "is_cargo", "is_cargo INTEGER DEFAULT 0")
-        ensure_column(conn, "users", "cargo_company_name", "cargo_company_name TEXT")
-        ensure_column(conn, "cargo_leads", "photo_file_id", "photo_file_id TEXT")
-        ensure_column(conn, "cargo_leads", "delivery_date", "delivery_date TEXT")
+        await ensure_column(conn, "users", "is_verified", "is_verified INTEGER DEFAULT 0")
+        await ensure_column(conn, "users", "is_banned", "is_banned INTEGER DEFAULT 0")
+        await ensure_column(conn, "users", "last_action_at", "last_action_at INTEGER DEFAULT 0")
+        await ensure_column(conn, "users", "dispute_no_response_count", "dispute_no_response_count INTEGER DEFAULT 0")
+        await ensure_column(conn, "users", "failed_dispute_count", "failed_dispute_count INTEGER DEFAULT 0")
+        await ensure_column(conn, "posts", "expires_at", "expires_at INTEGER")
+        await ensure_column(conn, "posts", "photo_file_id", "photo_file_id TEXT")
+        await ensure_column(conn, "deals", "initiator_user_id", "initiator_user_id INTEGER")
+        await ensure_column(conn, "deals", "owner_confirmed", "owner_confirmed INTEGER DEFAULT 0")
+        await ensure_column(conn, "deals", "requester_confirmed", "requester_confirmed INTEGER DEFAULT 0")
+        await ensure_column(conn, "deals", "updated_at", "updated_at INTEGER DEFAULT 0")
+        await ensure_column(conn, "users", "onboarding_completed", "onboarding_completed INTEGER DEFAULT 0")
+        await ensure_column(conn, "users", "active_chat_target_user_id", "active_chat_target_user_id INTEGER")
+        await ensure_column(conn, "users", "active_chat_post_id", "active_chat_post_id INTEGER")
+        await ensure_column(conn, "users", "active_chat_deal_id", "active_chat_deal_id INTEGER")
+        await ensure_column(conn, "users", "verified_at", "verified_at INTEGER")
+        await ensure_column(conn, "users", "verification_type", "verification_type TEXT")
+        await ensure_column(conn, "posts", "expire_warned_at", "expire_warned_at INTEGER")
+        await ensure_column(conn, "route_subscriptions", "from_city", "from_city TEXT")
+        await ensure_column(conn, "route_subscriptions", "to_city", "to_city TEXT")
+        await ensure_column(conn, "users", "review_status", "review_status TEXT DEFAULT 'clear'")
+        await ensure_column(conn, "users", "review_requested_at", "review_requested_at INTEGER")
+        await ensure_column(conn, "users", "review_admin_id", "review_admin_id INTEGER")
+        await ensure_column(conn, "users", "is_cargo", "is_cargo INTEGER DEFAULT 0")
+        await ensure_column(conn, "users", "cargo_company_name", "cargo_company_name TEXT")
+        await ensure_column(conn, "cargo_leads", "photo_file_id", "photo_file_id TEXT")
+        await ensure_column(conn, "cargo_leads", "delivery_date", "delivery_date TEXT")
 
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_chat_messages_to_read ON chat_messages(to_user_id, is_read, created_at)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_chat_messages_post ON chat_messages(post_id, created_at)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_blacklist_user ON user_blacklist(user_id, blocked_user_id)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_route_subscriptions_city ON route_subscriptions(post_type, from_country, from_city, to_country, to_city)")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_chat_messages_to_read ON chat_messages(to_user_id, is_read, created_at)")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_chat_messages_post ON chat_messages(post_id, created_at)")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_blacklist_user ON user_blacklist(user_id, blocked_user_id)")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_route_subscriptions_city ON route_subscriptions(post_type, from_country, from_city, to_country, to_city)")
 
-        conn.execute("UPDATE deals SET updated_at = created_at WHERE updated_at IS NULL OR updated_at = 0")
-        conn.execute("UPDATE deals SET status='contacted' WHERE status='pending'")
+        await conn.execute("UPDATE deals SET updated_at = created_at WHERE updated_at IS NULL OR updated_at = 0")
+        await conn.execute("UPDATE deals SET status='contacted' WHERE status='pending'")
+        
+        await conn.commit()
         
 
-def upsert_user(message_or_callback):
+async def upsert_user(message_or_callback):
     user = message_or_callback.from_user
-    with closing(connect_db()) as conn, conn:
-        existing = conn.execute("SELECT created_at FROM users WHERE user_id=?", (user.id,)).fetchone()
-        created_at = int(existing["created_at"]) if existing and existing["created_at"] else now_ts()
-        conn.execute("""
-            INSERT INTO users (user_id, username, full_name, created_at)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(user_id) DO UPDATE SET
-                username=excluded.username,
-                full_name=excluded.full_name
-        """, (user.id, user.username, (user.full_name or "")[:200], created_at))
+    existing = await db_fetchone("SELECT created_at FROM users WHERE user_id=?", (user.id,))
+    created_at = int(existing[0]) if existing else now_ts()  # use index [0] instead of ["created_at"]
+    await db_execute("""
+        INSERT INTO users (user_id, username, full_name, created_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET
+            username=excluded.username,
+            full_name=excluded.full_name
+    """, (user.id, user.username, (user.full_name or "")[:200], created_at))
 
 
-def is_onboarding_completed(user_id: int) -> bool:
-    with closing(connect_db()) as conn:
-        row = conn.execute(
-            "SELECT onboarding_completed FROM users WHERE user_id=?",
-            (user_id,)
-        ).fetchone()
-        return bool(row and row["onboarding_completed"])
+async def is_onboarding_completed(user_id: int) -> bool:
+    row = await db_fetchone(
+        "SELECT onboarding_completed FROM users WHERE user_id=?",
+        (user_id,)
+    )
+    return bool(row and row["onboarding_completed"])
 
 
-def set_onboarding_completed(user_id: int):
-    with closing(connect_db()) as conn, conn:
-        conn.execute(
-            "UPDATE users SET onboarding_completed=1 WHERE user_id=?",
-            (user_id,)
-        )
+async def set_onboarding_completed(user_id: int):
+    await db_execute(
+        "UPDATE users SET onboarding_completed=1 WHERE user_id=?",
+        (user_id,)
+    )
 
 
-def get_recent_posts(limit: int = 10, offset: int = 0) -> List[sqlite3.Row]:
-    with closing(connect_db()) as conn:
-        rows = conn.execute("""
-            SELECT p.*, u.username, u.full_name, COALESCE(u.is_verified, 0) AS is_verified
-            FROM posts p
-            LEFT JOIN users u ON u.user_id = p.user_id
-            WHERE p.status='active'
-              AND (p.expires_at IS NULL OR p.expires_at > ?)
-            ORDER BY COALESCE(u.is_verified, 0) DESC, COALESCE(p.bumped_at, p.created_at) DESC
-            LIMIT ? OFFSET ?
-        """, (now_ts(), limit, offset)).fetchall()
-
-    return rows
+async def get_recent_posts(limit: int = 10, offset: int = 0):
+    return await db_fetchall("""
+        SELECT p.*, u.username, u.full_name, COALESCE(u.is_verified, 0) AS is_verified
+        FROM posts p
+        LEFT JOIN users u ON u.user_id = p.user_id
+        WHERE p.status='active'
+          AND (p.expires_at IS NULL OR p.expires_at > ?)
+        ORDER BY COALESCE(u.is_verified, 0) DESC, COALESCE(p.bumped_at, p.created_at) DESC
+        LIMIT ? OFFSET ?
+    """, (now_ts(), limit, offset))
 
 
-def count_recent_posts() -> int:
-    with closing(connect_db()) as conn:
-        row = conn.execute("""
-            SELECT COUNT(*) AS c
-            FROM posts
-            WHERE status='active'
-              AND (expires_at IS NULL OR expires_at > ?)
-        """, (now_ts(),)).fetchone()
-        return int(row["c"] or 0)
+async def count_recent_posts() -> int:
+    row = await db_fetchone("""
+        SELECT COUNT(*) AS c
+        FROM posts
+        WHERE status='active'
+          AND (expires_at IS NULL OR expires_at > ?)
+    """, (now_ts(),))
+    return int(row["c"] or 0)
     
 
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
 
 
-def is_user_banned(user_id: int) -> bool:
-    with closing(connect_db()) as conn:
-        row = conn.execute("SELECT is_banned FROM users WHERE user_id=?", (user_id,)).fetchone()
-        return bool(row and row["is_banned"])
+async def is_user_banned(user_id: int) -> bool:
+    row = await db_fetchone(
+        "SELECT is_banned FROM users WHERE user_id=?",
+        (user_id,)
+    )
+    return bool(row and row["is_banned"])
 
 
-def ban_user(user_id: int):
-    with closing(connect_db()) as conn, conn:
-        conn.execute("UPDATE users SET is_banned=1 WHERE user_id=?", (user_id,))
-        conn.execute(
+async def ban_user(user_id: int):
+    async with await connect_db() as conn:
+        await conn.execute(
+            "UPDATE users SET is_banned=1 WHERE user_id=?",
+            (user_id,)
+        )
+        await conn.execute(
             "UPDATE posts SET status=?, updated_at=? WHERE user_id=? AND status IN ('active','pending','inactive')",
             (STATUS_INACTIVE, now_ts(), user_id)
         )
+        await conn.commit()
+
     invalidate_user_profile_cache(user_id)
 
 
-def unban_user(user_id: int):
-    with closing(connect_db()) as conn, conn:
-        conn.execute("UPDATE users SET is_banned=0 WHERE user_id=?", (user_id,))
+async def unban_user(user_id: int):
+    await db_execute(
+        "UPDATE users SET is_banned=0 WHERE user_id=?",
+        (user_id,)
+    )
     invalidate_user_profile_cache(user_id)
 
 
-def unhold_user(user_id: int):
-    with closing(connect_db()) as conn, conn:
-        conn.execute("""
-            UPDATE users
-            SET review_status='clear',
-                review_requested_at=NULL,
-                review_admin_id=NULL
-            WHERE user_id=?
-        """, (user_id,))
+async def unhold_user(user_id: int):
+    await db_execute("""
+        UPDATE users
+        SET review_status='clear',
+            review_requested_at=NULL,
+            review_admin_id=NULL
+        WHERE user_id=?
+    """, (user_id,))
     invalidate_user_profile_cache(user_id)
-
-
-def get_user_posts_with_channel_messages(user_id: int) -> List[sqlite3.Row]:
-    with closing(connect_db()) as conn:
-        return conn.execute("""
-            SELECT p.*, u.username, u.full_name
-            FROM posts p
-            LEFT JOIN users u ON u.user_id = p.user_id
-            WHERE p.user_id=?
-              AND p.channel_message_id IS NOT NULL
-        """, (user_id,)).fetchall()
 
 
 async def hide_user_posts_from_channel(bot: Bot, user_id: int):
-    rows = get_user_posts_with_channel_messages(user_id)
+    rows = await db_fetchall("""
+        SELECT p.*, u.username, u.full_name
+        FROM posts p
+        LEFT JOIN users u ON u.user_id = p.user_id
+        WHERE p.user_id=?
+          AND p.channel_message_id IS NOT NULL
+    """, (user_id,))
+
     for row in rows:
         await remove_post_from_channel(bot, row)
 
-    with closing(connect_db()) as conn, conn:
-        conn.execute(
-            "UPDATE posts SET channel_message_id=NULL WHERE user_id=? AND channel_message_id IS NOT NULL",
-            (user_id,)
-        )
+    await db_execute(
+        "UPDATE posts SET channel_message_id=NULL WHERE user_id=? AND channel_message_id IS NOT NULL",
+        (user_id,)
+    )
 
 
 async def ban_user_with_cleanup(bot: Bot, user_id: int):
     await hide_user_posts_from_channel(bot, user_id)
-    ban_user(user_id)
-
+    await ban_user(user_id)
 
 async def hold_user_with_cleanup(bot: Bot, user_id: int, admin_id: int):
     await hide_user_posts_from_channel(bot, user_id)
 
-    with closing(connect_db()) as conn, conn:
-        conn.execute("""
+    async with await connect_db() as conn:
+        await conn.execute("""
             UPDATE users
             SET review_status='hold',
                 review_requested_at=?,
@@ -1112,11 +1120,13 @@ async def hold_user_with_cleanup(bot: Bot, user_id: int, admin_id: int):
             WHERE user_id=?
         """, (now_ts(), admin_id, user_id))
 
-        conn.execute("""
+        await conn.execute("""
             UPDATE posts
             SET status=?, updated_at=?
             WHERE user_id=? AND status IN ('active','pending','inactive')
         """, (STATUS_INACTIVE, now_ts(), user_id))
+
+        await conn.commit()
 
     invalidate_user_profile_cache(user_id)
 
@@ -1137,12 +1147,13 @@ async def hold_user_with_cleanup(bot: Bot, user_id: int, admin_id: int):
         logger.warning("Не удалось отправить HOLD сообщение пользователю %s: %s", user_id, e)
 
 
-def anti_spam_check(user_id: int) -> Optional[str]:
-    with closing(connect_db()) as conn, conn:
-        row = conn.execute(
+async def anti_spam_check(user_id: int) -> Optional[str]:
+    async with await connect_db() as conn:
+        cur = await conn.execute(
             "SELECT is_banned, last_action_at, review_status FROM users WHERE user_id=?",
             (user_id,)
-        ).fetchone()
+        )
+        row = await cur.fetchone()
 
         if not row:
             return None
@@ -1158,49 +1169,56 @@ def anti_spam_check(user_id: int) -> Optional[str]:
         if now_ts() - last_action_at < MIN_SECONDS_BETWEEN_ACTIONS:
             return "Слишком быстро. Подождите пару секунд и попробуйте снова."
 
-        conn.execute("UPDATE users SET last_action_at=? WHERE user_id=?", (now_ts(), user_id))
+        await conn.execute(
+            "UPDATE users SET last_action_at=? WHERE user_id=?",
+            (now_ts(), user_id)
+        )
+        await conn.commit()
 
     return None
 
 
-def active_post_count(user_id: int) -> int:
-    with closing(connect_db()) as conn:
-        row = conn.execute(
-            "SELECT COUNT(*) AS c FROM posts WHERE user_id=? AND status IN ('pending','active')",
-            (user_id,)
-        ).fetchone()
-        return int(row["c"])
+async def active_post_count(user_id: int) -> int:
+    row = await db_fetchone(
+        "SELECT COUNT(*) AS c FROM posts WHERE user_id=? AND status IN ('pending','active')",
+        (user_id,)
+    )
+    return int(row["c"] or 0)
 
 
-def get_user_post_limit(user_id: int) -> int:
-    """Возвращает лимит активных объявлений для пользователя."""
+async def get_user_post_limit(user_id: int) -> int:
     if user_id in ADMIN_IDS:
-        return 999  # или float('inf'), но лучше конкретное большое число
-    if is_user_verified(user_id):
-        return MAX_ACTIVE_POSTS_PER_USER * 2  # 10 для верифицированных
-    return MAX_ACTIVE_POSTS_PER_USER  # 5 для обычных
+        return 999
+    if await is_user_verified(user_id):
+        return MAX_ACTIVE_POSTS_PER_USER * 2
+    return MAX_ACTIVE_POSTS_PER_USER * 5
 
 
-def user_rating_summary(user_id: int) -> Tuple[float, int]:
-    with closing(connect_db()) as conn:
-        row = conn.execute("""
+async def user_rating_summary(user_id: int) -> Tuple[float, int]:
+    async with await connect_db() as conn:
+        cur = await conn.execute("""
             SELECT AVG(rating) AS avg_rating, COUNT(*) AS cnt
             FROM reviews
             WHERE reviewed_user_id=?
-        """, (user_id,)).fetchone()
+        """, (user_id,))
+        row = await cur.fetchone()
+
         return float(row["avg_rating"] or 0), int(row["cnt"] or 0)
 
 
-def user_service_days(user_id: int) -> int:
-    with closing(connect_db()) as conn:
-        row = conn.execute("SELECT created_at FROM users WHERE user_id=?", (user_id,)).fetchone()
-        if not row or not row["created_at"]:
-            return 0
-        return max(0, (now_ts() - int(row["created_at"])) // 86400)
+async def user_service_days(user_id: int) -> int:
+    row = await db_fetchone(
+        "SELECT created_at FROM users WHERE user_id=?",
+        (user_id,)
+    )
+    if not row or not row["created_at"]:
+        return 0
+    return max(0, (now_ts() - int(row["created_at"])) // 86400)
 
 
-def user_service_text(user_id: int) -> str:
-    days = user_service_days(user_id)
+async def user_service_text(user_id: int) -> str:
+    days = await user_service_days(user_id)
+
     if days < 30:
         return f"{days} дн"
     if days < 365:
@@ -1208,9 +1226,9 @@ def user_service_text(user_id: int) -> str:
     return f"{max(1, days // 365)} г"
 
 
-def get_user_profile_short(user_id: int) -> dict:
-    with closing(connect_db()) as conn:
-        row = conn.execute("""
+async def get_user_profile_short(user_id: int) -> dict:
+    async with await connect_db() as conn:
+        cur = await conn.execute("""
             SELECT
                 u.is_verified,
                 COALESCE(u.is_cargo, 0) AS is_cargo,
@@ -1229,7 +1247,8 @@ def get_user_profile_short(user_id: int) -> dict:
             LEFT JOIN reviews r ON r.reviewed_user_id = u.user_id
             WHERE u.user_id=?
             GROUP BY u.user_id
-        """, (user_id,)).fetchone()
+        """, (user_id,))
+        row = await cur.fetchone()
 
     if not row:
         return {
@@ -1272,33 +1291,32 @@ def get_user_profile_short(user_id: int) -> dict:
     }
     
 
-def get_user_profile_short_cached(user_id: int) -> dict:
+async def get_user_profile_short_cached(user_id: int) -> dict:
     cached = get_cached_user_profile(user_id)
     if cached is not None:
         return cached
-    payload = get_user_profile_short(user_id)
+
+    payload = await get_user_profile_short(user_id)
     cache_user_profile(user_id, payload)
     return payload
     
 
-def user_completed_deals_count(user_id: int) -> int:
-    with closing(connect_db()) as conn:
-        row = conn.execute("""
-            SELECT COUNT(*) AS cnt
-            FROM deals
-            WHERE status='completed'
-              AND (owner_user_id=? OR requester_user_id=?)
-        """, (user_id, user_id)).fetchone()
-        return int(row["cnt"] or 0)
+async def user_completed_deals_count(user_id: int) -> int:
+    row = await db_fetchone("""
+        SELECT COUNT(*) AS cnt
+        FROM deals
+        WHERE status='completed'
+          AND (owner_user_id=? OR requester_user_id=?)
+    """, (user_id, user_id))
+    return int(row["cnt"] or 0)
 
 
-def user_has_warning_badge(user_id: int) -> bool:
-    with closing(connect_db()) as conn:
-        row = conn.execute("""
-            SELECT failed_dispute_count, dispute_no_response_count
-            FROM users
-            WHERE user_id=?
-        """, (user_id,)).fetchone()
+async def user_has_warning_badge(user_id: int) -> bool:
+    row = await db_fetchone("""
+        SELECT failed_dispute_count, dispute_no_response_count
+        FROM users
+        WHERE user_id=?
+    """, (user_id,))
 
     if not row:
         return False
@@ -1309,68 +1327,65 @@ def user_has_warning_badge(user_id: int) -> bool:
     )
 
 
-def is_user_verified(user_id: int) -> bool:
-    with closing(connect_db()) as conn:
-        row = conn.execute("SELECT is_verified FROM users WHERE user_id=?", (user_id,)).fetchone()
-        return bool(row and row["is_verified"])
+async def is_user_verified(user_id: int) -> bool:
+    row = await db_fetchone(
+        "SELECT is_verified FROM users WHERE user_id=?",
+        (user_id,)
+    )
+    return bool(row and row["is_verified"])
 
 
 def sort_posts_with_verified_priority(rows: List[sqlite3.Row]) -> List[sqlite3.Row]:
     def sort_key(row):
-        verified = int(row["is_verified"]) if "is_verified" in row.keys() else (1 if is_user_verified(row["user_id"]) else 0)
+        verified = int(row["is_verified"] or 0)
         bumped_or_created = row["bumped_at"] or row["created_at"] or 0
         return (verified, bumped_or_created)
 
     return sorted(rows, key=sort_key, reverse=True)
 
 
-def find_user_by_username(username: str):
+async def find_user_by_username(username: str):
     username = username.lstrip("@").strip().lower()
-    with closing(connect_db()) as conn:
-        row = conn.execute("""
-            SELECT user_id, username, full_name, is_banned, created_at
-            FROM users
-            WHERE LOWER(COALESCE(username, '')) = ?
-            LIMIT 1
-        """, (username,)).fetchone()
+    row = await db_fetchone("""
+        SELECT user_id, username, full_name, is_banned, created_at
+        FROM users
+        WHERE LOWER(COALESCE(username, '')) = ?
+        LIMIT 1
+    """, (username,))
     return row
 
 
-def find_user_by_id(user_id: int):
-    with closing(connect_db()) as conn:
-        row = conn.execute("""
-            SELECT user_id, username, full_name, is_banned, created_at
-            FROM users
-            WHERE user_id = ?
-            LIMIT 1
-        """, (user_id,)).fetchone()
-    return row
+async def find_user_by_id(user_id: int):
+    return await db_fetchone("""
+        SELECT user_id, username, full_name, is_banned, created_at
+        FROM users
+        WHERE user_id = ?
+        LIMIT 1
+    """, (user_id,))
 
 
-def search_users(query: str, limit: int = 10):
+async def search_users(query: str, limit: int = 10):
     q = f"%{query.strip().lower()}%"
-    with closing(connect_db()) as conn:
-        rows = conn.execute("""
-            SELECT user_id, username, full_name, is_banned, created_at
-            FROM users
-            WHERE LOWER(COALESCE(username, '')) LIKE ?
-               OR LOWER(COALESCE(full_name, '')) LIKE ?
-               OR CAST(user_id AS TEXT) LIKE ?
-            ORDER BY created_at DESC
-            LIMIT ?
-        """, (q, q, q, limit)).fetchall()
-    return rows
+    return await db_fetchall("""
+        SELECT user_id, username, full_name, is_banned, created_at
+        FROM users
+        WHERE LOWER(COALESCE(username, '')) LIKE ?
+           OR LOWER(COALESCE(full_name, '')) LIKE ?
+           OR CAST(user_id AS TEXT) LIKE ?
+        ORDER BY created_at DESC
+        LIMIT ?
+    """, (q, q, q, limit))
+    
 
-
-def build_admin_user_profile_text(user_id: int) -> Optional[str]:
-    profile = get_user_profile_full(user_id)
+async def build_admin_user_profile_text(user_id: int) -> Optional[str]:
+    profile = await get_user_profile_full(user_id)
     user = profile["user"]
 
     if not user:
         return None
 
-    avg_rating, reviews_count = user_rating_summary(user_id)
-
+    avg_rating, reviews_count = await user_rating_summary(user_id)
+    
     return (
         f"👤 <b>Профиль пользователя</b>\n\n"
         f"<b>USER_ID:</b> {user_id}\n"
@@ -1388,13 +1403,12 @@ def build_admin_user_profile_text(user_id: int) -> Optional[str]:
     
 
 async def show_user_posts(target, user_id: int):
-    with closing(connect_db()) as conn:
-        posts = conn.execute("""
-            SELECT * FROM posts
-            WHERE user_id=? AND status != 'deleted'
-            ORDER BY created_at DESC
-            LIMIT 30
-        """, (user_id,)).fetchall()
+    posts = await db_fetchall("""
+        SELECT * FROM posts
+        WHERE user_id=? AND status != 'deleted'
+        ORDER BY created_at DESC
+        LIMIT 30
+    """, (user_id,))
 
     if not posts:
         await target.answer("У вас пока нет объявлений.")
@@ -1407,7 +1421,7 @@ async def show_user_posts(target, user_id: int):
     
 
 async def show_user_deals_sections(target, user_id: int, include_descriptions: bool = False):
-    deals = list_user_deals(user_id)
+    deals = await list_user_deals(user_id)
 
     if not deals:
         await target.answer("У вас пока нет сделок.")
@@ -1446,69 +1460,72 @@ def reviews_word(n: int) -> str:
     return "отзывов"
 
 
-def format_rating_line(user_id: int) -> Optional[str]:
-    avg_rating, cnt = user_rating_summary(user_id)
+async def format_rating_line(user_id: int) -> Optional[str]:
+    avg_rating, cnt = await user_rating_summary(user_id)
+
     if cnt <= 0:
         return None
+
     stars = "⭐" * max(1, min(5, round(avg_rating)))
     return f"{stars} {avg_rating:.1f} ({cnt} {reviews_word(cnt)})"
 
 
-def get_username_by_user_id(user_id: int) -> Optional[str]:
-    with closing(connect_db()) as conn:
-        row = conn.execute("SELECT username FROM users WHERE user_id=?", (user_id,)).fetchone()
-        return row["username"] if row and row["username"] else None
+async def get_user_reviews(user_id: int, limit: int = 10):
+    return await db_fetchall("""
+        SELECT r.rating, r.text, r.created_at, u.username, u.full_name
+        FROM reviews r
+        LEFT JOIN users u ON u.user_id = r.reviewer_user_id
+        WHERE r.reviewed_user_id=?
+        ORDER BY r.created_at DESC
+        LIMIT ?
+    """, (user_id, limit))
 
 
-def format_user_ref(user_id: int) -> str:
-    username = get_username_by_user_id(user_id)
-    return f"@{html.escape(username)}" if username else f"USER_ID {user_id}"
+async def get_username_by_user_id(user_id: int) -> Optional[str]:
+    row = await db_fetchone(
+        "SELECT username FROM users WHERE user_id=?",
+        (user_id,)
+    )
+    return row["username"] if row and row["username"] else None
 
 
-def get_user_reviews(user_id: int, limit: int = 10):
-    with closing(connect_db()) as conn:
-        return conn.execute("""
-            SELECT r.rating, r.text, r.created_at, u.username, u.full_name
-            FROM reviews r
-            LEFT JOIN users u ON u.user_id = r.reviewer_user_id
-            WHERE r.reviewed_user_id=?
-            ORDER BY r.created_at DESC
-            LIMIT ?
-        """, (user_id, limit)).fetchall()
+async def has_user_left_review_for_deal(deal: sqlite3.Row, reviewer_user_id: int) -> bool:
+    reviewed_user_id = (
+        deal["requester_user_id"]
+        if reviewer_user_id == deal["owner_user_id"]
+        else deal["owner_user_id"]
+    )
+
+    row = await db_fetchone("""
+        SELECT 1 FROM reviews
+        WHERE reviewer_user_id=? AND reviewed_user_id=? AND post_id=?
+        LIMIT 1
+    """, (reviewer_user_id, reviewed_user_id, deal["post_id"]))
+
+    return row is not None
 
 
-def has_user_left_review_for_deal(deal: sqlite3.Row, reviewer_user_id: int) -> bool:
-    reviewed_user_id = deal["requester_user_id"] if reviewer_user_id == deal["owner_user_id"] else deal["owner_user_id"]
-    with closing(connect_db()) as conn:
-        row = conn.execute("""
-            SELECT 1 FROM reviews
-            WHERE reviewer_user_id=? AND reviewed_user_id=? AND post_id=?
-            LIMIT 1
-        """, (reviewer_user_id, reviewed_user_id, deal["post_id"])).fetchone()
-        return row is not None
+async def get_open_dispute_by_deal(deal_id: int) -> Optional[sqlite3.Row]:
+    return await db_fetchone("""
+        SELECT *
+        FROM disputes
+        WHERE deal_id=? AND status IN (?, ?, ?)
+        ORDER BY id DESC
+        LIMIT 1
+    """, (
+        deal_id,
+        DISPUTE_OPEN,
+        DISPUTE_WAITING_RESPONSE,
+        DISPUTE_RESPONDED
+    ))
 
 
-def get_open_dispute_by_deal(deal_id: int) -> Optional[sqlite3.Row]:
-    with closing(connect_db()) as conn:
-        return conn.execute("""
-            SELECT *
-            FROM disputes
-            WHERE deal_id=? AND status IN (?, ?, ?)
-            ORDER BY id DESC
-            LIMIT 1
-        """, (
-            deal_id,
-            DISPUTE_OPEN,
-            DISPUTE_WAITING_RESPONSE,
-            DISPUTE_RESPONDED
-        )).fetchone()
-
-
-def create_dispute(deal_id: int, opened_by_user_id: int, against_user_id: int, reason_text: str) -> int:
+async def create_dispute(deal_id: int, opened_by_user_id: int, against_user_id: int, reason_text: str) -> int:
     ts = now_ts()
     deadline = ts + DISPUTE_RESPONSE_HOURS * 3600
-    with closing(connect_db()) as conn, conn:
-        cur = conn.execute("""
+
+    async with await connect_db() as conn:
+        cur = await conn.execute("""
             INSERT INTO disputes (
                 deal_id, opened_by_user_id, against_user_id,
                 status, reason_text, created_at, updated_at, response_deadline_at
@@ -1518,41 +1535,44 @@ def create_dispute(deal_id: int, opened_by_user_id: int, against_user_id: int, r
             deal_id, opened_by_user_id, against_user_id,
             DISPUTE_WAITING_RESPONSE, reason_text, ts, ts, deadline
         ))
+        await conn.commit()
         return int(cur.lastrowid)
 
 
-def save_dispute_response(dispute_id: int, response_text: str):
-    with closing(connect_db()) as conn, conn:
-        conn.execute("""
-            UPDATE disputes
-            SET response_text=?, status=?, responded_at=?, updated_at=?
-            WHERE id=?
-        """, (response_text, DISPUTE_RESPONDED, now_ts(), now_ts(), dispute_id))
+async def save_dispute_response(dispute_id: int, response_text: str):
+    await db_execute("""
+        UPDATE disputes
+        SET response_text=?, status=?, responded_at=?, updated_at=?
+        WHERE id=?
+    """, (response_text, DISPUTE_RESPONDED, now_ts(), now_ts(), dispute_id))
 
 
-def get_dispute(dispute_id: int) -> Optional[sqlite3.Row]:
-    with closing(connect_db()) as conn:
-        return conn.execute("SELECT * FROM disputes WHERE id=?", (dispute_id,)).fetchone()
+async def get_dispute(dispute_id: int) -> Optional[sqlite3.Row]:
+    return await db_fetchone(
+        "SELECT * FROM disputes WHERE id=?",
+        (dispute_id,)
+    )
 
 
 def short_post_type(post_type: str) -> str:
     return "✈️ Попутчик" if post_type == TYPE_TRIP else "📦 Посылка"
 
 
-def ensure_deal_request(post_id: int, owner_user_id: int, requester_user_id: int) -> tuple[int, bool]:
-    with closing(connect_db()) as conn, conn:
-        row = conn.execute("""
+async def ensure_deal_request(post_id: int, owner_user_id: int, requester_user_id: int) -> tuple[int, bool]:
+    async with await connect_db() as conn:
+        cur = await conn.execute("""
             SELECT id
             FROM deal_requests
             WHERE post_id=? AND owner_user_id=? AND requester_user_id=? AND status=?
             ORDER BY id DESC
             LIMIT 1
-        """, (post_id, owner_user_id, requester_user_id, DEAL_REQUEST_PENDING)).fetchone()
+        """, (post_id, owner_user_id, requester_user_id, DEAL_REQUEST_PENDING))
+        row = await cur.fetchone()
 
         if row:
             return int(row["id"]), False
 
-        cur = conn.execute("""
+        cur = await conn.execute("""
             INSERT INTO deal_requests (
                 post_id, owner_user_id, requester_user_id, status, created_at, updated_at
             )
@@ -1561,22 +1581,20 @@ def ensure_deal_request(post_id: int, owner_user_id: int, requester_user_id: int
             post_id, owner_user_id, requester_user_id,
             DEAL_REQUEST_PENDING, now_ts(), now_ts()
         ))
+        await conn.commit()
         return int(cur.lastrowid), True
-        
 
-def get_deal_request(request_id: int) -> Optional[sqlite3.Row]:
-    with closing(connect_db()) as conn:
-        return conn.execute("""
-            SELECT *
-            FROM deal_requests
-            WHERE id=?
-        """, (request_id,)).fetchone()
-        
+
+async def get_deal_request(request_id: int) -> Optional[sqlite3.Row]:
+    return await db_fetchone("""
+        SELECT *
+        FROM deal_requests
+        WHERE id=?
+    """, (request_id,))
+
 
 def format_deal_status(status: str) -> str:
     mapping = {
-
-        # реальные статусы сделки
         DEAL_ACCEPTED: "сделка принята",
         DEAL_COMPLETED_BY_OWNER: "подтвердил владелец",
         DEAL_COMPLETED_BY_REQUESTER: "подтвердил откликнувшийся",
@@ -1586,13 +1604,10 @@ def format_deal_status(status: str) -> str:
         DEAL_DISPUTE_OPEN: "спор активен",
         DEAL_DISPUTE_WAITING: "ожидается ответ по спору",
         DEAL_DISPUTE_RESOLVED: "спор решен",
-
-        # статусы заявок на сделку (ещё НЕ сделка)
         DEAL_REQUEST_PENDING: "заявка на сделку",
         DEAL_REQUEST_ACCEPTED: "заявка принята",
         DEAL_REQUEST_DECLINED: "заявка отклонена",
     }
-
     return mapping.get(status, status)
 
 
@@ -1608,35 +1623,32 @@ def format_post_status(status: str) -> str:
     return mapping.get(status, status)
 
 
-def set_active_chat(user_id: int, target_user_id: int, post_id: int, deal_id: Optional[int] = None):
-    with closing(connect_db()) as conn, conn:
-        conn.execute("""
-            UPDATE users
-            SET active_chat_target_user_id=?,
-                active_chat_post_id=?,
-                active_chat_deal_id=?
-            WHERE user_id=?
-        """, (target_user_id, post_id, deal_id, user_id))
+async def set_active_chat(user_id: int, target_user_id: int, post_id: int, deal_id: Optional[int] = None):
+    await db_execute("""
+        UPDATE users
+        SET active_chat_target_user_id=?,
+            active_chat_post_id=?,
+            active_chat_deal_id=?
+        WHERE user_id=?
+    """, (target_user_id, post_id, deal_id, user_id))
+    
+
+async def get_active_chat(user_id: int) -> Optional[sqlite3.Row]:
+    return await db_fetchone("""
+        SELECT active_chat_target_user_id, active_chat_post_id, active_chat_deal_id
+        FROM users
+        WHERE user_id=?
+    """, (user_id,))
 
 
-def get_active_chat(user_id: int) -> Optional[sqlite3.Row]:
-    with closing(connect_db()) as conn:
-        return conn.execute("""
-            SELECT active_chat_target_user_id, active_chat_post_id, active_chat_deal_id
-            FROM users
-            WHERE user_id=?
-        """, (user_id,)).fetchone()
-
-
-def clear_active_chat(user_id: int):
-    with closing(connect_db()) as conn, conn:
-        conn.execute("""
-            UPDATE users
-            SET active_chat_target_user_id=NULL,
-                active_chat_post_id=NULL,
-                active_chat_deal_id=NULL
-            WHERE user_id=?
-        """, (user_id,))
+async def clear_active_chat(user_id: int):
+    await db_execute("""
+        UPDATE users
+        SET active_chat_target_user_id=NULL,
+            active_chat_post_id=NULL,
+            active_chat_deal_id=NULL
+        WHERE user_id=?
+    """, (user_id,))
 
 
 def deal_status_explanation(status: str, viewer_is_owner: bool) -> str:
@@ -1712,7 +1724,7 @@ def form_text(post_type: str, step: int, prompt: str, total_steps: int = 9) -> s
     return form_header(post_type, step, total_steps) + prompt
 
 
-def post_text(row, for_channel: bool = False) -> str:
+async def post_text(row, for_channel: bool = False) -> str:
     if row is None:
         raise ValueError("post_text получил None вместо объявления")
 
@@ -1730,8 +1742,8 @@ def post_text(row, for_channel: bool = False) -> str:
         route += f", {html.escape(row['to_city'])}"
 
     owner_user_id = row["user_id"]
-    profile = get_user_profile_short_cached(owner_user_id)
-
+    profile = await get_user_profile_short_cached(owner_user_id)
+        
     owner_username = row["username"] if "username" in row.keys() else None
     owner_full_name = row["full_name"] if "full_name" in row.keys() else None
 
@@ -1753,7 +1765,7 @@ def post_text(row, for_channel: bool = False) -> str:
 
     if "photo_file_id" in row.keys() and row["photo_file_id"]:
         lines.append("<b>Фото посылки:</b> доступно по кнопке ниже")
-
+        
     lines.append("")
     lines.append("<b>👤 Профиль пользователя</b>")
 
@@ -1809,7 +1821,7 @@ async def send_post_card(
     prefix_text: Optional[str] = None,
     reply_markup=None
 ):
-    text = post_text(row)
+    text = await post_text(row)
 
     if prefix_text:
         text = f"{prefix_text}\n\n{text}"
@@ -1820,7 +1832,7 @@ async def send_post_card(
     if len(text) > 4000:
         text = text[:3900] + "\n\n..."
 
-    kb = reply_markup if reply_markup is not None else public_post_kb(
+    kb = reply_markup if reply_markup is not None else await public_post_kb(
         row["id"],
         row["user_id"]
     )
@@ -1845,7 +1857,7 @@ async def send_post_card_to_user(
     prefix_text: Optional[str] = None,
     reply_markup=None
 ):
-    text = post_text(row)
+    text = await post_text(row)
 
     if prefix_text:
         text = f"{prefix_text}\n\n{text}"
@@ -1856,7 +1868,7 @@ async def send_post_card_to_user(
     if len(text) > 4000:
         text = text[:3900] + "\n\n..."
 
-    kb = reply_markup if reply_markup is not None else public_post_kb(
+    kb = reply_markup if reply_markup is not None else await public_post_kb(
         row["id"],
         row["user_id"]
     )
@@ -2219,9 +2231,9 @@ def admin_post_actions_kb(post_id: int):
     ])
 
 
-def public_post_kb(post_id: int, owner_id: int):
+async def public_post_kb(post_id: int, owner_id: int):
     _, reviews_count = user_rating_summary(owner_id)
-    row = get_post(post_id)
+    row = await get_post(post_id)
 
     rows = [
         [InlineKeyboardButton(text="✉️ Написать владельцу", callback_data=f"contact:{post_id}:{owner_id}")],
@@ -2348,46 +2360,53 @@ def admin_verification_payment_kb(request_id: int, user_id: int):
     ])
 
 
-def get_user_profile_full(user_id: int):
-    with closing(connect_db()) as conn:
-        user = conn.execute("""
+async def get_user_profile_full(user_id: int) -> dict:
+    async with await connect_db() as conn:
+        cur = await conn.execute("""
             SELECT *
             FROM users
             WHERE user_id=?
-        """, (user_id,)).fetchone()
+        """, (user_id,))
+        user = await cur.fetchone()
 
-        posts_count = conn.execute("""
-            SELECT COUNT(*) AS c
+        cur = await conn.execute("""
+            SELECT COUNT(*) AS cnt
             FROM posts
-            WHERE user_id=? AND status != ?
-        """, (user_id, STATUS_DELETED)).fetchone()["c"]
+            WHERE user_id=?
+        """, (user_id,))
+        posts_count_row = await cur.fetchone()
 
-        active_posts = conn.execute("""
-            SELECT COUNT(*) AS c
+        cur = await conn.execute("""
+            SELECT COUNT(*) AS cnt
             FROM posts
-            WHERE user_id=? AND status=?
-        """, (user_id, STATUS_ACTIVE)).fetchone()["c"]
+            WHERE user_id=? AND status='active'
+        """, (user_id,))
+        active_posts_row = await cur.fetchone()
 
-        completed_deals = conn.execute("""
-            SELECT COUNT(*) AS c
+        cur = await conn.execute("""
+            SELECT COUNT(*) AS cnt
             FROM deals
-            WHERE status=? AND (owner_user_id=? OR requester_user_id=?)
-        """, (DEAL_COMPLETED, user_id, user_id)).fetchone()["c"]
+            WHERE status='completed'
+              AND (owner_user_id=? OR requester_user_id=?)
+        """, (user_id, user_id))
+        completed_deals_row = await cur.fetchone()
 
-        complaints_received = conn.execute("""
-            SELECT COUNT(*) AS c
-            FROM complaints c
-            LEFT JOIN posts p ON p.id = c.post_id
-            WHERE p.user_id=?
-        """, (user_id,)).fetchone()["c"]
+        cur = await conn.execute("""
+            SELECT COUNT(*) AS cnt
+            FROM complaints
+            WHERE post_id IN (
+                SELECT id FROM posts WHERE user_id=?
+            )
+        """, (user_id,))
+        complaints_row = await cur.fetchone()
 
-        return {
-            "user": user,
-            "posts_count": int(posts_count or 0),
-            "active_posts": int(active_posts or 0),
-            "completed_deals": int(completed_deals or 0),
-            "complaints_received": int(complaints_received or 0),
-        }
+    return {
+        "user": user,
+        "posts_count": int(posts_count_row["cnt"] or 0),
+        "active_posts": int(active_posts_row["cnt"] or 0),
+        "completed_deals": int(completed_deals_row["cnt"] or 0),
+        "complaints_received": int(complaints_row["cnt"] or 0),
+    }
         
 
 def admin_verification_review_kb(request_id: int, user_id: int):
@@ -2536,23 +2555,22 @@ def deal_open_kb(deal: sqlite3.Row, user_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
     
 
-def get_active_deal_by_post(post_id: int) -> Optional[sqlite3.Row]:
-    with closing(connect_db()) as conn:
-        return conn.execute("""
-            SELECT *
-            FROM deals
-            WHERE post_id=?
-              AND status IN (?, ?, ?, ?, ?)
-            ORDER BY id DESC
-            LIMIT 1
-        """, (
-            post_id,
-            DEAL_ACCEPTED,
-            DEAL_COMPLETED_BY_OWNER,
-            DEAL_COMPLETED_BY_REQUESTER,
-            DEAL_DISPUTE_OPEN,
-            DEAL_DISPUTE_WAITING
-        )).fetchone()
+async def get_active_deal_by_post(post_id: int) -> Optional[sqlite3.Row]:
+    return await db_fetchone("""
+        SELECT *
+        FROM deals
+        WHERE post_id=?
+          AND status IN (?, ?, ?, ?, ?)
+        ORDER BY id DESC
+        LIMIT 1
+    """, (
+        post_id,
+        DEAL_ACCEPTED,
+        DEAL_COMPLETED_BY_OWNER,
+        DEAL_COMPLETED_BY_REQUESTER,
+        DEAL_DISPUTE_OPEN,
+        DEAL_DISPUTE_WAITING
+    ))
 
 
 def admin_deal_users_kb(owner_user_id: int, requester_user_id: int):
@@ -2734,18 +2752,19 @@ async def block_menu_text_during_form(message: Message, state: FSMContext) -> bo
     return False
 
 
-def get_post(post_id: int) -> Optional[sqlite3.Row]:
-    with closing(connect_db()) as conn:
-        return conn.execute("""
+async def get_post(post_id: int) -> Optional[aiosqlite.Row]:
+    async with await connect_db() as conn:
+        cur = await conn.execute("""
             SELECT p.*, u.username, u.full_name
             FROM posts p
             LEFT JOIN users u ON u.user_id = p.user_id
             WHERE p.id=?
-        """, (post_id,)).fetchone()
+        """, (post_id,))
+        return await cur.fetchone()
 
 
 def get_pending_posts(limit: int = 20):
-    with closing(connect_db()) as conn:
+    async with await connect_db() as conn:
         return conn.execute("""
             SELECT p.*, u.username, u.full_name
             FROM posts p
@@ -2757,7 +2776,7 @@ def get_pending_posts(limit: int = 20):
 
 
 def get_recent_complaints(limit: int = 20):
-    with closing(connect_db()) as conn:
+    async with await connect_db() as conn:
         return conn.execute("""
             SELECT c.*, p.user_id AS post_owner_user_id
             FROM complaints c
@@ -2768,7 +2787,7 @@ def get_recent_complaints(limit: int = 20):
 
 
 def get_pending_bump_orders(limit: int = 20):
-    with closing(connect_db()) as conn:
+    async with await connect_db() as conn:
         return conn.execute("""
             SELECT *
             FROM bump_orders
@@ -2779,7 +2798,7 @@ def get_pending_bump_orders(limit: int = 20):
 
 
 def get_admin_posts(limit: int = 30):
-    with closing(connect_db()) as conn:
+    async with await connect_db() as conn:
         return conn.execute("""
             SELECT p.*, u.username, u.full_name
             FROM posts p
@@ -2900,7 +2919,7 @@ def admin_user_actions_kb(user_id: int, is_verified: bool, is_banned: bool, is_c
 
 
 def admin_stats_text() -> str:
-    with closing(connect_db()) as conn:
+    async with await connect_db() as conn:
         users_count = conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"]
         active_posts = conn.execute(
             "SELECT COUNT(*) AS c FROM posts WHERE status='active' AND (expires_at IS NULL OR expires_at > ?)",
@@ -2948,7 +2967,7 @@ def admin_stats_text() -> str:
 
 
 def verify_user(user_id: int):
-    with closing(connect_db()) as conn, conn:
+    async with await connect_db() as conn:
         conn.execute("""
             UPDATE users
             SET is_verified=1,
@@ -2960,7 +2979,7 @@ def verify_user(user_id: int):
 
 
 def unverify_user(user_id: int):
-    with closing(connect_db()) as conn, conn:
+    async with await connect_db() as conn:
         conn.execute("""
             UPDATE users
             SET is_verified=0,
@@ -2972,7 +2991,7 @@ def unverify_user(user_id: int):
         
 
 def get_latest_verification_request(user_id: int) -> Optional[sqlite3.Row]:
-    with closing(connect_db()) as conn:
+    async with await connect_db() as conn:
         return conn.execute("""
             SELECT *
             FROM verification_requests
@@ -2983,7 +3002,7 @@ def get_latest_verification_request(user_id: int) -> Optional[sqlite3.Row]:
 
 
 def get_verification_request(request_id: int) -> Optional[sqlite3.Row]:
-    with closing(connect_db()) as conn:
+    async with await connect_db() as conn:
         return conn.execute("""
             SELECT *
             FROM verification_requests
@@ -2994,7 +3013,7 @@ def get_verification_request(request_id: int) -> Optional[sqlite3.Row]:
 
 def create_verification_request(user_id: int) -> int:
     ts = now_ts()
-    with closing(connect_db()) as conn, conn:
+    async with await connect_db() as conn:
         cur = conn.execute("""
             INSERT INTO verification_requests (
                 user_id, status, payment_amount, payment_currency,
@@ -3013,7 +3032,7 @@ def create_verification_request(user_id: int) -> int:
 
 
 def users_had_recent_deal(user1: int, user2: int) -> bool:
-    with closing(connect_db()) as conn:
+    async with await connect_db() as conn:
         row = conn.execute("""
             SELECT id
             FROM deals
@@ -3036,7 +3055,7 @@ def users_had_recent_deal(user1: int, user2: int) -> bool:
 
 
 def active_deals_count(user_id: int) -> int:
-    with closing(connect_db()) as conn:
+    async with await connect_db() as conn:
         row = conn.execute("""
             SELECT COUNT(*) AS c
             FROM deals
@@ -3062,7 +3081,7 @@ def set_verification_status(
     mark_paid: bool = False,
     mark_reviewed: bool = False
 ):
-    with closing(connect_db()) as conn, conn:
+    async with await connect_db() as conn:
         row = conn.execute("SELECT * FROM verification_requests WHERE id=?", (request_id,)).fetchone()
         if not row:
             return
@@ -3096,7 +3115,7 @@ def set_verification_status(
 
 
 def save_verification_passport(request_id: int, photo_file_id: str):
-    with closing(connect_db()) as conn, conn:
+    async with await connect_db() as conn:
         conn.execute("""
             UPDATE verification_requests
             SET passport_photo_file_id=?,
@@ -3107,7 +3126,7 @@ def save_verification_passport(request_id: int, photo_file_id: str):
 
 
 def save_verification_selfie(request_id: int, photo_file_id: str):
-    with closing(connect_db()) as conn, conn:
+    async with await connect_db() as conn:
         conn.execute("""
             UPDATE verification_requests
             SET selfie_photo_file_id=?,
@@ -3119,7 +3138,7 @@ def save_verification_selfie(request_id: int, photo_file_id: str):
 
 
 def clear_verification_files(request_id: int):
-    with closing(connect_db()) as conn, conn:
+    async with await connect_db() as conn:
         conn.execute("""
             UPDATE verification_requests
             SET passport_photo_file_id=NULL,
@@ -3130,7 +3149,7 @@ def clear_verification_files(request_id: int):
 
 
 def list_pending_verification_requests(limit: int = 20):
-    with closing(connect_db()) as conn:
+    async with await connect_db() as conn:
         return conn.execute("""
             SELECT *
             FROM verification_requests
@@ -3198,7 +3217,7 @@ def search_posts_inline(query: str, limit: int = 10, offset: int = 0, post_type:
     sql.append(" ORDER BY COALESCE(u.is_verified, 0) DESC, COALESCE(p.bumped_at, p.created_at) DESC LIMIT ? OFFSET ? ")
     params.extend([limit, offset])
 
-    with closing(connect_db()) as conn:
+    async with await connect_db() as conn:
         rows = conn.execute("".join(sql), tuple(params)).fetchall()
     return rows
 
@@ -3236,13 +3255,13 @@ def count_search_posts(query: str = "", post_type: Optional[str] = None, from_co
     if to_country:
         sql.append(" AND p.to_country=? ")
         params.append(to_country)
-    with closing(connect_db()) as conn:
+    async with await connect_db() as conn:
         row = conn.execute("".join(sql), tuple(params)).fetchone()
         return int(row["c"] or 0)
 
 
 def get_popular_routes(limit: int = 10) -> List[sqlite3.Row]:
-    with closing(connect_db()) as conn:
+    async with await connect_db() as conn:
         return conn.execute("""
             SELECT from_country, to_country, COUNT(*) AS cnt
             FROM posts
@@ -3277,13 +3296,13 @@ def search_route_posts_all(from_country: str, to_country: str, limit: int = 20, 
         params.append(post_type)
     sql.append(" ORDER BY COALESCE(u.is_verified, 0) DESC, COALESCE(p.bumped_at, p.created_at) DESC LIMIT ? OFFSET ? ")
     params.extend([limit, offset])
-    with closing(connect_db()) as conn:
+    async with await connect_db() as conn:
         rows = conn.execute("".join(sql), tuple(params)).fetchall()
     return rows
     
 
 def service_stats() -> sqlite3.Row:
-    with closing(connect_db()) as conn:
+    async with await connect_db() as conn:
         return conn.execute("""
             SELECT
                 (SELECT COUNT(*) FROM users) AS users_count,
@@ -3294,7 +3313,7 @@ def service_stats() -> sqlite3.Row:
 
 
 def top_route() -> Optional[sqlite3.Row]:
-    with closing(connect_db()) as conn:
+    async with await connect_db() as conn:
         return conn.execute("""
             SELECT from_country, to_country, COUNT(*) AS cnt
             FROM posts
@@ -3309,7 +3328,7 @@ def top_route() -> Optional[sqlite3.Row]:
 def create_post_record(data: dict, user_id: int) -> int:
     ts = now_ts()
     expires_at = calculate_post_expires_at(ts, data.get("travel_date"), POST_TTL_DAYS)
-    with closing(connect_db()) as conn, conn:
+    async with await connect_db() as conn:
         cur = conn.execute("""
             INSERT INTO posts (
                 user_id, post_type, from_country, from_city, to_country, to_city,
@@ -3347,7 +3366,7 @@ def update_post_record(post_id: int, user_id: int, updates: dict) -> bool:
     if not payload:
         return False
     payload["updated_at"] = now_ts()
-    with closing(connect_db()) as conn, conn:
+    async with await connect_db() as conn:
         if "travel_date" in payload:
             row = conn.execute(
                 "SELECT created_at FROM posts WHERE id=? AND user_id=?",
@@ -3367,7 +3386,7 @@ def update_post_record(post_id: int, user_id: int, updates: dict) -> bool:
 
 
 def user_post_create_rate_limited(user_id: int) -> bool:
-    with closing(connect_db()) as conn:
+    async with await connect_db() as conn:
         row = conn.execute("""
             SELECT COUNT(*) AS c
             FROM posts
@@ -3377,7 +3396,7 @@ def user_post_create_rate_limited(user_id: int) -> bool:
 
 
 def add_route_subscription(user_id: int, post_type: str, from_country: str, to_country: str, from_city: Optional[str] = None, to_city: Optional[str] = None):
-    with closing(connect_db()) as conn, conn:
+    async with await connect_db() as conn:
         exists = conn.execute("""
             SELECT id FROM route_subscriptions
             WHERE user_id=? AND post_type=? AND from_country=? AND COALESCE(from_city, '')=COALESCE(?, '') AND to_country=? AND COALESCE(to_city, '')=COALESCE(?, '') LIMIT 1
@@ -3391,7 +3410,7 @@ def add_route_subscription(user_id: int, post_type: str, from_country: str, to_c
 
 
 def list_route_subscriptions(user_id: int) -> List[sqlite3.Row]:
-    with closing(connect_db()) as conn:
+    async with await connect_db() as conn:
         return conn.execute("""
             SELECT * FROM route_subscriptions
             WHERE user_id=?
@@ -3401,13 +3420,13 @@ def list_route_subscriptions(user_id: int) -> List[sqlite3.Row]:
 
 
 def delete_subscription(user_id: int, sub_id: int) -> bool:
-    with closing(connect_db()) as conn, conn:
+    async with await connect_db() as conn:
         cur = conn.execute("DELETE FROM route_subscriptions WHERE id=? AND user_id=?", (sub_id, user_id))
         return cur.rowcount > 0
 
 
 def is_user_blocked(user_id: int, blocked_user_id: int) -> bool:
-    with closing(connect_db()) as conn:
+    async with await connect_db() as conn:
         row = conn.execute("SELECT 1 FROM user_blacklist WHERE user_id=? AND blocked_user_id=? LIMIT 1", (user_id, blocked_user_id)).fetchone()
         return row is not None
 
@@ -3415,7 +3434,7 @@ def is_user_blocked(user_id: int, blocked_user_id: int) -> bool:
 def add_user_to_blacklist(user_id: int, blocked_user_id: int) -> bool:
     if user_id == blocked_user_id:
         return False
-    with closing(connect_db()) as conn, conn:
+    async with await connect_db() as conn:
         try:
             conn.execute("INSERT INTO user_blacklist(user_id, blocked_user_id, created_at) VALUES (?, ?, ?)", (user_id, blocked_user_id, now_ts()))
             return True
@@ -3424,13 +3443,13 @@ def add_user_to_blacklist(user_id: int, blocked_user_id: int) -> bool:
 
 
 def remove_user_from_blacklist(user_id: int, blocked_user_id: int) -> bool:
-    with closing(connect_db()) as conn, conn:
+    async with await connect_db() as conn:
         cur = conn.execute("DELETE FROM user_blacklist WHERE user_id=? AND blocked_user_id=?", (user_id, blocked_user_id))
         return cur.rowcount > 0
 
 
 def save_chat_message(post_id: int, from_user_id: int, to_user_id: int, message_text: str, deal_id: Optional[int] = None):
-    with closing(connect_db()) as conn, conn:
+    async with await connect_db() as conn:
         conn.execute("""
             INSERT INTO chat_messages(post_id, deal_id, from_user_id, to_user_id, message_text, created_at, is_read)
             VALUES (?, ?, ?, ?, ?, ?, 0)
@@ -3438,18 +3457,18 @@ def save_chat_message(post_id: int, from_user_id: int, to_user_id: int, message_
 
 
 def unread_chat_count(user_id: int) -> int:
-    with closing(connect_db()) as conn:
+    async with await connect_db() as conn:
         row = conn.execute("SELECT COUNT(*) AS c FROM chat_messages WHERE to_user_id=? AND is_read=0", (user_id,)).fetchone()
         return int(row["c"] or 0)
 
 
 def mark_chat_read(user_id: int, partner_user_id: int, post_id: int):
-    with closing(connect_db()) as conn, conn:
+    async with await connect_db() as conn:
         conn.execute("UPDATE chat_messages SET is_read=1 WHERE to_user_id=? AND from_user_id=? AND post_id=? AND is_read=0", (user_id, partner_user_id, post_id))
 
 
 def get_chat_history(user_a: int, user_b: int, post_id: int, limit: int = 20) -> List[sqlite3.Row]:
-    with closing(connect_db()) as conn:
+    async with await connect_db() as conn:
         return conn.execute("""
             SELECT * FROM chat_messages
             WHERE post_id=? AND ((from_user_id=? AND to_user_id=?) OR (from_user_id=? AND to_user_id=?))
@@ -3461,7 +3480,7 @@ def get_chat_history(user_a: int, user_b: int, post_id: int, limit: int = 20) ->
 def reserve_coincidence_notification(post_a_id: int, post_b_id: int) -> bool:
     a, b = sorted([post_a_id, post_b_id])
 
-    with closing(connect_db()) as conn, conn:
+    async with await connect_db() as conn:
         try:
             conn.execute("""
                 INSERT INTO coincidence_notifications (post_a_id, post_b_id, created_at)
@@ -3549,11 +3568,18 @@ def calculate_coincidence_score(source_row, candidate_row: sqlite3.Row) -> Tuple
     return score, notes
 
 
-def get_coincidences(post_type: str, from_country: str, to_country: str, exclude_user_id: Optional[int] = None, source_row=None, limit: int = 20) -> List[dict]:
+async def get_coincidences(
+    post_type: str,
+    from_country: str,
+    to_country: str,
+    exclude_user_id: Optional[int] = None,
+    source_row=None,
+    limit: int = 20
+) -> List[dict]:
     target_type = TYPE_PARCEL if post_type == TYPE_TRIP else TYPE_TRIP
 
     query = """
-        SELECT p.*, u.username, u.full_name
+        SELECT p.*, u.username, u.full_name, COALESCE(u.is_verified, 0) AS is_verified
         FROM posts p
         LEFT JOIN users u ON u.user_id = p.user_id
         WHERE p.post_type=?
@@ -3570,14 +3596,19 @@ def get_coincidences(post_type: str, from_country: str, to_country: str, exclude
 
     query += " ORDER BY COALESCE(p.bumped_at, p.created_at) DESC LIMIT 100"
 
-    with closing(connect_db()) as conn:
-        rows = conn.execute(query, params).fetchall()
+    rows = await db_fetchall(query, tuple(params))
 
     results = []
     for row in rows:
-        score, notes = (45, ["Совпадает маршрут по странам"]) if source_row is None else calculate_coincidence_score(source_row, row)
+        score, notes = (
+            (45, ["Совпадает маршрут по странам"])
+            if source_row is None
+            else calculate_coincidence_score(source_row, row)
+        )
+
         if score < 35:
             continue
+
         results.append({
             "row": row,
             "score": score,
@@ -3586,18 +3617,19 @@ def get_coincidences(post_type: str, from_country: str, to_country: str, exclude
         })
 
     results.sort(
-    key=lambda x: (
-        x["score"],
-        1 if is_user_verified(x["row"]["user_id"]) else 0,
-        x["row"]["bumped_at"] or x["row"]["created_at"] or 0
-    ),
-    reverse=True
-)
+        key=lambda x: (
+            x["score"],
+            int(x["row"]["is_verified"] or 0),
+            x["row"]["bumped_at"] or x["row"]["created_at"] or 0
+        ),
+        reverse=True
+    )
+
     return results[:limit]
 
 
 def ensure_deal(post_id: int, owner_user_id: int, requester_user_id: int, initiator_user_id: int) -> int:
-    with closing(connect_db()) as conn, conn:
+    async with await connect_db() as conn:
         row = conn.execute("""
             SELECT id FROM deals
             WHERE post_id=? AND owner_user_id=? AND requester_user_id=?
@@ -3621,12 +3653,12 @@ def ensure_deal(post_id: int, owner_user_id: int, requester_user_id: int, initia
 
 
 def get_deal(deal_id: int) -> Optional[sqlite3.Row]:
-    with closing(connect_db()) as conn:
+    async with await connect_db() as conn:
         return conn.execute("SELECT * FROM deals WHERE id=?", (deal_id,)).fetchone()
 
 
 def list_user_deals(user_id: int) -> List[sqlite3.Row]:
-    with closing(connect_db()) as conn:
+    async with await connect_db() as conn:
         return conn.execute("""
             SELECT *
             FROM deals
@@ -3751,7 +3783,7 @@ def deal_section_kb(deals: List[sqlite3.Row]) -> InlineKeyboardMarkup:
 
 
 def mark_deal_failed(post_id: int, user_id: int) -> bool:
-    with closing(connect_db()) as conn, conn:
+    async with await connect_db() as conn:
         row = conn.execute("""
             SELECT id FROM deals
             WHERE post_id=?
@@ -3785,7 +3817,7 @@ def contact_admin_kb(deal_id: int):
 
 
 def create_bump_order(user_id: int, post_id: int, amount: int = BUMP_PRICE_AMOUNT, currency: str = BUMP_PRICE_CURRENCY) -> int:
-    with closing(connect_db()) as conn, conn:
+    async with await connect_db() as conn:
         cur = conn.execute("""
             INSERT INTO bump_orders (user_id, post_id, amount, currency, status, created_at)
             VALUES (?, ?, ?, ?, 'pending', ?)
@@ -3793,34 +3825,38 @@ def create_bump_order(user_id: int, post_id: int, amount: int = BUMP_PRICE_AMOUN
         return int(cur.lastrowid)
 
 
-def publish_to_channel(bot: Bot, post_id: int):
+async def publish_to_channel(bot: Bot, post_id: int):
+    """Publish post to channel. Call with 'await'."""
     if not CHANNEL_USERNAME:
         return
-    row = get_post(post_id)
+
+    row = await get_post(post_id)
     if not row or row["status"] != STATUS_ACTIVE:
         return
 
-    async def _send():
-        msg = await bot.send_message(
-            CHANNEL_USERNAME,
-            post_text(row, for_channel=True),
-            reply_markup=channel_post_kb(post_id, row["post_type"])
-        )
-        with closing(connect_db()) as conn, conn:
-            conn.execute("UPDATE posts SET channel_message_id=? WHERE id=?", (msg.message_id, post_id))
+    msg = await bot.send_message(
+        CHANNEL_USERNAME,
+        post_text(row, for_channel=True),
+        reply_markup=channel_post_kb(post_id, row["post_type"])
+    )
 
-    return _send()
+    async with await connect_db() as conn:
+        await conn.execute(
+            "UPDATE posts SET channel_message_id=? WHERE id=?",
+            (msg.message_id, post_id)
+        )
+        await conn.commit()
 
 
 def set_user_cargo(user_id: int, is_cargo: bool = True):
-    with closing(connect_db()) as conn, conn:
+    async with await connect_db() as conn:
         conn.execute(
             "UPDATE users SET is_cargo=? WHERE user_id=?",
             (1 if is_cargo else 0, user_id)
         )
 
 def is_cargo_user(user_id: int) -> bool:
-    with closing(connect_db()) as conn:
+    async with await connect_db() as conn:
         row = conn.execute(
             "SELECT is_cargo FROM users WHERE user_id=?",
             (user_id,)
@@ -3829,7 +3865,7 @@ def is_cargo_user(user_id: int) -> bool:
 
 
 def get_cargo_users():
-    with closing(connect_db()) as conn:
+    async with await connect_db() as conn:
         return conn.execute("""
             SELECT user_id, username, full_name
             FROM users
@@ -3847,7 +3883,7 @@ def create_cargo_lead(
     contact: str,
     photo_file_id: Optional[str] = None
 ) -> int:
-    with closing(connect_db()) as conn, conn:
+    async with await connect_db() as conn:
         cur = conn.execute("""
             INSERT INTO cargo_leads (
                 user_id, from_place, to_place, delivery_date, weight, cargo_desc, contact, photo_file_id, created_at
@@ -3868,7 +3904,7 @@ def create_cargo_lead(
 
 
 def get_cargo_lead(lead_id: int):
-    with closing(connect_db()) as conn:
+    async with await connect_db() as conn:
         return conn.execute("""
             SELECT cl.*, u.username, u.full_name
             FROM cargo_leads cl
@@ -4019,7 +4055,7 @@ async def remove_post_from_channel(bot: Bot, row):
 
 
 async def try_update_channel_post(bot: Bot, post_id: int):
-    row = get_post(post_id)
+    row = await get_post(post_id)
     if not row:
         return
 
@@ -4085,11 +4121,11 @@ async def notify_coincidence_users(bot: Bot, new_post_id: int):
 
 
 async def notify_subscribers(bot: Bot, post_id: int):
-    row = get_post(post_id)
+    row = await get_post(post_id)
     if not row or row["status"] != STATUS_ACTIVE:
         return
 
-    with closing(connect_db()) as conn:
+    async with await connect_db() as conn:
         subscribers = conn.execute("""
             SELECT * FROM route_subscriptions
             WHERE post_type=?
@@ -4146,7 +4182,7 @@ async def notify_cargo_users(bot: Bot, lead_id: int):
 
 async def run_global_coincidence_scan(bot: Bot):
     try:
-        with closing(connect_db()) as conn:
+        async with await connect_db() as conn:
             rows = conn.execute("""
                 SELECT p.*, u.username, u.full_name
                 FROM posts p
@@ -4204,7 +4240,7 @@ async def run_global_coincidence_scan(bot: Bot):
 async def expire_old_posts(bot: Bot):
     while True:
         try:
-            with closing(connect_db()) as conn:
+            async with await connect_db() as conn:
                 rows = conn.execute("""
                     SELECT p.*, u.username, u.full_name
                     FROM posts p
@@ -4219,7 +4255,7 @@ async def expire_old_posts(bot: Bot):
                 for row in rows:
                     await remove_post_from_channel(bot, row)
 
-                with closing(connect_db()) as conn, conn:
+                async with await connect_db() as conn:
                     for row in rows:
                         conn.execute(
                             "UPDATE posts SET status=?, updated_at=? WHERE id=?",
@@ -4250,7 +4286,7 @@ async def global_coincidence_loop(bot: Bot):
 async def dispute_timeout_loop(bot: Bot):
     while True:
         try:
-            with closing(connect_db()) as conn:
+            async with await connect_db() as conn:
                 disputes = conn.execute("""
                     SELECT *
                     FROM disputes
@@ -4262,7 +4298,7 @@ async def dispute_timeout_loop(bot: Bot):
 
                 deal = get_deal(dispute["deal_id"])
 
-                with closing(connect_db()) as conn, conn:
+                async with await connect_db() as conn:
                     conn.execute(
                         "UPDATE disputes SET status=?, updated_at=? WHERE id=?",
                         (DISPUTE_EXPIRED, now_ts(), dispute["id"])
@@ -4324,9 +4360,9 @@ async def dispute_timeout_loop(bot: Bot):
 
 
 async def begin_create(message: Message, state: FSMContext, post_type: str):
-    upsert_user(message)
+    await upsert_user(message)
 
-    if is_user_banned(message.from_user.id):
+    if await is_user_banned(message.from_user.id):
         await message.answer(
             "⛔ Ваш аккаунт ограничен. Если это ошибка — свяжитесь с администратором.",
             reply_markup=main_menu(message.from_user.id)
@@ -4348,7 +4384,7 @@ async def begin_create(message: Message, state: FSMContext, post_type: str):
         )
         return
 
-    user_limit = get_user_post_limit(message.from_user.id)
+    user_limit = await get_user_post_limit(message.from_user.id)
     if active_post_count(message.from_user.id) >= user_limit:
         await message.answer(
             f"У вас уже слишком много объявлений. Лимит: {user_limit}. Удалите или деактивируйте старые объявления.",
@@ -4365,8 +4401,8 @@ async def begin_create(message: Message, state: FSMContext, post_type: str):
     )
     
 
-def owner_only(callback: CallbackQuery, post_id: int) -> Optional[sqlite3.Row]:
-    row = get_post(post_id)
+async def owner_only(callback: CallbackQuery, post_id: int) -> Optional[sqlite3.Row]:
+    row = await get_post(post_id)
     if not row or row["user_id"] != callback.from_user.id:
         return None
     return row
@@ -4399,7 +4435,7 @@ def format_dispute_status(status: str) -> str:
 
 
 def get_user_row(user_id: int):
-    with closing(connect_db()) as conn:
+    async with await connect_db() as conn:
         return conn.execute("""
             SELECT user_id, username, full_name, created_at, is_banned, is_verified,
                    dispute_no_response_count, onboarding_completed
@@ -4410,7 +4446,7 @@ def get_user_row(user_id: int):
 
 
 def set_user_ban_status(user_id: int, is_banned: int):
-    with closing(connect_db()) as conn, conn:
+    async with await connect_db() as conn:
         conn.execute("""
             UPDATE users
             SET is_banned = ?
@@ -4450,7 +4486,7 @@ def render_user_admin_card(user_row) -> str:
 
 
 def get_post_owner_user_id(post_id: int):
-    with closing(connect_db()) as conn:
+    async with await connect_db() as conn:
         row = conn.execute("""
             SELECT user_id
             FROM posts
@@ -4772,7 +4808,7 @@ async def contact_admin_handler(callback: CallbackQuery, state: FSMContext):
 
 @router.message(F.text == "🤝 Мои сделки")
 async def my_deals_menu(message: Message):
-    upsert_user(message)
+    await upsert_user(message)
     await message.answer(MENU_TEXTS["deals"], reply_markup=main_menu(message.from_user.id))
     await show_user_deals_sections(
         message,
@@ -4949,9 +4985,9 @@ async def admin_contact_message(message: Message, state: FSMContext):
 
 @router.message(F.text == "🚀 Быстрая доставка (карго)")
 async def cargo_lead_start(message: Message, state: FSMContext):
-    upsert_user(message)
+    await upsert_user(message)
 
-    spam = anti_spam_check(message.from_user.id)
+    spam = await anti_spam_check(message.from_user.id)
     if spam:
         await message.answer(spam)
         return
@@ -5336,7 +5372,7 @@ async def inline_search_handler(inline_query: InlineQuery):
                     parse_mode=ParseMode.HTML,
                     disable_web_page_preview=True,
                 ),
-                reply_markup=public_post_kb(row["id"], row["user_id"]),
+                reply_markup= await public_post_kb(row["id"], row["user_id"]),
             )
         )
 
@@ -5440,10 +5476,10 @@ async def global_main_menu_router(message: Message, state: FSMContext):
 @router.message(CommandStart())
 async def start_handler(message: Message, state: FSMContext):
     try:
-        upsert_user(message)
+        await upsert_user(message)
         await state.clear()
 
-        if is_user_banned(message.from_user.id):
+        if await is_user_banned(message.from_user.id):
             await message.answer(
                 "⛔ Ваш аккаунт ограничен из-за жалоб пользователей.\nЕсли это ошибка — свяжитесь с администратором."
             )
@@ -5595,13 +5631,13 @@ async def admin_approve_post(callback: CallbackQuery, bot: Bot):
         return
 
     post_id = int(callback.data.split(":")[1])
-    row = get_post(post_id)
+    row = await get_post(post_id)
 
     if not row:
         await callback.answer("Объявление не найдено", show_alert=True)
         return
 
-    with closing(connect_db()) as conn, conn:
+    async with await connect_db() as conn:
         conn.execute(
             "UPDATE posts SET status=?, updated_at=? WHERE id=?",
             (STATUS_ACTIVE, now_ts(), post_id)
@@ -5630,13 +5666,13 @@ async def admin_reject_post(callback: CallbackQuery):
         return
 
     post_id = int(callback.data.split(":")[1])
-    row = get_post(post_id)
+    row = await get_post(post_id)
 
     if not row:
         await callback.answer("Объявление не найдено", show_alert=True)
         return
 
-    with closing(connect_db()) as conn, conn:
+    async with await connect_db() as conn:
         conn.execute(
             "UPDATE posts SET status=?, updated_at=? WHERE id=?",
             (STATUS_REJECTED, now_ts(), post_id)
@@ -5717,7 +5753,7 @@ async def admin_ban_post_owner(callback: CallbackQuery):
         return
 
     post_id = int(callback.data.split(":")[1])
-    row = get_post(post_id)
+    row = await get_post(post_id)
 
     if not row:
         await callback.answer("Объявление не найдено", show_alert=True)
@@ -5782,7 +5818,7 @@ async def cargo_get_contact(callback: CallbackQuery):
         await callback.answer("Заявка не найдена.", show_alert=True)
         return
 
-    with closing(connect_db()) as conn, conn:
+    async with await connect_db() as conn:
         already_opened = conn.execute("""
             SELECT 1
             FROM cargo_lead_access
@@ -5946,7 +5982,7 @@ async def admin_user_command_handler(message: Message):
 
 @router.message(F.text == "🛂 Верификация аккаунта")
 async def verification_menu_handler(message: Message):
-    upsert_user(message)
+    await upsert_user(message)
 
     if is_user_verified(message.from_user.id):
         await message.answer(
@@ -6358,7 +6394,7 @@ async def forward_hold_user_messages_to_admin(message: Message, state: FSMContex
     if is_admin(user_id):
         return
 
-    with closing(connect_db()) as conn:
+    async with await connect_db() as conn:
         row = conn.execute("""
             SELECT review_status, username, full_name
             FROM users
@@ -6489,7 +6525,7 @@ async def back_router(callback: CallbackQuery):
     action = callback.data.split(":")[1]
 
     if action == "my_posts":
-        with closing(connect_db()) as conn:
+        async with await connect_db() as conn:
             posts = conn.execute("""
                 SELECT * FROM posts
                 WHERE user_id=? AND status != 'deleted'
@@ -6810,9 +6846,9 @@ async def finalize_post(message: Message, state: FSMContext, bot: Bot):
         return
 
     try:
-        upsert_user(message)
+        await upsert_user(message)
 
-        if is_user_banned(message.from_user.id):
+        if await is_user_banned(message.from_user.id):
             await message.answer(
                 "⛔ Ваш аккаунт ограничен.",
                 reply_markup=main_menu(message.from_user.id)
@@ -6824,7 +6860,7 @@ async def finalize_post(message: Message, state: FSMContext, bot: Bot):
         data["contact_note"] = None if message.text.strip() == "-" else message.text.strip()[:200]
 
         post_id = create_post_record(data, message.from_user.id)
-        row = get_post(post_id)
+        row = await get_post(post_id)
 
         await state.clear()
 
@@ -6877,7 +6913,7 @@ async def finalize_post(message: Message, state: FSMContext, bot: Bot):
 @router.message(Command("my"))
 @router.message(F.text == "📋 Мои объявления")
 async def my_posts_handler(message: Message):
-    upsert_user(message)
+    await upsert_user(message)
     await message.answer(MENU_TEXTS["my_posts"], reply_markup=main_menu(message.from_user.id))
     await render_my_posts_page(message, message.from_user.id, 0)
 
@@ -6964,7 +7000,7 @@ async def review_text_input(message: Message, state: FSMContext):
     review_text = None if text == "-" else text[:500]
 
     try:
-        with closing(connect_db()) as conn, conn:
+        async with await connect_db() as conn:
             conn.execute("""
                 INSERT INTO reviews (
                     reviewer_user_id, reviewed_user_id, post_id, rating, text, created_at
@@ -6991,7 +7027,7 @@ async def review_text_input(message: Message, state: FSMContext):
 async def open_my_post(callback: CallbackQuery):
     try:
         post_id = int(callback.data.split(":")[1])
-        row = get_post(post_id)
+        row = await get_post(post_id)
 
         if not row:
             await callback.answer("Объявление не найдено", show_alert=True)
@@ -7022,7 +7058,7 @@ async def open_my_post(callback: CallbackQuery):
 async def deal_confirm_handler(callback: CallbackQuery):
     deal_id = int(callback.data.split(":")[1])
 
-    with closing(connect_db()) as conn, conn:
+    async with await connect_db() as conn:
         deal = conn.execute("SELECT * FROM deals WHERE id=?", (deal_id,)).fetchone()
 
         if not deal:
@@ -7172,15 +7208,19 @@ async def deal_confirm_handler(callback: CallbackQuery):
 @router.callback_query(F.data.startswith("delete:"))
 async def delete_post(callback: CallbackQuery):
     post_id = int(callback.data.split(":")[1])
-    row = owner_only(callback, post_id)
+    row = await owner_only(callback, post_id)  # ← add await (owner_only is now async)
     if not row:
         await callback.answer("Нет доступа", show_alert=True)
         return
 
     await remove_post_from_channel(callback.bot, row)
 
-    with closing(connect_db()) as conn, conn:
-        conn.execute("UPDATE posts SET status=?, updated_at=? WHERE id=?", (STATUS_DELETED, now_ts(), post_id))
+    async with await connect_db() as conn:           # ← async pattern
+        await conn.execute(                          # ← add await
+            "UPDATE posts SET status=?, updated_at=? WHERE id=?",
+            (STATUS_DELETED, now_ts(), post_id)
+        )
+        await conn.commit()                            # ← explicit commit
 
     await callback.message.answer("🗑 Объявление удалено.")
     await callback.answer()
@@ -7189,15 +7229,19 @@ async def delete_post(callback: CallbackQuery):
 @router.callback_query(F.data.startswith("deactivate:"))
 async def deactivate_post(callback: CallbackQuery):
     post_id = int(callback.data.split(":")[1])
-    row = owner_only(callback, post_id)
+    row = await owner_only(callback, post_id)
     if not row:
         await callback.answer("Нет доступа", show_alert=True)
         return
 
     await remove_post_from_channel(callback.bot, row)
 
-    with closing(connect_db()) as conn, conn:
-        conn.execute("UPDATE posts SET status=?, updated_at=? WHERE id=?", (STATUS_INACTIVE, now_ts(), post_id))
+    async with await connect_db() as conn:
+        await conn.execute(
+            "UPDATE posts SET status=?, updated_at=? WHERE id=?",
+            (STATUS_INACTIVE, now_ts(), post_id)
+        )
+        await conn.commit()
 
     await callback.message.answer(f"Объявление {post_id} деактивировано.")
     await callback.answer()
@@ -7206,23 +7250,24 @@ async def deactivate_post(callback: CallbackQuery):
 @router.callback_query(F.data.startswith("activate:"))
 async def activate_post(callback: CallbackQuery, bot: Bot):
     post_id = int(callback.data.split(":")[1])
-    row = owner_only(callback, post_id)
+    row = await owner_only(callback, post_id)
     if not row:
         await callback.answer("Нет доступа", show_alert=True)
         return
 
-    if is_user_banned(callback.from_user.id):
+    if await is_user_banned(callback.from_user.id):
         await callback.answer("Ваш аккаунт ограничен", show_alert=True)
         return
 
     new_status = STATUS_PENDING if MODERATION_ENABLED else STATUS_ACTIVE
     expires_at = calculate_post_expires_at(now_ts(), row["travel_date"], POST_TTL_DAYS)
 
-    with closing(connect_db()) as conn, conn:
-        conn.execute(
+    async with await connect_db() as conn:
+        await conn.execute(
             "UPDATE posts SET status=?, updated_at=?, expires_at=? WHERE id=?",
             (new_status, now_ts(), expires_at, post_id)
         )
+        await conn.commit()
 
     await callback.message.answer(
         f"Объявление {post_id} " + ("отправлено на повторную модерацию." if MODERATION_ENABLED else "активировано.")
@@ -7234,7 +7279,7 @@ async def activate_post(callback: CallbackQuery, bot: Bot):
         await notify_subscribers(bot, post_id)
 
     await callback.answer()
-
+    
 
 @router.callback_query(F.data.startswith("bump:"))
 async def bump_post(callback: CallbackQuery):
@@ -7280,8 +7325,9 @@ async def admin_bump_paid(message: Message):
 
     order_id = int(parts[1])
 
-    with closing(connect_db()) as conn, conn:
-        order = conn.execute("SELECT * FROM bump_orders WHERE id=?", (order_id,)).fetchone()
+    async with await connect_db() as conn:
+        cur = await conn.execute("SELECT * FROM bump_orders WHERE id=?", (order_id,))
+        order = await cur.fetchone()
         if not order:
             await message.answer("Заказ не найден.")
             return
@@ -7290,17 +7336,19 @@ async def admin_bump_paid(message: Message):
             await message.answer("Этот заказ уже подтвержден.")
             return
 
-        conn.execute("""
+        await conn.execute("""
             UPDATE bump_orders
             SET status='paid', paid_at=?
             WHERE id=?
         """, (now_ts(), order_id))
 
-        conn.execute("""
+        await conn.execute("""
             UPDATE posts
             SET bumped_at=?, updated_at=?
             WHERE id=?
         """, (now_ts(), now_ts(), order["post_id"]))
+
+        await conn.commit()
 
     try:
         await message.bot.send_message(
@@ -7317,7 +7365,7 @@ async def admin_bump_paid(message: Message):
 @router.message(Command("find"))
 @router.message(F.text == "🔎 Найти совпадения")
 async def find_start(message: Message, state: FSMContext):
-    upsert_user(message)
+    await upsert_user(message)
     await state.clear()
     await message.answer(MENU_TEXTS["find"], reply_markup=main_menu(message.from_user.id))
 
@@ -7393,7 +7441,7 @@ async def find_to(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data.startswith("viewphoto:"))
 async def view_photo_handler(callback: CallbackQuery):
     post_id = int(callback.data.split(":")[1])
-    row = get_post(post_id)
+    row = await get_post(post_id)
 
     if not row or not row["photo_file_id"]:
         await callback.answer("Фото не найдено", show_alert=True)
@@ -7499,7 +7547,7 @@ async def complaint_post_id_input(message: Message, state: FSMContext):
         return
 
     post_id = int(text)
-    row = get_post(post_id)
+    row = await get_post(post_id)
     if not row:
         await message.answer("Объявление с таким ID не найдено.")
         return
@@ -7523,7 +7571,7 @@ async def complaint_reason_input(message: Message, state: FSMContext):
     data = await state.get_data()
     post_id = data["post_id"]
 
-    with closing(connect_db()) as conn, conn:
+    async with await connect_db() as conn:
         # защита от повторной жалобы от одного и того же пользователя
         existing = conn.execute(
             "SELECT 1 FROM complaints WHERE post_id=? AND from_user_id=? LIMIT 1",
@@ -7631,7 +7679,7 @@ async def stats_handler(message: Message):
 @router.message(Command("admin"))
 @router.message(F.text == "👨‍💼 Админка")
 async def admin_menu_handler(message: Message):
-    upsert_user(message)
+    await upsert_user(message)
 
     if not is_admin(message.from_user.id):
         await message.answer("Нет доступа.", reply_markup=main_menu(message.from_user.id))
@@ -7832,7 +7880,7 @@ async def admin_open_post(callback: CallbackQuery):
         return
 
     post_id = int(callback.data.split(":")[1])
-    row = get_post(post_id)
+    row = await get_post(post_id)
 
     if not row:
         await callback.answer("Объявление не найдено", show_alert=True)
@@ -7853,7 +7901,7 @@ async def admin_hide_post_direct(callback: CallbackQuery):
         return
 
     post_id = int(callback.data.split(":")[1])
-    row = get_post(post_id)
+    row = await get_post(post_id)
 
     if not row:
         await callback.answer("Объявление не найдено", show_alert=True)
@@ -7861,7 +7909,7 @@ async def admin_hide_post_direct(callback: CallbackQuery):
 
     await remove_post_from_channel(callback.bot, row)
 
-    with closing(connect_db()) as conn, conn:
+    async with await connect_db() as conn:
         conn.execute(
             "UPDATE posts SET status=?, updated_at=? WHERE id=?",
             (STATUS_INACTIVE, now_ts(), post_id)
@@ -7886,7 +7934,7 @@ async def admin_delete_post_direct(callback: CallbackQuery):
         return
 
     post_id = int(callback.data.split(":")[1])
-    row = get_post(post_id)
+    row = await get_post(post_id)
 
     if not row:
         await callback.answer("Объявление не найдено", show_alert=True)
@@ -7894,7 +7942,7 @@ async def admin_delete_post_direct(callback: CallbackQuery):
 
     await remove_post_from_channel(callback.bot, row)
 
-    with closing(connect_db()) as conn, conn:
+    async with await connect_db() as conn:
         conn.execute(
             "UPDATE posts SET status=?, updated_at=? WHERE id=?",
             (STATUS_DELETED, now_ts(), post_id)
@@ -8003,7 +8051,7 @@ async def admin_user_lookup_input(message: Message, state: FSMContext):
         await state.clear()
         return
 
-    text = build_admin_user_profile_text(user_id)
+    text = await build_admin_user_profile_text(user_id)
 
     await message.answer(
         text,
@@ -8032,7 +8080,7 @@ async def admin_open_user_profile(callback: CallbackQuery):
         await callback.answer("Пользователь не найден", show_alert=True)
         return
 
-    text = build_admin_user_profile_text(user_id)
+    text = await build_admin_user_profile_text(user_id)
 
     await callback.message.answer(
         text,
@@ -8208,7 +8256,7 @@ async def admin_complaint_open_post(callback: CallbackQuery):
             return
 
         post_id = int(callback.data.split(":")[1])
-        row = get_post(post_id)
+        row = await get_post(post_id)
 
         if not row:
             await callback.answer("Объявление не найдено", show_alert=True)
@@ -8235,7 +8283,7 @@ async def admin_complaint_hide_post(callback: CallbackQuery):
             return
 
         post_id = int(callback.data.split(":")[1])
-        row = get_post(post_id)
+        row = await get_post(post_id)
 
         if not row:
             await callback.answer("Объявление не найдено", show_alert=True)
@@ -8243,7 +8291,7 @@ async def admin_complaint_hide_post(callback: CallbackQuery):
 
         await remove_post_from_channel(callback.bot, row)
 
-        with closing(connect_db()) as conn, conn:
+        async with await connect_db() as conn:
             conn.execute(
                 "UPDATE posts SET status=?, updated_at=? WHERE id=?",
                 (STATUS_INACTIVE, now_ts(), post_id)
@@ -8305,7 +8353,7 @@ async def admin_complaint_done(callback: CallbackQuery):
 
         complaint_id = int(callback.data.split(":")[1])
 
-        with closing(connect_db()) as conn, conn:
+        async with await connect_db() as conn:
             conn.execute("DELETE FROM complaints WHERE id=?", (complaint_id,))
 
         await callback.message.answer(f"✅ Жалоба #{complaint_id} обработана.")
@@ -8352,7 +8400,7 @@ async def admin_bump_confirm_btn(callback: CallbackQuery):
 
     order_id = int(callback.data.split(":")[1])
 
-    with closing(connect_db()) as conn, conn:
+    async with await connect_db() as conn:
         order = conn.execute("SELECT * FROM bump_orders WHERE id=?", (order_id,)).fetchone()
         if not order:
             await callback.answer("Заказ не найден", show_alert=True)
@@ -8391,7 +8439,7 @@ async def admin_bump_reject_btn(callback: CallbackQuery):
 
     order_id = int(callback.data.split(":")[1])
 
-    with closing(connect_db()) as conn, conn:
+    async with await connect_db() as conn:
         order = conn.execute("SELECT * FROM bump_orders WHERE id=?", (order_id,)).fetchone()
         if not order:
             await callback.answer("Заказ не найден", show_alert=True)
@@ -8714,7 +8762,7 @@ async def relay_message(message: Message, state: FSMContext):
             reply_markup=reply_kb
         )
 
-        with closing(connect_db()) as conn, conn:
+        async with await connect_db() as conn:
             conn.execute("""
                 INSERT INTO dialogs (post_id, owner_user_id, requester_user_id, created_at)
                 VALUES (?, ?, ?, ?)
@@ -8815,7 +8863,7 @@ async def offer_deal_confirm_handler(callback: CallbackQuery):
             await callback.answer("Это ваше объявление", show_alert=True)
             return
 
-        row = get_post(post_id)
+        row = await get_post(post_id)
         if not row or row["status"] != STATUS_ACTIVE:
             await callback.answer("Объявление не найдено или неактивно", show_alert=True)
             return
@@ -8855,7 +8903,7 @@ async def offer_deal_handler(callback: CallbackQuery):
             await callback.answer("Это ваше объявление", show_alert=True)
             return
 
-        row = get_post(post_id)
+        row = await get_post(post_id)
         if not row or row["status"] != STATUS_ACTIVE:
             await callback.answer("Объявление не найдено или неактивно", show_alert=True)
             return
@@ -8941,12 +8989,12 @@ async def deal_request_accept_handler(callback: CallbackQuery):
             await callback.answer("Объявление не найдено", show_alert=True)
             return
 
-        existing_deal = get_active_deal_by_post(req["post_id"])
+        existing_deal = await get_active_deal_by_post(req["post_id"])
         if existing_deal:
             await callback.answer("По этому объявлению уже есть активная сделка", show_alert=True)
             return
 
-        with closing(connect_db()) as conn, conn:
+        async with await connect_db() as conn:
             req_db = conn.execute("""
                 SELECT *
                 FROM deal_requests
@@ -9071,7 +9119,7 @@ async def deal_request_decline_handler(callback: CallbackQuery):
         await callback.answer("Нет доступа", show_alert=True)
         return
 
-    with closing(connect_db()) as conn, conn:
+    async with await connect_db() as conn:
         conn.execute("""
             UPDATE deal_requests
             SET status=?, updated_at=?
@@ -9103,7 +9151,7 @@ async def deal_accept_handler(callback: CallbackQuery):
         await callback.answer("Нет доступа", show_alert=True)
         return
 
-    with closing(connect_db()) as conn, conn:
+    async with await connect_db() as conn:
         conn.execute("""
             UPDATE deals
             SET status=?, updated_at=?
@@ -9209,7 +9257,7 @@ async def dispute_reason_input(message: Message, state: FSMContext):
         reason_text=reason_text[:1500]
     )
 
-    with closing(connect_db()) as conn, conn:
+    async with await connect_db() as conn:
         conn.execute(
             "UPDATE deals SET status=?, updated_at=? WHERE id=?",
             (DEAL_DISPUTE_WAITING, now_ts(), deal_id)
@@ -9282,7 +9330,7 @@ async def dispute_response_input(message: Message, state: FSMContext):
 
     save_dispute_response(dispute_id, response_text[:1500])
 
-    with closing(connect_db()) as conn, conn:
+    async with await connect_db() as conn:
         conn.execute(
             "UPDATE deals SET status=?, updated_at=? WHERE id=?",
             (DEAL_DISPUTE_OPEN, now_ts(), dispute["deal_id"])
@@ -9326,7 +9374,7 @@ async def dispute_resolve_handler(callback: CallbackQuery):
         await callback.answer("Сделка не найдена", show_alert=True)
         return
 
-    with closing(connect_db()) as conn, conn:
+    async with await connect_db() as conn:
         conn.execute(
             "UPDATE disputes SET status=?, updated_at=? WHERE id=?",
             (DISPUTE_RESOLVED, now_ts(), dispute_id)
@@ -9385,7 +9433,7 @@ async def dispute_unresolved_handler(callback: CallbackQuery):
     post = get_post(deal["post_id"])
     route = post_route_title(post) if post else f"Объявление ID {deal['post_id']}"
 
-    with closing(connect_db()) as conn, conn:
+    async with await connect_db() as conn:
         conn.execute(
             "UPDATE disputes SET status=?, updated_at=? WHERE id=?",
             (DISPUTE_CLOSED_UNRESOLVED, now_ts(), dispute_id)
@@ -9492,20 +9540,43 @@ async def open_my_deal(callback: CallbackQuery):
 
 
 
-def user_posts_page(user_id: int, limit: int = MY_POSTS_PAGE_SIZE, offset: int = 0) -> List[sqlite3.Row]:
-    with closing(connect_db()) as conn:
-        return conn.execute("""
-            SELECT * FROM posts
-            WHERE user_id=? AND status != 'deleted'
-            ORDER BY created_at DESC
-            LIMIT ? OFFSET ?
-        """, (user_id, limit, offset)).fetchall()
+async def user_posts_page(
+    user_id: int,
+    limit: int = MY_POSTS_PAGE_SIZE,
+    offset: int = 0
+) -> List[sqlite3.Row]:
+    return await db_fetchall("""
+        SELECT * FROM posts
+        WHERE user_id=? AND status != 'deleted'
+        ORDER BY created_at DESC
+        LIMIT ? OFFSET ?
+    """, (user_id, limit, offset))
 
 
-def count_user_posts(user_id: int) -> int:
-    with closing(connect_db()) as conn:
-        row = conn.execute("SELECT COUNT(*) AS c FROM posts WHERE user_id=? AND status != 'deleted'", (user_id,)).fetchone()
-        return int(row["c"] or 0)
+async def count_user_posts(user_id: int) -> int:
+    row = await db_fetchone(
+        "SELECT COUNT(*) AS c FROM posts WHERE user_id=? AND status != 'deleted'",
+        (user_id,)
+    )
+    return int(row["c"] or 0)
+
+
+def pager_kb(prefix: str, offset: int, page_size: int, total: int) -> InlineKeyboardMarkup:
+    rows = []
+    nav = []
+
+    if offset > 0:
+        nav.append(InlineKeyboardButton(text="⬅️", callback_data=f"{prefix}:{max(0, offset - page_size)}"))
+
+    if offset + page_size < total:
+        nav.append(InlineKeyboardButton(text="➡️", callback_data=f"{prefix}:{offset + page_size}"))
+
+    if nav:
+        rows.append(nav)
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=rows or [[InlineKeyboardButton(text="Ок", callback_data="noop")]]
+    )
 
 
 def pager_kb(prefix: str, offset: int, page_size: int, total: int) -> InlineKeyboardMarkup:
@@ -9541,6 +9612,25 @@ async def render_my_posts_page(target, user_id: int, offset: int = 0):
     await target.answer("📋 Ваши объявления:", reply_markup=my_posts_kb(posts))
     if total > MY_POSTS_PAGE_SIZE:
         await target.answer(f"Показано {offset + 1}-{offset + len(posts)} из {total}", reply_markup=pager_kb("mypostspage", offset, MY_POSTS_PAGE_SIZE, total))
+
+
+async def db_fetchone(query: str, params: tuple = ()):
+    async with await connect_db() as conn:
+        cur = await conn.execute(query, params)
+        return await cur.fetchone()
+
+
+async def db_fetchall(query: str, params: tuple = ()):
+    async with await connect_db() as conn:
+        cur = await conn.execute(query, params)
+        return await cur.fetchall()
+
+
+async def db_execute(query: str, params: tuple = ()):
+    async with await connect_db() as conn:
+        cur = await conn.execute(query, params)
+        await conn.commit()
+        return cur
 
 
 @router.callback_query(F.data.startswith("recentpage:"))
@@ -9631,7 +9721,7 @@ async def edit_post_weight_manual_input(message: Message, state: FSMContext):
 
     await try_update_channel_post(message.bot, post_id)
 
-    row = get_post(post_id)
+    row = await get_post(post_id)
     await message.answer("✅ Объявление обновлено.", reply_markup=main_menu(message.from_user.id))
     if row:
         await send_post_card(message, row, reply_markup=post_actions_kb(post_id, row["status"]))
@@ -9653,7 +9743,7 @@ async def edit_post_value_input(message: Message, state: FSMContext):
     if not ok:
         await message.answer("Не удалось обновить объявление.")
         return
-    row = get_post(post_id)
+    row = await get_post(post_id)
     await message.answer("✅ Объявление обновлено.", reply_markup=main_menu(message.from_user.id))
     if row:
         await send_post_card(message, row, reply_markup=post_actions_kb(post_id, row["status"]))
@@ -9696,7 +9786,7 @@ async def edit_post_weight_pick(callback: CallbackQuery, state: FSMContext):
 
         await try_update_channel_post(callback.bot, post_id)
 
-        updated_row = get_post(post_id)
+        updated_row = await get_post(post_id)
 
         await callback.message.answer("✅ Объявление обновлено")
         if updated_row:
@@ -9751,7 +9841,7 @@ async def expire_soon_posts_notify(bot: Bot):
     while True:
         try:
             warn_before = now_ts() + EXPIRE_WARN_DAYS * 86400
-            with closing(connect_db()) as conn:
+            async with await connect_db() as conn:
                 rows = conn.execute("""
                     SELECT p.*, u.username, u.full_name
                     FROM posts p
@@ -9768,7 +9858,7 @@ async def expire_soon_posts_notify(bot: Bot):
                     await bot.send_message(row["user_id"], f"⌛ Объявление ID {row['id']} скоро истечет. Откройте 'Мои объявления', чтобы активировать его снова.", reply_markup=main_menu(row["user_id"]))
                 except Exception as e:
                     logger.exception("EXPIRE SOON NOTIFY ERROR: %s", e)
-                with closing(connect_db()) as conn, conn:
+                async with await connect_db() as conn:
                     conn.execute("UPDATE posts SET expire_warned_at=? WHERE id=?", (now_ts(), row["id"]))
         except Exception as e:
             logger.exception("EXPIRE SOON LOOP ERROR: %s", e)
@@ -9783,7 +9873,7 @@ async def main():
     if not BOT_TOKEN:
         raise RuntimeError("Set BOT_TOKEN env var")
 
-    init_db()
+    await init_db()
 
     bot = Bot(
         BOT_TOKEN,
@@ -9802,6 +9892,19 @@ async def main():
     dp = Dispatcher(storage=MemoryStorage())
     dp.include_router(router)
 
+    async def on_startup():
+        asyncio.create_task(expire_old_posts(bot))
+        asyncio.create_task(global_coincidence_loop(bot))
+        asyncio.create_task(dispute_timeout_loop(bot))
+        asyncio.create_task(expire_soon_posts_notify(bot))
+
+    await on_startup()
+    await bot.delete_webhook(drop_pending_updates=True)
+    await dp.start_polling(bot)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
     async def on_startup():
         asyncio.create_task(expire_old_posts(bot))
         asyncio.create_task(global_coincidence_loop(bot))

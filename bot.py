@@ -5878,12 +5878,15 @@ async def onboarding_action_handler(callback: CallbackQuery, state: FSMContext):
 @router.message(StateFilter("*"), Command("new_trip"))
 @router.message(StateFilter("*"), F.text == "✈️ Взять посылку")
 async def add_trip(message: Message, state: FSMContext):
+    await state.clear()
     await message.answer(MENU_TEXTS["trip"], reply_markup=main_menu(message.from_user.id))
     await begin_create(message, state, TYPE_TRIP)
+
 
 @router.message(StateFilter("*"), Command("new_parcel"))
 @router.message(StateFilter("*"), F.text == "📦 Отправить посылку")
 async def add_parcel(message: Message, state: FSMContext):
+    await state.clear()
     await message.answer(MENU_TEXTS["parcel"], reply_markup=main_menu(message.from_user.id))
     await begin_create(message, state, TYPE_PARCEL)
       

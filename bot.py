@@ -5766,7 +5766,7 @@ async def admin_toggle_ban_handler(callback: CallbackQuery):
     if new_status == 1:
         await ban_user_with_cleanup(callback.bot, target_user_id)
     else:
-        await await unban_user(target_user_id)
+        await unban_user(target_user_id)
 
     updated_row = get_user_row(target_user_id)
 

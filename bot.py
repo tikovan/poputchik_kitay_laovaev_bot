@@ -3428,7 +3428,7 @@ async def create_post_record(data: dict, user_id: int) -> int:
         return int(cur.lastrowid)
 
 
-async def await update_post_record(post_id: int, user_id: int, updates: dict) -> bool:
+async def update_post_record(post_id: int, user_id: int, updates: dict) -> bool:
     allowed = {
         "from_country", "from_city", "to_country", "to_city",
         "travel_date", "weight_kg", "description", "contact_note", "photo_file_id"
@@ -3601,7 +3601,7 @@ async def unread_chat_count(user_id: int) -> int:
         return int(row["c"] or 0)
 
 
-async def await mark_chat_read(user_id: int, partner_user_id: int, post_id: int):
+async def mark_chat_read(user_id: int, partner_user_id: int, post_id: int):
     async with await connect_db() as conn:
         await conn.execute("""
             UPDATE chat_messages

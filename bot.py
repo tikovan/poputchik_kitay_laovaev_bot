@@ -2,7 +2,6 @@ import asyncio
 import html
 import os 
 import re
-import sqlite3
 import time
 import logging
 from functools import lru_cache
@@ -468,12 +467,12 @@ def now_ts() -> int:
 DEAL_CONFIRM_DELAY_HOURS = 24
 
 
-def can_confirm_deal_now(deal: sqlite3.Row) -> bool:
+def can_confirm_deal_now(deal: aiosqlite.Row) -> bool:
     created_at = int(deal["created_at"] or 0)
     return now_ts() >= created_at + DEAL_CONFIRM_DELAY_HOURS * 3600
 
 
-def time_left_until_deal_confirm(deal: sqlite3.Row) -> str:
+def time_left_until_deal_confirm(deal: aiosqlite.Row) -> str:
     created_at = int(deal["created_at"] or 0)
     unlock_at = created_at + DEAL_CONFIRM_DELAY_HOURS * 3600
     diff = unlock_at - now_ts()
@@ -993,7 +992,7 @@ async def init_db():
 async def upsert_user(message_or_callback):
     user = message_or_callback.from_user
     existing = await db_fetchone("SELECT created_at FROM users WHERE user_id=?", (user.id,))
-    created_at = int(existing[0]) if existing else now_ts()  # use index [0] instead of ["created_at"]
+    created_at = int(existing["created_at"]) if existing else now_ts()
     await db_execute("""
         INSERT INTO users (user_id, username, full_name, created_at)
         VALUES (?, ?, ?, ?)
@@ -1335,7 +1334,7 @@ async def is_user_verified(user_id: int) -> bool:
     return bool(row and row["is_verified"])
 
 
-def sort_posts_with_verified_priority(rows: List[sqlite3.Row]) -> List[sqlite3.Row]:
+def sort_posts_with_verified_priority(rows: List[aiosqlite.Row]) -> List[aiosqlite.Row]:
     def sort_key(row):
         verified = int(row["is_verified"] or 0)
         bumped_or_created = row["bumped_at"] or row["created_at"] or 0
@@ -1489,7 +1488,7 @@ async def get_username_by_user_id(user_id: int) -> Optional[str]:
     return row["username"] if row and row["username"] else None
 
 
-async def has_user_left_review_for_deal(deal: sqlite3.Row, reviewer_user_id: int) -> bool:
+async def has_user_left_review_for_deal(deal: aiosqlite.Row, reviewer_user_id: int) -> bool:
     reviewed_user_id = (
         deal["requester_user_id"]
         if reviewer_user_id == deal["owner_user_id"]
@@ -1505,7 +1504,7 @@ async def has_user_left_review_for_deal(deal: sqlite3.Row, reviewer_user_id: int
     return row is not None
 
 
-async def get_open_dispute_by_deal(deal_id: int) -> Optional[sqlite3.Row]:
+async def get_open_dispute_by_deal(deal_id: int) -> Optional[aiosqlite.Row]:
     return await db_fetchone("""
         SELECT *
         FROM disputes
@@ -1547,7 +1546,7 @@ async def save_dispute_response(dispute_id: int, response_text: str):
     """, (response_text, DISPUTE_RESPONDED, now_ts(), now_ts(), dispute_id))
 
 
-async def get_dispute(dispute_id: int) -> Optional[sqlite3.Row]:
+async def get_dispute(dispute_id: int) -> Optional[aiosqlite.Row]:
     return await db_fetchone(
         "SELECT * FROM disputes WHERE id=?",
         (dispute_id,)
@@ -1585,7 +1584,7 @@ async def ensure_deal_request(post_id: int, owner_user_id: int, requester_user_i
         return int(cur.lastrowid), True
 
 
-async def get_deal_request(request_id: int) -> Optional[sqlite3.Row]:
+async def get_deal_request(request_id: int) -> Optional[aiosqlite.Row]:
     return await db_fetchone("""
         SELECT *
         FROM deal_requests
@@ -1633,7 +1632,7 @@ async def set_active_chat(user_id: int, target_user_id: int, post_id: int, deal_
     """, (target_user_id, post_id, deal_id, user_id))
     
 
-async def get_active_chat(user_id: int) -> Optional[sqlite3.Row]:
+async def get_active_chat(user_id: int) -> Optional[aiosqlite.Row]:
     return await db_fetchone("""
         SELECT active_chat_target_user_id, active_chat_post_id, active_chat_deal_id
         FROM users
@@ -1821,7 +1820,7 @@ async def send_post_card(
     prefix_text: Optional[str] = None,
     reply_markup=None
 ):
-    text = await post_text(row)
+    await post_text(row)
 
     if prefix_text:
         text = f"{prefix_text}\n\n{text}"
@@ -1857,7 +1856,7 @@ async def send_post_card_to_user(
     prefix_text: Optional[str] = None,
     reply_markup=None
 ):
-    text = await post_text(row)
+    await post_text(row)
 
     if prefix_text:
         text = f"{prefix_text}\n\n{text}"
@@ -2078,7 +2077,7 @@ def cargo_photo_choice_kb():
     ])
 
 
-def my_posts_kb(posts: List[sqlite3.Row]):
+def my_posts_kb(posts: List[aiosqlite.Row]):
     rows = []
 
     for index, p in enumerate(posts, start=1):
@@ -2140,7 +2139,7 @@ def dispute_failed_against_kb(deal_id: int):
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def deal_list_kb(deals: List[sqlite3.Row]):
+def deal_list_kb(deals: List[aiosqlite.Row]):
     rows = []
 
     for d in deals:
@@ -2421,7 +2420,7 @@ def admin_verification_review_kb(request_id: int, user_id: int):
     ])
 
 
-def admin_verification_list_kb(rows: List[sqlite3.Row]):
+def admin_verification_list_kb(rows: List[aiosqlite.Row]):
     buttons = []
     for row in rows:
         label = f"{row['id']} • USER {row['user_id']} • {format_verification_status(row['status'])}"
@@ -2440,7 +2439,7 @@ def admin_menu_kb():
     ])
 
 
-def popular_routes_kb(rows: List[sqlite3.Row]):
+def popular_routes_kb(rows: List[aiosqlite.Row]):
     buttons = []
     for row in rows:
         label = f"{row['from_country']} → {row['to_country']} ({row['cnt']})"
@@ -2448,7 +2447,7 @@ def popular_routes_kb(rows: List[sqlite3.Row]):
     return InlineKeyboardMarkup(inline_keyboard=buttons or [[InlineKeyboardButton(text="Пока пусто", callback_data="noop")]])
 
 
-def deal_open_kb(deal: sqlite3.Row, user_id: int) -> InlineKeyboardMarkup:
+def deal_open_kb(deal: aiosqlite.Row, user_id: int) -> InlineKeyboardMarkup:
     rows = []
 
     viewer_is_owner = user_id == deal["owner_user_id"]
@@ -2555,7 +2554,7 @@ def deal_open_kb(deal: sqlite3.Row, user_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
     
 
-async def get_active_deal_by_post(post_id: int) -> Optional[sqlite3.Row]:
+async def get_active_deal_by_post(post_id: int) -> Optional[aiosqlite.Row]:
     return await db_fetchone("""
         SELECT *
         FROM deals
@@ -2588,7 +2587,7 @@ def admin_deal_users_kb(owner_user_id: int, requester_user_id: int):
     ])
         
 
-def dispute_actions_kb(dispute: sqlite3.Row, viewer_user_id: int) -> InlineKeyboardMarkup:
+def dispute_actions_kb(dispute: aiosqlite.Row, viewer_user_id: int) -> InlineKeyboardMarkup:
     rows = []
 
     if dispute["status"] == DISPUTE_WAITING_RESPONSE and viewer_user_id == dispute["against_user_id"]:
@@ -2813,7 +2812,7 @@ def support_menu_kb():
     ])
 
 
-def admin_posts_kb(rows: List[sqlite3.Row]):
+def admin_posts_kb(rows: List[aiosqlite.Row]):
     buttons = []
     for row in rows:
         icon = "✈️" if row["post_type"] == TYPE_TRIP else "📦"
@@ -2914,41 +2913,43 @@ def admin_user_actions_kb(user_id: int, is_verified: bool, is_banned: bool, is_c
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def admin_stats_text() -> str:
+async def admin_stats_text() -> str:
     async with await connect_db() as conn:
-        users_count = conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"]
-        active_posts = conn.execute(
+        cur = await conn.execute("SELECT COUNT(*) AS c FROM users")
+        users_count = (await cur.fetchone())["c"]
+
+        cur = await conn.execute(
             "SELECT COUNT(*) AS c FROM posts WHERE status='active' AND (expires_at IS NULL OR expires_at > ?)",
             (now_ts(),)
-        ).fetchone()["c"]
-        pending_posts = conn.execute(
-            "SELECT COUNT(*) AS c FROM posts WHERE status='pending'"
-        ).fetchone()["c"]
-        complaints_count = conn.execute(
-            "SELECT COUNT(*) AS c FROM complaints"
-        ).fetchone()["c"]
-        disputes_open = conn.execute("""
+        )
+        active_posts = (await cur.fetchone())["c"]
+
+        cur = await conn.execute("SELECT COUNT(*) AS c FROM posts WHERE status='pending'")
+        pending_posts = (await cur.fetchone())["c"]
+
+        cur = await conn.execute("SELECT COUNT(*) AS c FROM complaints")
+        complaints_count = (await cur.fetchone())["c"]
+
+        cur = await conn.execute("""
             SELECT COUNT(*) AS c
             FROM disputes
             WHERE status IN (?, ?, ?)
-        """, (
-            DISPUTE_OPEN,
-            DISPUTE_WAITING_RESPONSE,
-            DISPUTE_RESPONDED
-        )).fetchone()["c"]
-        bump_pending = conn.execute("""
+        """, (DISPUTE_OPEN, DISPUTE_WAITING_RESPONSE, DISPUTE_RESPONDED))
+        disputes_open = (await cur.fetchone())["c"]
+
+        cur = await conn.execute("""
             SELECT COUNT(*) AS c
             FROM bump_orders
             WHERE status='pending'
-        """).fetchone()["c"]
-        verif_pending = conn.execute("""
+        """)
+        bump_pending = (await cur.fetchone())["c"]
+
+        cur = await conn.execute("""
             SELECT COUNT(*) AS c
             FROM verification_requests
             WHERE status IN (?, ?)
-        """, (
-            VERIF_STATUS_PAYMENT_REVIEW,
-            VERIF_STATUS_REVIEW_PENDING
-        )).fetchone()["c"]
+        """, (VERIF_STATUS_PAYMENT_REVIEW, VERIF_STATUS_REVIEW_PENDING))
+        verif_pending = (await cur.fetchone())["c"]
 
     return (
         "👨‍💼 <b>Админка</b>\n\n"
@@ -2962,31 +2963,29 @@ def admin_stats_text() -> str:
     )
 
 
-def verify_user(user_id: int):
-    async with await connect_db() as conn:
-        conn.execute("""
-            UPDATE users
-            SET is_verified=1,
-                verified_at=?,
-                verification_type='passport'
-            WHERE user_id=?
-        """, (now_ts(), user_id))
+async def verify_user(user_id: int):
+    await db_execute("""
+        UPDATE users
+        SET is_verified=1,
+            verified_at=?,
+            verification_type='passport'
+        WHERE user_id=?
+    """, (now_ts(), user_id))
     invalidate_user_profile_cache(user_id)
 
 
-def unverify_user(user_id: int):
-    async with await connect_db() as conn:
-        conn.execute("""
-            UPDATE users
-            SET is_verified=0,
-                verified_at=NULL,
-                verification_type=NULL
-            WHERE user_id=?
-        """, (user_id,))
+async def unverify_user(user_id: int):
+    await db_execute("""
+        UPDATE users
+        SET is_verified=0,
+            verified_at=NULL,
+            verification_type=NULL
+        WHERE user_id=?
+    """, (user_id,))
     invalidate_user_profile_cache(user_id)
         
 
-def get_latest_verification_request(user_id: int) -> Optional[sqlite3.Row]:
+def get_latest_verification_request(user_id: int) -> Optional[aiosqlite.Row]:
     async with await connect_db() as conn:
         return conn.execute("""
             SELECT *
@@ -2997,7 +2996,7 @@ def get_latest_verification_request(user_id: int) -> Optional[sqlite3.Row]:
         """, (user_id,)).fetchone()
 
 
-def get_verification_request(request_id: int) -> Optional[sqlite3.Row]:
+def get_verification_request(request_id: int) -> Optional[aiosqlite.Row]:
     async with await connect_db() as conn:
         return conn.execute("""
             SELECT *
@@ -3173,7 +3172,7 @@ def format_verification_status(status: str) -> str:
     return mapping.get(status, status)
 
 
-def search_posts_inline(query: str, limit: int = 10, offset: int = 0, post_type: Optional[str] = None, from_country: Optional[str] = None, to_country: Optional[str] = None) -> List[sqlite3.Row]:
+def search_posts_inline(query: str, limit: int = 10, offset: int = 0, post_type: Optional[str] = None, from_country: Optional[str] = None, to_country: Optional[str] = None) -> List[aiosqlite.Row]:
     q = f"%{query.strip().lower()}%"
     sql = [
         """
@@ -3256,7 +3255,7 @@ def count_search_posts(query: str = "", post_type: Optional[str] = None, from_co
         return int(row["c"] or 0)
 
 
-def get_popular_routes(limit: int = 10) -> List[sqlite3.Row]:
+def get_popular_routes(limit: int = 10) -> List[aiosqlite.Row]:
     async with await connect_db() as conn:
         return conn.execute("""
             SELECT from_country, to_country, COUNT(*) AS cnt
@@ -3269,7 +3268,7 @@ def get_popular_routes(limit: int = 10) -> List[sqlite3.Row]:
         """, (now_ts(), limit)).fetchall()
 
 
-def search_route_posts_all(from_country: str, to_country: str, limit: int = 20, offset: int = 0, from_city: Optional[str] = None, to_city: Optional[str] = None, post_type: Optional[str] = None) -> List[sqlite3.Row]:
+def search_route_posts_all(from_country: str, to_country: str, limit: int = 20, offset: int = 0, from_city: Optional[str] = None, to_city: Optional[str] = None, post_type: Optional[str] = None) -> List[aiosqlite.Row]:
     sql = [
         """
             SELECT p.*, u.username, u.full_name, COALESCE(u.is_verified, 0) AS is_verified
@@ -3297,7 +3296,7 @@ def search_route_posts_all(from_country: str, to_country: str, limit: int = 20, 
     return rows
     
 
-def service_stats() -> sqlite3.Row:
+def service_stats() -> aiosqlite.Row:
     async with await connect_db() as conn:
         return conn.execute("""
             SELECT
@@ -3308,7 +3307,7 @@ def service_stats() -> sqlite3.Row:
         """, (now_ts(), now_ts(), now_ts())).fetchone()
 
 
-def top_route() -> Optional[sqlite3.Row]:
+def top_route() -> Optional[aiosqlite.Row]:
     async with await connect_db() as conn:
         return conn.execute("""
             SELECT from_country, to_country, COUNT(*) AS cnt
@@ -3321,11 +3320,16 @@ def top_route() -> Optional[sqlite3.Row]:
         """, (now_ts(),)).fetchone()
 
 
-def create_post_record(data: dict, user_id: int) -> int:
+async def create_post_record(data: dict, user_id: int) -> int:
     ts = now_ts()
-    expires_at = calculate_post_expires_at(ts, data.get("travel_date"), POST_TTL_DAYS)
+    expires_at = calculate_post_expires_at(
+        ts,
+        data.get("travel_date"),
+        POST_TTL_DAYS
+    )
+
     async with await connect_db() as conn:
-        cur = conn.execute("""
+        cur = await conn.execute("""
             INSERT INTO posts (
                 user_id, post_type, from_country, from_city, to_country, to_city,
                 travel_date, weight_kg, description, contact_note, photo_file_id, status,
@@ -3350,6 +3354,7 @@ def create_post_record(data: dict, user_id: int) -> int:
             ts,
             expires_at
         ))
+        await conn.commit()
         return int(cur.lastrowid)
 
 
@@ -3405,7 +3410,7 @@ def add_route_subscription(user_id: int, post_type: str, from_country: str, to_c
         """, (user_id, post_type, from_country, from_city, to_country, to_city, now_ts()))
 
 
-def list_route_subscriptions(user_id: int) -> List[sqlite3.Row]:
+def list_route_subscriptions(user_id: int) -> List[aiosqlite.Row]:
     async with await connect_db() as conn:
         return conn.execute("""
             SELECT * FROM route_subscriptions
@@ -3463,7 +3468,7 @@ def mark_chat_read(user_id: int, partner_user_id: int, post_id: int):
         conn.execute("UPDATE chat_messages SET is_read=1 WHERE to_user_id=? AND from_user_id=? AND post_id=? AND is_read=0", (user_id, partner_user_id, post_id))
 
 
-def get_chat_history(user_a: int, user_b: int, post_id: int, limit: int = 20) -> List[sqlite3.Row]:
+def get_chat_history(user_a: int, user_b: int, post_id: int, limit: int = 20) -> List[aiosqlite.Row]:
     async with await connect_db() as conn:
         return conn.execute("""
             SELECT * FROM chat_messages
@@ -3487,7 +3492,7 @@ def reserve_coincidence_notification(post_a_id: int, post_b_id: int) -> bool:
             return False
 
 
-def calculate_coincidence_score(source_row, candidate_row: sqlite3.Row) -> Tuple[int, List[str]]:
+def calculate_coincidence_score(source_row, candidate_row: aiosqlite.Row) -> Tuple[int, List[str]]:
     score = 40
     notes: List[str] = []
 
@@ -3624,36 +3629,50 @@ async def get_coincidences(
     return results[:limit]
 
 
-def ensure_deal(post_id: int, owner_user_id: int, requester_user_id: int, initiator_user_id: int) -> int:
+async def ensure_deal(
+    post_id: int,
+    owner_user_id: int,
+    requester_user_id: int,
+    initiator_user_id: int
+) -> int:
     async with await connect_db() as conn:
-        row = conn.execute("""
+        cur = await conn.execute("""
             SELECT id FROM deals
             WHERE post_id=? AND owner_user_id=? AND requester_user_id=?
             ORDER BY id DESC LIMIT 1
-        """, (post_id, owner_user_id, requester_user_id)).fetchone()
+        """, (post_id, owner_user_id, requester_user_id))
+        row = await cur.fetchone()
 
         if row:
             return int(row["id"])
 
-        cur = conn.execute("""
+        ts = now_ts()
+
+        cur = await conn.execute("""
             INSERT INTO deals (
                 post_id, owner_user_id, requester_user_id, initiator_user_id,
                 status, owner_confirmed, requester_confirmed, created_at, updated_at
             )
             VALUES (?, ?, ?, ?, ?, 0, 0, ?, ?)
         """, (
-            post_id, owner_user_id, requester_user_id, initiator_user_id,
-            DEAL_CONTACTED, now_ts(), now_ts()
+            post_id,
+            owner_user_id,
+            requester_user_id,
+            initiator_user_id,
+            DEAL_CONTACTED,
+            ts,
+            ts
         ))
+        await conn.commit()
         return int(cur.lastrowid)
 
 
-def get_deal(deal_id: int) -> Optional[sqlite3.Row]:
+def get_deal(deal_id: int) -> Optional[aiosqlite.Row]:
     async with await connect_db() as conn:
         return conn.execute("SELECT * FROM deals WHERE id=?", (deal_id,)).fetchone()
 
 
-def list_user_deals(user_id: int) -> List[sqlite3.Row]:
+def list_user_deals(user_id: int) -> List[aiosqlite.Row]:
     async with await connect_db() as conn:
         return conn.execute("""
             SELECT *
@@ -3664,7 +3683,7 @@ def list_user_deals(user_id: int) -> List[sqlite3.Row]:
         """, (user_id, user_id)).fetchall()
 
 
-def deal_title(deal: sqlite3.Row) -> str:
+def deal_title(deal: aiosqlite.Row) -> str:
     post = get_post(deal["post_id"])
 
     if not post:
@@ -3685,7 +3704,7 @@ def deal_title(deal: sqlite3.Row) -> str:
     return route if route.strip() else f"Сделка #{deal['id']}"
 
 
-def post_route_title(row: sqlite3.Row) -> str:
+def post_route_title(row: aiosqlite.Row) -> str:
     route = row["from_country"] or ""
 
     if row["from_city"]:
@@ -3717,7 +3736,7 @@ def extract_chat_ref_from_message(text: Optional[str]) -> Optional[tuple[int, in
     return post_id, target_user_id, deal_id
 
 
-def split_deals_by_sections(deals: List[sqlite3.Row]):
+def split_deals_by_sections(deals: List[aiosqlite.Row]):
     in_progress = []
     disputes = []
     finished = []
@@ -3749,7 +3768,7 @@ def split_deals_by_sections(deals: List[sqlite3.Row]):
     return in_progress, disputes, finished
 
 
-def deal_section_kb(deals: List[sqlite3.Row]) -> InlineKeyboardMarkup:
+def deal_section_kb(deals: List[aiosqlite.Row]) -> InlineKeyboardMarkup:
     rows = []
 
     for d in deals:
@@ -3832,7 +3851,7 @@ async def publish_to_channel(bot: Bot, post_id: int):
 
     msg = await bot.send_message(
         CHANNEL_USERNAME,
-        post_text(row, for_channel=True),
+       await post_text(row, for_channel=True),
         reply_markup=channel_post_kb(post_id, row["post_type"])
     )
 
@@ -3844,32 +3863,35 @@ async def publish_to_channel(bot: Bot, post_id: int):
         await conn.commit()
 
 
-def set_user_cargo(user_id: int, is_cargo: bool = True):
-    async with await connect_db() as conn:
-        conn.execute(
-            "UPDATE users SET is_cargo=? WHERE user_id=?",
-            (1 if is_cargo else 0, user_id)
-        )
+async def await set_user_cargo(user_id: int, is_cargo: bool):
+    await db_execute("""
+        UPDATE users
+        SET is_cargo=?
+        WHERE user_id=?
+    """, (1 if is_cargo else 0, user_id))
 
-def is_cargo_user(user_id: int) -> bool:
-    async with await connect_db() as conn:
-        row = conn.execute(
-            "SELECT is_cargo FROM users WHERE user_id=?",
-            (user_id,)
-        ).fetchone()
+    invalidate_user_profile_cache(user_id)
+    
+
+async def is_cargo_user(user_id: int) -> bool:
+    row = await db_fetchone("""
+        SELECT COALESCE(is_cargo, 0) AS is_cargo
+        FROM users
+        WHERE user_id=?
+    """, (user_id,))
+
     return bool(row and row["is_cargo"])
 
 
-def get_cargo_users():
-    async with await connect_db() as conn:
-        return conn.execute("""
-            SELECT user_id, username, full_name
-            FROM users
-            WHERE is_cargo=1 AND is_banned=0
-        """).fetchall()
+async def get_cargo_users():
+    return await db_fetchall("""
+        SELECT user_id, username, full_name
+        FROM users
+        WHERE is_cargo=1 AND is_banned=0
+    """)
 
 
-def create_cargo_lead(
+async def create_cargo_lead(
     user_id: int,
     from_place: str,
     to_place: str,
@@ -3880,9 +3902,10 @@ def create_cargo_lead(
     photo_file_id: Optional[str] = None
 ) -> int:
     async with await connect_db() as conn:
-        cur = conn.execute("""
+        cur = await conn.execute("""
             INSERT INTO cargo_leads (
-                user_id, from_place, to_place, delivery_date, weight, cargo_desc, contact, photo_file_id, created_at
+                user_id, from_place, to_place, delivery_date,
+                weight, cargo_desc, contact, photo_file_id, created_at
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
@@ -3896,17 +3919,17 @@ def create_cargo_lead(
             photo_file_id,
             now_ts()
         ))
+        await conn.commit()
         return int(cur.lastrowid)
 
 
-def get_cargo_lead(lead_id: int):
-    async with await connect_db() as conn:
-        return conn.execute("""
-            SELECT cl.*, u.username, u.full_name
-            FROM cargo_leads cl
-            LEFT JOIN users u ON u.user_id = cl.user_id
-            WHERE cl.id=?
-        """, (lead_id,)).fetchone()
+async def get_cargo_lead(lead_id: int):
+    return await db_fetchone("""
+        SELECT cl.*, u.username, u.full_name
+        FROM cargo_leads cl
+        LEFT JOIN users u ON u.user_id = cl.user_id
+        WHERE cl.id=?
+    """, (lead_id,))
 
 
 def format_cargo_delivery_date(value: Optional[str]) -> str:
@@ -3956,25 +3979,18 @@ def cargo_lead_contact_text(lead) -> str:
     )
     
 
-def cargo_lead_kb(lead_id: int):
-    lead = get_cargo_lead(lead_id)
+def cargo_lead_kb(lead):
+    lead_id = lead["id"]
+    rows = [[InlineKeyboardButton(
+        text="📩 Получить контакт клиента",
+        callback_data=f"cargo_get_contact:{lead_id}"
+    )]]
 
-    rows = [
-        [
-            InlineKeyboardButton(
-                text="📩 Получить контакт клиента",
-                callback_data=f"cargo_get_contact:{lead_id}"
-            )
-        ]
-    ]
-
-    if lead and "photo_file_id" in lead.keys() and lead["photo_file_id"]:
-        rows.append([
-            InlineKeyboardButton(
-                text="🖼 Посмотреть фото",
-                callback_data=f"cargo_view_photo:{lead_id}"
-            )
-        ])
+    if lead["photo_file_id"]:
+        rows.append([InlineKeyboardButton(
+            text="🖼 Посмотреть фото",
+            callback_data=f"cargo_view_photo:{lead_id}"
+        )])
 
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -3982,7 +3998,7 @@ def cargo_lead_kb(lead_id: int):
 @router.callback_query(F.data.startswith("cargo_view_photo:"))
 async def cargo_view_photo_handler(callback: CallbackQuery):
     lead_id = int(callback.data.split(":", 1)[1])
-    lead = get_cargo_lead(lead_id)
+    lead = await get_cargo_lead(lead_id)
 
     if not lead or not lead["photo_file_id"]:
         await callback.answer("Фото не найдено", show_alert=True)
@@ -4064,7 +4080,7 @@ async def try_update_channel_post(bot: Bot, post_id: int):
         await bot.edit_message_text(
             chat_id=CHANNEL_USERNAME,
             message_id=channel_message_id,
-            text=post_text(row, for_channel=True),
+            text=awaitawait post_text(row, for_channel=True),
             reply_markup=channel_post_kb(post_id, row["post_type"])
         )
     except Exception as e:
@@ -4072,11 +4088,11 @@ async def try_update_channel_post(bot: Bot, post_id: int):
 
 
 async def notify_coincidence_users(bot: Bot, new_post_id: int):
-    new_row = get_post(new_post_id)
+    new_row = await get_post(new_post_id)
     if not new_row or new_row["status"] != STATUS_ACTIVE:
         return
 
-    coincidences = get_coincidences(
+    coincidences = await get_coincidences(
         post_type=new_row["post_type"],
         from_country=new_row["from_country"],
         to_country=new_row["to_country"],
@@ -4122,36 +4138,45 @@ async def notify_subscribers(bot: Bot, post_id: int):
         return
 
     async with await connect_db() as conn:
-        subscribers = conn.execute("""
-            SELECT * FROM route_subscriptions
-            WHERE post_type=?
-              AND from_country=?
-              AND to_country=?
-              AND user_id != ?
-              AND (from_city IS NULL OR from_city='' OR from_city=COALESCE(?, ''))
-              AND (to_city IS NULL OR to_city='' OR to_city=COALESCE(?, ''))
-            ORDER BY created_at DESC
-            LIMIT 50
-        """, (row["post_type"], row["from_country"], row["to_country"], row["user_id"], row["from_city"], row["to_city"])).fetchall()
+    cur = await conn.execute("""
+        SELECT * FROM route_subscriptions
+        WHERE post_type=?
+          AND from_country=?
+          AND to_country=?
+          AND user_id != ?
+          AND (from_city IS NULL OR from_city='' OR from_city=COALESCE(?, ''))
+          AND (to_city IS NULL OR to_city='' OR to_city=COALESCE(?, ''))
+        ORDER BY created_at DESC
+        LIMIT 50
+    """, (
+        row["post_type"],
+        row["from_country"],
+        row["to_country"],
+        row["user_id"],
+        row["from_city"],
+        row["to_city"]
+    ))
 
-    for sub in subscribers:
-        try:
-            await send_post_card_to_user(
-                bot,
-                sub["user_id"],
-                row,
-                prefix_text="🔔 По вашей подписке появилось новое объявление:"
-            )
-        except Exception as e:
-            logger.exception("SUBSCRIBER SEND ERROR: %s", e)
+    subscribers = await cur.fetchall()
+
+for sub in subscribers:
+    try:
+        await send_post_card_to_user(
+            bot,
+            sub["user_id"],
+            row,
+            prefix_text="🔔 По вашей подписке появилось новое объявление:"
+        )
+    except Exception as e:
+        logger.exception("SUBSCRIBER SEND ERROR: %s", e)
 
 
 async def notify_cargo_users(bot: Bot, lead_id: int):
-    lead = get_cargo_lead(lead_id)
+    lead = await get_cargo_lead(lead_id)
     if not lead:
         return
 
-    cargo_users = get_cargo_users()
+    cargo_users = await get_cargo_users()
 
     # ---- АДМИН ----
     for admin_id in ADMIN_IDS:
@@ -4190,7 +4215,7 @@ async def run_global_coincidence_scan(bot: Bot):
             """, (now_ts(),)).fetchall()
 
         for row in rows:
-            coincidences = get_coincidences(
+            coincidences = await get_coincidences(
                 post_type=row["post_type"],
                 from_country=row["from_country"],
                 to_country=row["to_country"],
@@ -4204,7 +4229,7 @@ async def run_global_coincidence_scan(bot: Bot):
                 score = item["score"]
                 notes = item["notes"]
 
-                if not reserve_coincidence_notification(row["id"], target["id"]):
+                if not await reserve_coincidence_notification(row["id"], target["id"]):
                     continue
 
                 intro = format_coincidence_badges(score, notes)
@@ -4397,7 +4422,7 @@ async def begin_create(message: Message, state: FSMContext, post_type: str):
     )
     
 
-async def owner_only(callback: CallbackQuery, post_id: int) -> Optional[sqlite3.Row]:
+async def owner_only(callback: CallbackQuery, post_id: int) -> Optional[aiosqlite.Row]:
     row = await get_post(post_id)
     if not row or row["user_id"] != callback.from_user.id:
         return None
@@ -4481,14 +4506,13 @@ def render_user_admin_card(user_row) -> str:
     )
 
 
-def get_post_owner_user_id(post_id: int):
-    async with await connect_db() as conn:
-        row = conn.execute("""
-            SELECT user_id
-            FROM posts
-            WHERE id = ?
-            LIMIT 1
-        """, (post_id,)).fetchone()
+async def get_post_owner_user_id(post_id: int):
+    row = await db_fetchone("""
+        SELECT user_id
+        FROM posts
+        WHERE id = ?
+        LIMIT 1
+    """, (post_id,))
     return row["user_id"] if row else None
 
 
@@ -4527,7 +4551,7 @@ def admin_contact_kb():
     ]])
     
 
-def dispute_text(dispute: sqlite3.Row) -> str:
+def dispute_text(dispute: aiosqlite.Row) -> str:
     lines = [
         f"⚖️ <b>Спор по сделке #{dispute['deal_id']}</b>",
         f"<b>Статус:</b> {format_dispute_status(dispute['status'])}",
@@ -5288,7 +5312,7 @@ async def cargo_contact(message: Message, state: FSMContext):
     data = await state.get_data()
 
     try:
-        lead_id = create_cargo_lead(
+        lead_id = await create_cargo_lead(
             user_id=message.from_user.id,
             from_place=f"{data.get('from_country', '')}, {data.get('from_city', '')}",
             to_place=f"{data.get('to_country', '')}, {data.get('to_city', '')}",
@@ -5320,7 +5344,7 @@ async def cargo_contact(message: Message, state: FSMContext):
 @router.callback_query(F.data.startswith("cargo_view_photo:"))
 async def cargo_view_photo_handler(callback: CallbackQuery):
     lead_id = int(callback.data.split(":", 1)[1])
-    lead = get_cargo_lead(lead_id)
+    lead = await get_cargo_lead(lead_id)
 
     if not lead or not lead["photo_file_id"]:
         await callback.answer("Фото не найдено", show_alert=True)
@@ -5790,7 +5814,7 @@ async def admin_stats_handler(callback: CallbackQuery):
         return
 
     await callback.message.answer(
-        admin_stats_text(),
+        await admin_stats_text(),
         reply_markup=admin_menu_kb()
     )
     await callback.answer()
@@ -5808,7 +5832,7 @@ async def cargo_get_contact(callback: CallbackQuery):
         return
 
     lead_id = int(callback.data.split(":")[1])
-    lead = get_cargo_lead(lead_id)
+    lead = await get_cargo_lead(lead_id)
 
     if not lead:
         await callback.answer("Заявка не найдена.", show_alert=True)
@@ -6855,7 +6879,7 @@ async def finalize_post(message: Message, state: FSMContext, bot: Bot):
         data = await state.get_data()
         data["contact_note"] = None if message.text.strip() == "-" else message.text.strip()[:200]
 
-        post_id = create_post_record(data, message.from_user.id)
+        post_id = await create_post_record(data, message.from_user.id)
         row = await get_post(post_id)
 
         await state.clear()
@@ -7682,7 +7706,7 @@ async def admin_menu_handler(message: Message):
         return
 
     await message.answer(
-        admin_stats_text(),
+        await admin_stats_text(),
         reply_markup=admin_menu_kb()
     )
 
@@ -8144,7 +8168,7 @@ async def admin_user_make_cargo(callback: CallbackQuery):
         return
 
     user_id = int(callback.data.split(":")[1])
-    set_user_cargo(user_id, True)
+    await set_user_cargo(user_id, True)
 
     try:
         await callback.bot.send_message(
@@ -8174,7 +8198,7 @@ async def admin_user_remove_cargo(callback: CallbackQuery):
         return
 
     user_id = int(callback.data.split(":")[1])
-    set_user_cargo(user_id, False)
+    await set_user_cargo(user_id, False)
 
     await callback.message.answer(f"❌ Пользователь {user_id} больше не карго-партнер.")
     await callback.answer()    
@@ -8592,7 +8616,7 @@ async def admin_verif_ok_handler(callback: CallbackQuery):
         await callback.answer("Заявка не найдена", show_alert=True)
         return
 
-    verify_user(req["user_id"])
+    await verify_user(req["user_id"])"user_id"])
     set_verification_status(
         request_id,
         VERIF_STATUS_APPROVED,
@@ -9540,7 +9564,7 @@ async def user_posts_page(
     user_id: int,
     limit: int = MY_POSTS_PAGE_SIZE,
     offset: int = 0
-) -> List[sqlite3.Row]:
+) -> List[aiosqlite.Row]:
     return await db_fetchall("""
         SELECT * FROM posts
         WHERE user_id=? AND status != 'deleted'

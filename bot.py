@@ -4662,7 +4662,7 @@ def fmt_ts(ts: int | None) -> str:
         return str(ts)
 
 
-def await render_user_admin_card(user_row) -> str:
+def render_user_admin_card(user_row) -> str:
     if not user_row:
         return "Пользователь не найден."
 

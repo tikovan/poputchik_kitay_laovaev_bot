@@ -7321,29 +7321,34 @@ async def activate_post(callback: CallbackQuery, bot: Bot):
 @router.callback_query(F.data.startswith("bump:"))
 async def bump_post(callback: CallbackQuery):
     post_id = int(callback.data.split(":")[1])
-    row = owner_only(callback, post_id)
+
+    row = await owner_only(callback, post_id)
     if not row:
         await callback.answer("Нет доступа", show_alert=True)
         return
+
     if row["status"] != STATUS_ACTIVE:
         await callback.answer("Поднимать можно только активное объявление", show_alert=True)
         return
 
-    order_id = await create_bump_order(...)callback.from_user.id, post_id)
+    order_id = await create_bump_order(
+        callback.from_user.id,
+        post_id
+    )
 
-   await callback.message.answer(
-    (
-        f"💰 <b>Поднятие объявления</b>\n\n"
-        f"Стоимость: <b>{BUMP_PRICE_AMOUNT} {BUMP_PRICE_CURRENCY}</b>\n\n"
-        "Оплатите через WeChat / Alipay и отправьте скрин администратору.\n"
-        "После подтверждения оплаты объявление будет поднято выше.\n\n"
-        f"🆔 ID заказа: <b>{order_id}</b>"
-    ),
-    parse_mode=ParseMode.HTML
-)
+    await callback.message.answer(
+        (
+            f"💰 <b>Поднятие объявления</b>\n\n"
+            f"Стоимость: <b>{BUMP_PRICE_AMOUNT} {BUMP_PRICE_CURRENCY}</b>\n\n"
+            "Оплатите через WeChat / Alipay и отправьте скрин администратору.\n"
+            "После подтверждения оплаты объявление будет поднято выше.\n\n"
+            f"🆔 ID заказа: <b>{order_id}</b>"
+        ),
+        parse_mode=ParseMode.HTML
+    )
 
-await callback.answer("Заявка создана")
-
+    await callback.answer("Заявка создана")
+    
 
 @router.message(F.text == "💰 Поднять объявление")
 async def bump_info(message: Message):

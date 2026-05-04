@@ -4,6 +4,7 @@ import os
 import re
 import time
 import logging
+import aiosqlite
 from functools import lru_cache
 from contextlib import closing
 from datetime import datetime, timedelta
@@ -3684,7 +3685,7 @@ def list_user_deals(user_id: int) -> List[aiosqlite.Row]:
 
 
 def deal_title(deal: aiosqlite.Row) -> str:
-    post = get_post(deal["post_id"])
+    post = await get_post(deal["post_id"])
 
     if not post:
         return f"Сделка #{deal['id']}"
@@ -4331,7 +4332,7 @@ async def dispute_timeout_loop(bot: Bot):
 
             for dispute in disputes:
 
-                deal = get_deal(dispute["deal_id"])
+                deal = await get_deal(dispute["deal_id"])
 
                 async with await connect_db() as conn:
                     conn.execute(
@@ -4824,7 +4825,7 @@ async def render_cargo_step(target_step: str, target_message: Message, state: FS
 async def contact_admin_handler(callback: CallbackQuery, state: FSMContext):
     deal_id = int(callback.data.split(":")[1])
 
-    deal = get_deal(deal_id)
+    deal = await get_deal(deal_id)
     if not deal:
         await callback.answer("Сделка не найдена", show_alert=True)
         return
@@ -4881,7 +4882,7 @@ async def admin_ban_handler(message: Message):
     if arg.isdigit():
         target_user_id = int(arg)
     else:
-        row = find_user_by_username(arg)
+        row = await find_user_by_username(arg)
         if row:
             target_user_id = row["user_id"]
 
@@ -4911,7 +4912,7 @@ async def admin_unban_handler(message: Message):
     if arg.isdigit():
         target_user_id = int(arg)
     else:
-        row = find_user_by_username(arg)
+        row = await find_user_by_username(arg)
         if row:
             target_user_id = row["user_id"]
 
@@ -4919,7 +4920,7 @@ async def admin_unban_handler(message: Message):
         await message.answer("Пользователь не найден.")
         return
 
-    await unban_user(target_user_id)
+    await await unban_user(target_user_id)
     await message.answer(f"✅ Пользователь <code>{target_user_id}</code> разбанен.")
 
 
@@ -4937,9 +4938,9 @@ async def admin_id_handler(message: Message):
     arg = parts[1].strip()
 
     if arg.isdigit():
-        row = find_user_by_id(int(arg))
+        row = await find_user_by_id(int(arg))
     else:
-        row = find_user_by_username(arg)
+        row = await find_user_by_username(arg)
 
     if not row:
         await message.answer("Пользователь не найден.")
@@ -4962,13 +4963,13 @@ async def admin_contact_message(message: Message, state: FSMContext):
     data = await state.get_data()
     deal_id = data.get("deal_id")
 
-    deal = get_deal(deal_id)
+    deal = await get_deal(deal_id)
     if not deal:
         await message.answer("Сделка не найдена.")
         await state.clear()
         return
 
-    post = get_post(deal["post_id"])
+    post = await get_post(deal["post_id"])
     route = ""
     if post:
         route = f"{post['from_country']}"
@@ -5767,7 +5768,7 @@ async def admin_toggle_ban_handler(callback: CallbackQuery):
     if new_status == 1:
         await ban_user_with_cleanup(callback.bot, target_user_id)
     else:
-        await unban_user(target_user_id)
+        await await unban_user(target_user_id)
 
     updated_row = get_user_row(target_user_id)
 
@@ -6959,7 +6960,7 @@ async def my_posts_handler(message: Message):
 @router.callback_query(F.data.startswith("deal_review:"))
 async def deal_review_start(callback: CallbackQuery, state: FSMContext):
     deal_id = int(callback.data.split(":")[1])
-    deal = get_deal(deal_id)
+    deal = await get_deal(deal_id)
 
     if not deal:
         await callback.answer("Сделка не найдена", show_alert=True)
@@ -9183,7 +9184,7 @@ async def deal_request_decline_handler(callback: CallbackQuery):
 @router.callback_query(F.data.startswith("deal_accept:"))
 async def deal_accept_handler(callback: CallbackQuery):
     deal_id = int(callback.data.split(":")[1])
-    deal = get_deal(deal_id)
+    deal = await get_deal(deal_id)
 
     if not deal or deal["owner_user_id"] != callback.from_user.id:
         await callback.answer("Нет доступа", show_alert=True)
@@ -9226,7 +9227,7 @@ async def deal_accept_handler(callback: CallbackQuery):
 @router.callback_query(F.data.startswith("deal_dispute_open:"))
 async def deal_dispute_open_handler(callback: CallbackQuery, state: FSMContext):
     deal_id = int(callback.data.split(":")[1])
-    deal = get_deal(deal_id)
+    deal = await get_deal(deal_id)
 
     if not deal:
         await callback.answer("Сделка не найдена", show_alert=True)
@@ -9407,7 +9408,7 @@ async def dispute_resolve_handler(callback: CallbackQuery):
         await callback.answer("Нет доступа", show_alert=True)
         return
 
-    deal = get_deal(dispute["deal_id"])
+    deal = await get_deal(dispute["deal_id"])
     if not deal:
         await callback.answer("Сделка не найдена", show_alert=True)
         return
@@ -9422,7 +9423,7 @@ async def dispute_resolve_handler(callback: CallbackQuery):
             (DEAL_COMPLETED, now_ts(), now_ts(), dispute["deal_id"])
         )
 
-    completed_deal = get_deal(dispute["deal_id"])
+    completed_deal = await get_deal(dispute["deal_id"])
     updated_dispute = get_dispute(dispute_id)
 
     await callback.message.answer(
@@ -9463,12 +9464,12 @@ async def dispute_unresolved_handler(callback: CallbackQuery):
         await callback.answer("Нет доступа", show_alert=True)
         return
 
-    deal = get_deal(dispute["deal_id"])
+    deal = await get_deal(dispute["deal_id"])
     if not deal:
         await callback.answer("Сделка не найдена", show_alert=True)
         return
 
-    post = get_post(deal["post_id"])
+    post = await get_post(deal["post_id"])
     route = post_route_title(post) if post else f"Объявление ID {deal['post_id']}"
 
     async with await connect_db() as conn:
@@ -9491,7 +9492,7 @@ async def dispute_unresolved_handler(callback: CallbackQuery):
     invalidate_user_profile_cache(dispute["against_user_id"])
 
     updated_dispute = get_dispute(dispute_id)
-    failed_deal = get_deal(dispute["deal_id"])
+    failed_deal = await get_deal(dispute["deal_id"])
 
     # уведомление тому, кто открыл спор
     await callback.message.answer(
@@ -9537,7 +9538,7 @@ async def dispute_unresolved_handler(callback: CallbackQuery):
 async def open_my_deal(callback: CallbackQuery):
     try:
         deal_id = int(callback.data.split(":")[1])
-        deal = get_deal(deal_id)
+        deal = await get_deal(deal_id)
 
         if not deal:
             await callback.answer("Сделка не найдена", show_alert=True)

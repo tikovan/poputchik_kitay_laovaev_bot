@@ -3428,127 +3428,213 @@ async def create_post_record(data: dict, user_id: int) -> int:
         return int(cur.lastrowid)
 
 
-def update_post_record(post_id: int, user_id: int, updates: dict) -> bool:
+async def await update_post_record(post_id: int, user_id: int, updates: dict) -> bool:
     allowed = {
         "from_country", "from_city", "to_country", "to_city",
         "travel_date", "weight_kg", "description", "contact_note", "photo_file_id"
     }
+
     payload = {k: v for k, v in updates.items() if k in allowed}
     if not payload:
         return False
+
     payload["updated_at"] = now_ts()
+
     async with await connect_db() as conn:
         if "travel_date" in payload:
-            row = await conn.execute(
+            cur = await conn.execute(
                 "SELECT created_at FROM posts WHERE id=? AND user_id=?",
                 (post_id, user_id)
-            ).fetchone()
+            )
+            row = await cur.fetchone()
+
             if not row:
                 return False
+
             payload["expires_at"] = calculate_post_expires_at(
                 int(row["created_at"] or now_ts()),
                 payload.get("travel_date"),
                 POST_TTL_DAYS
             )
+
         sets = ", ".join(f"{key}=?" for key in payload.keys())
         params = list(payload.values()) + [post_id, user_id]
-        cur = await conn.execute(f"UPDATE posts SET {sets} WHERE id=? AND user_id=?", tuple(params))
+
+        cur = await conn.execute(
+            f"UPDATE posts SET {sets} WHERE id=? AND user_id=?",
+            tuple(params)
+        )
+        await conn.commit()
+
         return cur.rowcount > 0
 
 
-def user_post_create_rate_limited(user_id: int) -> bool:
+async def user_post_create_rate_limited(user_id: int) -> bool:
     async with await connect_db() as conn:
-        row = await conn.execute("""
+        cur = await conn.execute("""
             SELECT COUNT(*) AS c
             FROM posts
             WHERE user_id=? AND created_at>=?
-        """, (user_id, now_ts() - 600)).fetchone()
+        """, (user_id, now_ts() - 600))
+        row = await cur.fetchone()
+
         return int(row["c"] or 0) >= MAX_POSTS_PER_10_MIN
 
 
-def add_route_subscription(user_id: int, post_type: str, from_country: str, to_country: str, from_city: Optional[str] = None, to_city: Optional[str] = None):
+async def add_route_subscription(
+    user_id: int,
+    post_type: str,
+    from_country: str,
+    to_country: str,
+    from_city: Optional[str] = None,
+    to_city: Optional[str] = None
+):
     async with await connect_db() as conn:
-        exists = await conn.execute("""
+        cur = await conn.execute("""
             SELECT id FROM route_subscriptions
-            WHERE user_id=? AND post_type=? AND from_country=? AND COALESCE(from_city, '')=COALESCE(?, '') AND to_country=? AND COALESCE(to_city, '')=COALESCE(?, '') LIMIT 1
-        """, (user_id, post_type, from_country, from_city, to_country, to_city)).fetchone()
+            WHERE user_id=?
+              AND post_type=?
+              AND from_country=?
+              AND COALESCE(from_city, '')=COALESCE(?, '')
+              AND to_country=?
+              AND COALESCE(to_city, '')=COALESCE(?, '')
+            LIMIT 1
+        """, (user_id, post_type, from_country, from_city, to_country, to_city))
+        exists = await cur.fetchone()
+
         if exists:
             return
+
         await conn.execute("""
-            INSERT INTO route_subscriptions (user_id, post_type, from_country, from_city, to_country, to_city, created_at)
+            INSERT INTO route_subscriptions (
+                user_id, post_type, from_country, from_city,
+                to_country, to_city, created_at
+            )
             VALUES (?, ?, ?, ?, ?, ?, ?)
         """, (user_id, post_type, from_country, from_city, to_country, to_city, now_ts()))
 
+        await conn.commit()
 
-def list_route_subscriptions(user_id: int) -> List[aiosqlite.Row]:
+
+async def list_route_subscriptions(user_id: int) -> List[aiosqlite.Row]:
     async with await connect_db() as conn:
-        return await conn.execute("""
+        cur = await conn.execute("""
             SELECT * FROM route_subscriptions
             WHERE user_id=?
             ORDER BY created_at DESC
             LIMIT 20
-        """, (user_id,)).fetchall()
+        """, (user_id,))
+        return await cur.fetchall()
 
 
-def delete_subscription(user_id: int, sub_id: int) -> bool:
+async def delete_subscription(user_id: int, sub_id: int) -> bool:
     async with await connect_db() as conn:
-        cur = await conn.execute("DELETE FROM route_subscriptions WHERE id=? AND user_id=?", (sub_id, user_id))
+        cur = await conn.execute(
+            "DELETE FROM route_subscriptions WHERE id=? AND user_id=?",
+            (sub_id, user_id)
+        )
+        await conn.commit()
         return cur.rowcount > 0
 
 
-def is_user_blocked(user_id: int, blocked_user_id: int) -> bool:
+async def is_user_blocked(user_id: int, blocked_user_id: int) -> bool:
     async with await connect_db() as conn:
-        row = await conn.execute("SELECT 1 FROM user_blacklist WHERE user_id=? AND blocked_user_id=? LIMIT 1", (user_id, blocked_user_id)).fetchone()
+        cur = await conn.execute(
+            "SELECT 1 FROM user_blacklist WHERE user_id=? AND blocked_user_id=? LIMIT 1",
+            (user_id, blocked_user_id)
+        )
+        row = await cur.fetchone()
         return row is not None
 
 
-def add_user_to_blacklist(user_id: int, blocked_user_id: int) -> bool:
+async def add_user_to_blacklist(user_id: int, blocked_user_id: int) -> bool:
     if user_id == blocked_user_id:
         return False
+
     async with await connect_db() as conn:
         try:
-            await conn.execute("INSERT INTO user_blacklist(user_id, blocked_user_id, created_at) VALUES (?, ?, ?)", (user_id, blocked_user_id, now_ts()))
+            await conn.execute("""
+                INSERT INTO user_blacklist(user_id, blocked_user_id, created_at)
+                VALUES (?, ?, ?)
+            """, (user_id, blocked_user_id, now_ts()))
+            await conn.commit()
             return True
-        except sqlite3.IntegrityError:
+        except aiosqlite.IntegrityError:
             return False
 
 
-def remove_user_from_blacklist(user_id: int, blocked_user_id: int) -> bool:
+async def remove_user_from_blacklist(user_id: int, blocked_user_id: int) -> bool:
     async with await connect_db() as conn:
-        cur = await conn.execute("DELETE FROM user_blacklist WHERE user_id=? AND blocked_user_id=?", (user_id, blocked_user_id))
+        cur = await conn.execute(
+            "DELETE FROM user_blacklist WHERE user_id=? AND blocked_user_id=?",
+            (user_id, blocked_user_id)
+        )
+        await conn.commit()
         return cur.rowcount > 0
 
 
-def save_chat_message(post_id: int, from_user_id: int, to_user_id: int, message_text: str, deal_id: Optional[int] = None):
+async def save_chat_message(
+    post_id: int,
+    from_user_id: int,
+    to_user_id: int,
+    message_text: str,
+    deal_id: Optional[int] = None
+):
     async with await connect_db() as conn:
         await conn.execute("""
-            INSERT INTO chat_messages(post_id, deal_id, from_user_id, to_user_id, message_text, created_at, is_read)
+            INSERT INTO chat_messages(
+                post_id, deal_id, from_user_id, to_user_id,
+                message_text, created_at, is_read
+            )
             VALUES (?, ?, ?, ?, ?, ?, 0)
         """, (post_id, deal_id, from_user_id, to_user_id, message_text, now_ts()))
+        await conn.commit()
 
 
-def unread_chat_count(user_id: int) -> int:
+async def unread_chat_count(user_id: int) -> int:
     async with await connect_db() as conn:
-        row = await conn.execute("SELECT COUNT(*) AS c FROM chat_messages WHERE to_user_id=? AND is_read=0", (user_id,)).fetchone()
+        cur = await conn.execute(
+            "SELECT COUNT(*) AS c FROM chat_messages WHERE to_user_id=? AND is_read=0",
+            (user_id,)
+        )
+        row = await cur.fetchone()
         return int(row["c"] or 0)
 
 
-def mark_chat_read(user_id: int, partner_user_id: int, post_id: int):
+async def await mark_chat_read(user_id: int, partner_user_id: int, post_id: int):
     async with await connect_db() as conn:
-        await conn.execute("UPDATE chat_messages SET is_read=1 WHERE to_user_id=? AND from_user_id=? AND post_id=? AND is_read=0", (user_id, partner_user_id, post_id))
+        await conn.execute("""
+            UPDATE chat_messages
+            SET is_read=1
+            WHERE to_user_id=?
+              AND from_user_id=?
+              AND post_id=?
+              AND is_read=0
+        """, (user_id, partner_user_id, post_id))
+        await conn.commit()
 
 
-def get_chat_history(user_a: int, user_b: int, post_id: int, limit: int = 20) -> List[aiosqlite.Row]:
+async def get_chat_history(
+    user_a: int,
+    user_b: int,
+    post_id: int,
+    limit: int = 20
+) -> List[aiosqlite.Row]:
     async with await connect_db() as conn:
-        return await conn.execute("""
+        cur = await conn.execute("""
             SELECT * FROM chat_messages
-            WHERE post_id=? AND ((from_user_id=? AND to_user_id=?) OR (from_user_id=? AND to_user_id=?))
+            WHERE post_id=?
+              AND (
+                    (from_user_id=? AND to_user_id=?)
+                 OR (from_user_id=? AND to_user_id=?)
+              )
             ORDER BY created_at DESC
             LIMIT ?
-        """, (post_id, user_a, user_b, user_b, user_a, limit)).fetchall()
+        """, (post_id, user_a, user_b, user_b, user_a, limit))
+        return await cur.fetchall()
 
 
-def reserve_coincidence_notification(post_a_id: int, post_b_id: int) -> bool:
+async def reserve_coincidence_notification(post_a_id: int, post_b_id: int) -> bool:
     a, b = sorted([post_a_id, post_b_id])
 
     async with await connect_db() as conn:
@@ -3557,8 +3643,9 @@ def reserve_coincidence_notification(post_a_id: int, post_b_id: int) -> bool:
                 INSERT INTO coincidence_notifications (post_a_id, post_b_id, created_at)
                 VALUES (?, ?, ?)
             """, (a, b, now_ts()))
+            await conn.commit()
             return True
-        except sqlite3.IntegrityError:
+        except aiosqlite.IntegrityError:
             return False
 
 
@@ -4190,8 +4277,8 @@ async def notify_coincidence_users(bot: Bot, new_post_id: int):
         score = item["score"]
         notes = item["notes"]
 
-        if not reserve_coincidence_notification(new_row["id"], row["id"]):
-            continue
+        if not await reserve_coincidence_notification(new_row["id"], row["id"]):
+               continue
 
         intro = format_coincidence_badges(score, notes)
 
@@ -7868,7 +7955,7 @@ async def sub_to_city(callback: CallbackQuery, state: FSMContext):
     city = callback.data.split(":", 1)[1]
     await state.update_data(to_city=None if city == "__skip__" else city)
     data = await state.get_data()
-    add_route_subscription(
+    await add_route_subscription(
         callback.from_user.id,
         data["post_type"],
         data["from_country"],
@@ -7887,7 +7974,7 @@ async def sub_to_city(callback: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data == "sub:list")
 async def sub_list(callback: CallbackQuery):
-    subs = list_route_subscriptions(callback.from_user.id)
+    subs = await list_route_subscriptions(callback.from_user.id)
     if not subs:
         await callback.message.answer("У вас пока нет подписок.")
     else:
@@ -7930,7 +8017,7 @@ async def user_reviews_handler(callback: CallbackQuery):
 @router.callback_query(F.data.startswith("subdel:"))
 async def sub_delete(callback: CallbackQuery):
     sub_id = int(callback.data.split(":")[1])
-    ok = delete_subscription(callback.from_user.id, sub_id)
+    ok = await delete_subscription(callback.from_user.id, sub_id)
     await callback.answer("Подписка удалена" if ok else "Не найдено", show_alert=True)
 
 
@@ -8788,7 +8875,7 @@ async def reply_contact_handler(callback: CallbackQuery, state: FSMContext):
             await callback.answer("Диалог недоступен", show_alert=True)
             return
 
-        mark_chat_read(callback.from_user.id, target_user_id, post_id)
+        await mark_chat_read(callback.from_user.id, target_user_id, post_id)
 
         await state.clear()
         await state.set_state(ContactFlow.message_text)
@@ -9829,7 +9916,7 @@ async def edit_post_weight_manual_input(message: Message, state: FSMContext):
         await message.answer("Введите новый вес:")
         return
 
-    ok = update_post_record(post_id, message.from_user.id, {"weight_kg": value})
+    ok = await update_post_record(post_id, message.from_user.id, {"weight_kg": value})
     await state.clear()
 
     if not ok:
@@ -9855,7 +9942,7 @@ async def edit_post_value_input(message: Message, state: FSMContext):
     value = (message.text or "").strip()
     if field == "contact_note" and value == "-":
         value = None
-    ok = update_post_record(post_id, message.from_user.id, {field: value})
+    ok = await update_post_record(post_id, message.from_user.id, {field: value})
     await state.clear()
     if not ok:
         await message.answer("Не удалось обновить объявление.")
@@ -9896,7 +9983,7 @@ async def edit_post_weight_pick(callback: CallbackQuery, state: FSMContext):
             await callback.message.answer("Введите новый вес:")
             return
 
-        ok = update_post_record(post_id, callback.from_user.id, {"weight_kg": value})
+        ok = await update_post_record(post_id, callback.from_user.id, {"weight_kg": value})
         if not ok:
             await callback.message.answer("Ошибка обновления")
             return

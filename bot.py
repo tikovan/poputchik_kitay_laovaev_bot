@@ -6658,7 +6658,8 @@ async def support_help_input(message: Message, state: FSMContext):
 
 @router.callback_query(F.data.startswith("from_country_pick:"))
 async def pick_from_country(callback: CallbackQuery, state: FSMContext):
-   await upsert_user(callback)
+    await upsert_user(callback)
+
     value = callback.data.split(":", 1)[1]
     data = await state.get_data()
     post_type = data.get("post_type", TYPE_PARCEL)
@@ -6679,7 +6680,7 @@ async def pick_from_country(callback: CallbackQuery, state: FSMContext):
         reply_markup=cities_select_kb("from_city_pick", value, include_back=True)
     )
     await callback.answer()
-
+    
 
 @router.message(CreatePost.from_country_manual)
 async def from_country_manual_input(message: Message, state: FSMContext):

@@ -4369,8 +4369,6 @@ async def run_global_coincidence_scan(bot: Bot):
 
             rows = await cur.fetchall()
 
-    rows = await cur.fetchall()
-
         for row in rows:
             coincidences = await get_coincidences(
                 post_type=row["post_type"],

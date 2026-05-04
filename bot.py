@@ -2984,29 +2984,32 @@ async def unverify_user(user_id: int):
     invalidate_user_profile_cache(user_id)
         
 
-def get_latest_verification_request(user_id: int) -> Optional[aiosqlite.Row]:
+async def get_latest_verification_request(user_id: int) -> Optional[aiosqlite.Row]:
     async with await connect_db() as conn:
-        return await conn.execute("""
+        cur = await conn.execute("""
             SELECT *
             FROM verification_requests
             WHERE user_id=?
             ORDER BY id DESC
             LIMIT 1
-        """, (user_id,)).fetchone()
+        """, (user_id,))
+        return await cur.fetchone()
 
 
-def get_verification_request(request_id: int) -> Optional[aiosqlite.Row]:
+async def get_verification_request(request_id: int) -> Optional[aiosqlite.Row]:
     async with await connect_db() as conn:
-        return await conn.execute("""
+        cur = await conn.execute("""
             SELECT *
             FROM verification_requests
             WHERE id=?
             LIMIT 1
-        """, (request_id,)).fetchone()
+        """, (request_id,))
+        return await cur.fetchone()
 
 
-def create_verification_request(user_id: int) -> int:
+async def create_verification_request(user_id: int) -> int:
     ts = now_ts()
+
     async with await connect_db() as conn:
         cur = await conn.execute("""
             INSERT INTO verification_requests (
@@ -3022,12 +3025,13 @@ def create_verification_request(user_id: int) -> int:
             ts,
             ts
         ))
+        await conn.commit()
         return int(cur.lastrowid)
 
 
-def users_had_recent_deal(user1: int, user2: int) -> bool:
+async def users_had_recent_deal(user1: int, user2: int) -> bool:
     async with await connect_db() as conn:
-        row = await conn.execute("""
+        cur = await conn.execute("""
             SELECT id
             FROM deals
             WHERE (
@@ -3043,14 +3047,15 @@ def users_had_recent_deal(user1: int, user2: int) -> bool:
             user2, user1,
             DEAL_COMPLETED,
             now_ts() - 7 * 24 * 3600
-        )).fetchone()
+        ))
+        row = await cur.fetchone()
 
     return bool(row)
 
 
-def active_deals_count(user_id: int) -> int:
+async def active_deals_count(user_id: int) -> int:
     async with await connect_db() as conn:
-        row = await conn.execute("""
+        cur = await conn.execute("""
             SELECT COUNT(*) AS c
             FROM deals
             WHERE (owner_user_id=? OR requester_user_id=?)
@@ -3062,11 +3067,13 @@ def active_deals_count(user_id: int) -> int:
             DEAL_COMPLETED_BY_REQUESTER,
             DEAL_DISPUTE_OPEN,
             DEAL_DISPUTE_WAITING
-        )).fetchone()
-        return int(row["c"] or 0)
+        ))
+        row = await cur.fetchone()
+
+    return int(row["c"] or 0)
 
 
-def set_verification_status(
+async def await set_verification_status(
     request_id: int,
     status: str,
     *,
@@ -3076,7 +3083,12 @@ def set_verification_status(
     mark_reviewed: bool = False
 ):
     async with await connect_db() as conn:
-        row = await conn.execute("SELECT * FROM verification_requests WHERE id=?", (request_id,)).fetchone()
+        cur = await conn.execute(
+            "SELECT * FROM verification_requests WHERE id=?",
+            (request_id,)
+        )
+        row = await cur.fetchone()
+
         if not row:
             return
 
@@ -3107,8 +3119,10 @@ def set_verification_status(
             request_id
         ))
 
+        await conn.commit()
 
-def save_verification_passport(request_id: int, photo_file_id: str):
+
+async def await save_verification_passport(request_id: int, photo_file_id: str):
     async with await connect_db() as conn:
         await conn.execute("""
             UPDATE verification_requests
@@ -3116,10 +3130,16 @@ def save_verification_passport(request_id: int, photo_file_id: str):
                 status=?,
                 updated_at=?
             WHERE id=?
-        """, (photo_file_id, VERIF_STATUS_SELFIE_PENDING, now_ts(), request_id))
+        """, (
+            photo_file_id,
+            VERIF_STATUS_SELFIE_PENDING,
+            now_ts(),
+            request_id
+        ))
+        await conn.commit()
 
 
-def save_verification_selfie(request_id: int, photo_file_id: str):
+async def await save_verification_selfie(request_id: int, photo_file_id: str):
     async with await connect_db() as conn:
         await conn.execute("""
             UPDATE verification_requests
@@ -3128,10 +3148,16 @@ def save_verification_selfie(request_id: int, photo_file_id: str):
                 updated_at=?,
                 rejection_reason=NULL
             WHERE id=?
-        """, (photo_file_id, VERIF_STATUS_REVIEW_PENDING, now_ts(), request_id))
+        """, (
+            photo_file_id,
+            VERIF_STATUS_REVIEW_PENDING,
+            now_ts(),
+            request_id
+        ))
+        await conn.commit()
 
 
-def clear_verification_files(request_id: int):
+async def await clear_verification_files(request_id: int):
     async with await connect_db() as conn:
         await conn.execute("""
             UPDATE verification_requests
@@ -3140,11 +3166,12 @@ def clear_verification_files(request_id: int):
                 updated_at=?
             WHERE id=?
         """, (now_ts(), request_id))
+        await conn.commit()
 
 
-def list_pending_verification_requests(limit: int = 20):
+async def list_pending_verification_requests(limit: int = 20):
     async with await connect_db() as conn:
-        return await conn.execute("""
+        cur = await conn.execute("""
             SELECT *
             FROM verification_requests
             WHERE status IN (?, ?)
@@ -3154,7 +3181,8 @@ def list_pending_verification_requests(limit: int = 20):
             VERIF_STATUS_PAYMENT_REVIEW,
             VERIF_STATUS_REVIEW_PENDING,
             limit
-        )).fetchall()
+        ))
+        return await cur.fetchall()
 
 
 def format_verification_status(status: str) -> str:
@@ -3171,7 +3199,14 @@ def format_verification_status(status: str) -> str:
     return mapping.get(status, status)
 
 
-def search_posts_inline(query: str, limit: int = 10, offset: int = 0, post_type: Optional[str] = None, from_country: Optional[str] = None, to_country: Optional[str] = None) -> List[aiosqlite.Row]:
+async def search_posts_inline(
+    query: str,
+    limit: int = 10,
+    offset: int = 0,
+    post_type: Optional[str] = None,
+    from_country: Optional[str] = None,
+    to_country: Optional[str] = None
+) -> List[aiosqlite.Row]:
     q = f"%{query.strip().lower()}%"
     sql = [
         """
@@ -3201,22 +3236,33 @@ def search_posts_inline(query: str, limit: int = 10, offset: int = 0, post_type:
     if post_type:
         sql.append(" AND p.post_type=? ")
         params.append(post_type)
+
     if from_country:
         sql.append(" AND p.from_country=? ")
         params.append(from_country)
+
     if to_country:
         sql.append(" AND p.to_country=? ")
         params.append(to_country)
 
-    sql.append(" ORDER BY COALESCE(u.is_verified, 0) DESC, COALESCE(p.bumped_at, p.created_at) DESC LIMIT ? OFFSET ? ")
+    sql.append("""
+        ORDER BY COALESCE(u.is_verified, 0) DESC,
+                 COALESCE(p.bumped_at, p.created_at) DESC
+        LIMIT ? OFFSET ?
+    """)
     params.extend([limit, offset])
 
     async with await connect_db() as conn:
-        rows = await conn.execute("".join(sql), tuple(params)).fetchall()
-    return rows
+        cur = await conn.execute("".join(sql), tuple(params))
+        return await cur.fetchall()
 
 
-def count_search_posts(query: str = "", post_type: Optional[str] = None, from_country: Optional[str] = None, to_country: Optional[str] = None) -> int:
+async def count_search_posts(
+    query: str = "",
+    post_type: Optional[str] = None,
+    from_country: Optional[str] = None,
+    to_country: Optional[str] = None
+) -> int:
     q = f"%{query.strip().lower()}%"
     sql = [
         """
@@ -3227,6 +3273,7 @@ def count_search_posts(query: str = "", post_type: Optional[str] = None, from_co
         """
     ]
     params = [now_ts()]
+
     if query.strip():
         sql.append("""
           AND (
@@ -3240,23 +3287,28 @@ def count_search_posts(query: str = "", post_type: Optional[str] = None, from_co
           )
         """)
         params.extend([q, q, q, q, q, q, q])
+
     if post_type:
         sql.append(" AND p.post_type=? ")
         params.append(post_type)
+
     if from_country:
         sql.append(" AND p.from_country=? ")
         params.append(from_country)
+
     if to_country:
         sql.append(" AND p.to_country=? ")
         params.append(to_country)
+
     async with await connect_db() as conn:
-        row = await conn.execute("".join(sql), tuple(params)).fetchone()
+        cur = await conn.execute("".join(sql), tuple(params))
+        row = await cur.fetchone()
         return int(row["c"] or 0)
 
 
-def get_popular_routes(limit: int = 10) -> List[aiosqlite.Row]:
+async def get_popular_routes(limit: int = 10) -> List[aiosqlite.Row]:
     async with await connect_db() as conn:
-        return await conn.execute("""
+        cur = await conn.execute("""
             SELECT from_country, to_country, COUNT(*) AS cnt
             FROM posts
             WHERE status='active'
@@ -3264,10 +3316,19 @@ def get_popular_routes(limit: int = 10) -> List[aiosqlite.Row]:
             GROUP BY from_country, to_country
             ORDER BY cnt DESC, MAX(COALESCE(bumped_at, created_at)) DESC
             LIMIT ?
-        """, (now_ts(), limit)).fetchall()
+        """, (now_ts(), limit))
+        return await cur.fetchall()
 
 
-def search_route_posts_all(from_country: str, to_country: str, limit: int = 20, offset: int = 0, from_city: Optional[str] = None, to_city: Optional[str] = None, post_type: Optional[str] = None) -> List[aiosqlite.Row]:
+async def search_route_posts_all(
+    from_country: str,
+    to_country: str,
+    limit: int = 20,
+    offset: int = 0,
+    from_city: Optional[str] = None,
+    to_city: Optional[str] = None,
+    post_type: Optional[str] = None
+) -> List[aiosqlite.Row]:
     sql = [
         """
             SELECT p.*, u.username, u.full_name, COALESCE(u.is_verified, 0) AS is_verified
@@ -3279,36 +3340,46 @@ def search_route_posts_all(from_country: str, to_country: str, limit: int = 20, 
         """
     ]
     params = [from_country, to_country, now_ts()]
+
     if from_city:
         sql.append(" AND COALESCE(p.from_city, '')=? ")
         params.append(from_city)
+
     if to_city:
         sql.append(" AND COALESCE(p.to_city, '')=? ")
         params.append(to_city)
+
     if post_type:
         sql.append(" AND p.post_type=? ")
         params.append(post_type)
-    sql.append(" ORDER BY COALESCE(u.is_verified, 0) DESC, COALESCE(p.bumped_at, p.created_at) DESC LIMIT ? OFFSET ? ")
-    params.extend([limit, offset])
-    async with await connect_db() as conn:
-        rows = await conn.execute("".join(sql), tuple(params)).fetchall()
-    return rows
-    
 
-def service_stats() -> aiosqlite.Row:
+    sql.append("""
+        ORDER BY COALESCE(u.is_verified, 0) DESC,
+                 COALESCE(p.bumped_at, p.created_at) DESC
+        LIMIT ? OFFSET ?
+    """)
+    params.extend([limit, offset])
+
     async with await connect_db() as conn:
-        return await conn.execute("""
+        cur = await conn.execute("".join(sql), tuple(params))
+        return await cur.fetchall()
+
+
+async def service_stats() -> aiosqlite.Row:
+    async with await connect_db() as conn:
+        cur = await conn.execute("""
             SELECT
                 (SELECT COUNT(*) FROM users) AS users_count,
                 (SELECT COUNT(*) FROM posts WHERE status='active' AND (expires_at IS NULL OR expires_at > ?)) AS active_posts,
                 (SELECT COUNT(*) FROM posts WHERE status='active' AND post_type='trip' AND (expires_at IS NULL OR expires_at > ?)) AS active_trips,
                 (SELECT COUNT(*) FROM posts WHERE status='active' AND post_type='parcel' AND (expires_at IS NULL OR expires_at > ?)) AS active_parcels
-        """, (now_ts(), now_ts(), now_ts())).fetchone()
+        """, (now_ts(), now_ts(), now_ts()))
+        return await cur.fetchone()
 
 
-def top_route() -> Optional[aiosqlite.Row]:
+async def top_route() -> Optional[aiosqlite.Row]:
     async with await connect_db() as conn:
-        return await conn.execute("""
+        cur = await conn.execute("""
             SELECT from_country, to_country, COUNT(*) AS cnt
             FROM posts
             WHERE status='active'
@@ -3316,7 +3387,8 @@ def top_route() -> Optional[aiosqlite.Row]:
             GROUP BY from_country, to_country
             ORDER BY cnt DESC
             LIMIT 1
-        """, (now_ts(),)).fetchone()
+        """, (now_ts(),))
+        return await cur.fetchone()
 
 
 async def create_post_record(data: dict, user_id: int) -> int:
@@ -5374,7 +5446,7 @@ async def cargo_view_photo_handler(callback: CallbackQuery):
 async def inline_search_handler(inline_query: InlineQuery):
     query = (inline_query.query or "").strip()
     offset = int(inline_query.offset or "0") if (inline_query.offset or "0").isdigit() else 0
-    rows = search_posts_inline(query, limit=INLINE_PAGE_SIZE, offset=offset)
+    rows = await search_posts_inline(query, limit=INLINE_PAGE_SIZE, offset=offset)
     results = []
 
     for row in rows:
@@ -6029,7 +6101,7 @@ async def verification_menu_handler(message: Message):
         )
         return
 
-    req = get_latest_verification_request(message.from_user.id)
+    req = await get_latest_verification_request(message.from_user.id)
 
     extra = ""
     if req:
@@ -6089,7 +6161,7 @@ async def verify_start_handler(callback: CallbackQuery):
         await callback.answer("Ваш аккаунт уже верифицирован.", show_alert=True)
         return
 
-    req = get_latest_verification_request(callback.from_user.id)
+    req = await get_latest_verification_request(callback.from_user.id)
 
     if req and req["status"] in (
         VERIF_STATUS_AWAITING_PAYMENT,
@@ -6100,7 +6172,7 @@ async def verify_start_handler(callback: CallbackQuery):
     ):
         request_id = req["id"]
     else:
-        request_id = create_verification_request(callback.from_user.id)
+        request_id = await create_verification_request(callback.from_user.id)
 
     await callback.message.answer(
     f"💳 <b>Оплата верификации</b>\n\n"
@@ -6119,7 +6191,7 @@ async def verify_start_handler(callback: CallbackQuery):
 @router.callback_query(F.data.startswith("verify:paid:"))
 async def verify_paid_handler(callback: CallbackQuery):
     request_id = int(callback.data.split(":")[2])
-    req = get_verification_request(request_id)
+    req = await get_verification_request(request_id)
 
     if not req or req["user_id"] != callback.from_user.id:
         await callback.answer("Заявка не найдена", show_alert=True)
@@ -6129,7 +6201,7 @@ async def verify_paid_handler(callback: CallbackQuery):
         await callback.answer("Этот этап уже пройден.", show_alert=True)
         return
 
-    set_verification_status(
+    await set_verification_status(
         request_id,
         VERIF_STATUS_PAYMENT_REVIEW,
         rejection_reason=None
@@ -6158,7 +6230,7 @@ async def verify_paid_handler(callback: CallbackQuery):
 @router.callback_query(F.data.startswith("verify:upload_passport:"))
 async def verify_upload_passport_handler(callback: CallbackQuery, state: FSMContext):
     request_id = int(callback.data.split(":")[2])
-    req = get_verification_request(request_id)
+    req = await get_verification_request(request_id)
 
     if not req or req["user_id"] != callback.from_user.id:
         await callback.answer("Заявка не найдена", show_alert=True)
@@ -6186,18 +6258,18 @@ async def verify_upload_passport_handler(callback: CallbackQuery, state: FSMCont
 @router.callback_query(F.data.startswith("verify:retry:"))
 async def verify_retry_handler(callback: CallbackQuery, state: FSMContext):
     request_id = int(callback.data.split(":")[2])
-    req = get_verification_request(request_id)
+    req = await get_verification_request(request_id)
 
     if not req or req["user_id"] != callback.from_user.id:
         await callback.answer("Заявка не найдена", show_alert=True)
         return
 
-    set_verification_status(
+    await set_verification_status(
         request_id,
         VERIF_STATUS_DOCS_PENDING,
         rejection_reason=None
     )
-    clear_verification_files(request_id)
+    await clear_verification_files(request_id)
 
     await state.clear()
     await state.update_data(verification_request_id=request_id)
@@ -6214,7 +6286,7 @@ async def verify_retry_handler(callback: CallbackQuery, state: FSMContext):
 async def verification_passport_input(message: Message, state: FSMContext):
     data = await state.get_data()
     request_id = data.get("verification_request_id")
-    req = get_verification_request(request_id) if request_id else None
+    req = await get_verification_request(request_id) if request_id else None
 
     if not req or req["user_id"] != message.from_user.id:
         await message.answer("Заявка не найдена.")
@@ -6222,7 +6294,7 @@ async def verification_passport_input(message: Message, state: FSMContext):
         return
 
     photo_id = message.photo[-1].file_id
-    save_verification_passport(request_id, photo_id)
+    await save_verification_passport(request_id, photo_id)
 
     await state.set_state(VerificationFlow.selfie_photo)
     await message.answer(
@@ -6240,7 +6312,7 @@ async def verification_passport_invalid(message: Message):
 async def verification_selfie_input(message: Message, state: FSMContext):
     data = await state.get_data()
     request_id = data.get("verification_request_id")
-    req = get_verification_request(request_id) if request_id else None
+    req = await get_verification_request(request_id) if request_id else None
 
     if not req or req["user_id"] != message.from_user.id:
         await message.answer("Заявка не найдена.")
@@ -6248,8 +6320,8 @@ async def verification_selfie_input(message: Message, state: FSMContext):
         return
 
     photo_id = message.photo[-1].file_id
-    save_verification_selfie(request_id, photo_id)
-    req = get_verification_request(request_id)
+    await save_verification_selfie(request_id, photo_id)
+    req = await get_verification_request(request_id)
 
     for admin_id in ADMIN_IDS:
         try:
@@ -7709,8 +7781,8 @@ async def complaint_reason_input(message: Message, state: FSMContext):
 @router.message(F.text == "📊 Статистика")
 async def stats_handler(message: Message):
     await message.answer(MENU_TEXTS["stats"], reply_markup=main_menu(message.from_user.id))
-    stats = service_stats()
-    route = top_route()
+    stats = await service_stats()
+    top = await top_route()
     text = (
         "📊 <b>Статистика сервиса</b>\n\n"
         f"Пользователей: <b>{stats['users_count']}</b>\n"
@@ -8515,7 +8587,7 @@ async def admin_verifications_handler(callback: CallbackQuery):
         await callback.answer("Нет доступа", show_alert=True)
         return
 
-    rows = list_pending_verification_requests(20)
+    rows = await list_pending_verification_requests(20)
     await callback.message.answer(
         "🛂 <b>Заявки на верификацию</b>",
         reply_markup=admin_verification_list_kb(rows)
@@ -8530,7 +8602,7 @@ async def admin_verif_open_handler(callback: CallbackQuery):
         return
 
     request_id = int(callback.data.split(":")[1])
-    req = get_verification_request(request_id)
+    req = await get_verification_request(request_id)
     if not req:
         await callback.answer("Заявка не найдена", show_alert=True)
         return
@@ -8573,12 +8645,12 @@ async def admin_verif_pay_ok_handler(callback: CallbackQuery):
         return
 
     request_id = int(callback.data.split(":")[1])
-    req = get_verification_request(request_id)
+    req = await get_verification_request(request_id)
     if not req:
         await callback.answer("Заявка не найдена", show_alert=True)
         return
 
-    set_verification_status(
+    await set_verification_status(
         request_id,
         VERIF_STATUS_DOCS_PENDING,
         admin_user_id=callback.from_user.id,
@@ -8606,12 +8678,12 @@ async def admin_verif_pay_no_handler(callback: CallbackQuery):
         return
 
     request_id = int(callback.data.split(":")[1])
-    req = get_verification_request(request_id)
+    req = await get_verification_request(request_id)
     if not req:
         await callback.answer("Заявка не найдена", show_alert=True)
         return
 
-    set_verification_status(
+    await set_verification_status(
         request_id,
         VERIF_STATUS_PAYMENT_REJECTED,
         rejection_reason="Оплата не подтверждена",
@@ -8638,19 +8710,19 @@ async def admin_verif_ok_handler(callback: CallbackQuery):
         return
 
     request_id = int(callback.data.split(":")[1])
-    req = get_verification_request(request_id)
+    req = await get_verification_request(request_id)
     if not req:
         await callback.answer("Заявка не найдена", show_alert=True)
         return
 
     await verify_user(req["user_id"])
-    set_verification_status(
+    await set_verification_status(
         request_id,
         VERIF_STATUS_APPROVED,
         admin_user_id=callback.from_user.id,
         mark_reviewed=True
     )
-    clear_verification_files(request_id)
+    await clear_verification_files(request_id)
 
     try:
         await callback.bot.send_message(
@@ -8672,19 +8744,19 @@ async def admin_verif_no_handler(callback: CallbackQuery):
         return
 
     request_id = int(callback.data.split(":")[1])
-    req = get_verification_request(request_id)
+    req = await get_verification_request(request_id)
     if not req:
         await callback.answer("Заявка не найдена", show_alert=True)
         return
 
-    set_verification_status(
+    await set_verification_status(
         request_id,
         VERIF_STATUS_REJECTED,
         rejection_reason="Документы не прошли проверку. Отправьте более четкие фото.",
         admin_user_id=callback.from_user.id,
         mark_reviewed=True
     )
-    clear_verification_files(request_id)
+    await clear_verification_files(request_id)
 
     try:
         await callback.bot.send_message(

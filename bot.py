@@ -1740,13 +1740,15 @@ def post_text(row, for_channel: bool = False) -> str:
     ]
 
     if profile["verified"]:
+        verify_url = bot_link("verify")
         lines.append("")
         lines.append("🛂 <b>ПАСПОРТ ВЕРИФИЦИРОВАН</b>")
         lines.append("<i>📈 Объявления таких пользователей получают больше откликов</i>")
-        lines.append(f"<a href='{bot_link('verify')}'>→ Пройти верификацию</a>")
+        lines.append(f'<a href="{verify_url}">→ Пройти верификацию</a>')
 
     lines.append("")
     lines.append(f"<b>Маршрут:</b> {route}")
+   
     if row["travel_date"]:
         lines.append(f"<b>Дата:</b> {html.escape(row['travel_date'])}")
 

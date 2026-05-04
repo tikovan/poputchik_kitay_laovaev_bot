@@ -2763,51 +2763,47 @@ async def get_post(post_id: int) -> Optional[aiosqlite.Row]:
         return await cur.fetchone()
 
 
-def get_pending_posts(limit: int = 20):
-    async with await connect_db() as conn:
-        return conn.execute("""
-            SELECT p.*, u.username, u.full_name
-            FROM posts p
-            LEFT JOIN users u ON u.user_id = p.user_id
-            WHERE p.status=?
-            ORDER BY p.created_at ASC
-            LIMIT ?
-        """, (STATUS_PENDING, limit)).fetchall()
+async def get_pending_posts(limit: int = 20):
+    return await db_fetchall("""
+        SELECT p.*, u.username, u.full_name
+        FROM posts p
+        LEFT JOIN users u ON u.user_id = p.user_id
+        WHERE p.status=?
+        ORDER BY p.created_at ASC
+        LIMIT ?
+    """, (STATUS_PENDING, limit))
 
 
-def get_recent_complaints(limit: int = 20):
-    async with await connect_db() as conn:
-        return conn.execute("""
-            SELECT c.*, p.user_id AS post_owner_user_id
-            FROM complaints c
-            LEFT JOIN posts p ON p.id = c.post_id
-            ORDER BY c.created_at DESC
-            LIMIT ?
-        """, (limit,)).fetchall()
+async def get_recent_complaints(limit: int = 20):
+    return await db_fetchall("""
+        SELECT c.*, p.user_id AS post_owner_user_id
+        FROM complaints c
+        LEFT JOIN posts p ON p.id = c.post_id
+        ORDER BY c.created_at DESC
+        LIMIT ?
+    """, (limit,))
 
 
-def get_pending_bump_orders(limit: int = 20):
-    async with await connect_db() as conn:
-        return conn.execute("""
-            SELECT *
-            FROM bump_orders
-            WHERE status='pending'
-            ORDER BY created_at DESC
-            LIMIT ?
-        """, (limit,)).fetchall()
+async def get_pending_bump_orders(limit: int = 20):
+    return await db_fetchall("""
+        SELECT *
+        FROM bump_orders
+        WHERE status='pending'
+        ORDER BY created_at DESC
+        LIMIT ?
+    """, (limit,))
 
 
-def get_admin_posts(limit: int = 30):
-    async with await connect_db() as conn:
-        return conn.execute("""
-            SELECT p.*, u.username, u.full_name
-            FROM posts p
-            LEFT JOIN users u ON u.user_id = p.user_id
-            WHERE p.status != ?
-            ORDER BY p.created_at DESC
-            LIMIT ?
-        """, (STATUS_DELETED, limit)).fetchall()
-
+async def get_admin_posts(limit: int = 30):
+    return await db_fetchall("""
+        SELECT p.*, u.username, u.full_name
+        FROM posts p
+        LEFT JOIN users u ON u.user_id = p.user_id
+        WHERE p.status != ?
+        ORDER BY p.created_at DESC
+        LIMIT ?
+    """, (STATUS_DELETED, limit))
+    
 
 def support_menu_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -7860,7 +7856,7 @@ async def admin_all_posts_handler(callback: CallbackQuery):
         await callback.answer("Нет доступа", show_alert=True)
         return
 
-    rows = get_admin_posts(30)
+    rows = await get_admin_posts(30)
     if not rows:
         await callback.message.answer("Объявлений пока нет.")
         await callback.answer()
@@ -8221,7 +8217,7 @@ async def admin_complaints_handler(callback: CallbackQuery):
         await callback.answer("Нет доступа", show_alert=True)
         return
 
-    complaints = get_recent_complaints(20)
+    complaints = await get_recent_complaints(20)
     if not complaints:
         await callback.message.answer("Жалоб пока нет.")
         await callback.answer()
@@ -8370,7 +8366,7 @@ async def admin_bump_orders_handler(callback: CallbackQuery):
         await callback.answer("Нет доступа", show_alert=True)
         return
 
-    orders = get_pending_bump_orders(20)
+    orders = await get_pending_bump_orders(20)
     if not orders:
         await callback.message.answer("Нет заявок на поднятие.")
         await callback.answer()

@@ -2232,7 +2232,6 @@ def admin_post_actions_kb(post_id: int):
 
 async def public_post_kb(post_id: int, owner_id: int):
     _, reviews_count = await user_rating_summary(owner_id)
-    row = await get_post(post_id)
 
     rows = [
         [InlineKeyboardButton(text="✉️ Написать владельцу", callback_data=f"contact:{post_id}:{owner_id}")],
@@ -2461,7 +2460,7 @@ def deal_open_kb(deal: aiosqlite.Row, user_id: int) -> InlineKeyboardMarkup:
 
     # Если обе стороны подтвердили — только отзыв и назад
     if both_confirmed or deal["status"] == DEAL_COMPLETED:
-        if not has_user_left_review_for_deal(deal, user_id):
+        if not await has_user_left_review_for_deal(deal, user_id):
             rows.append([
                 InlineKeyboardButton(
                     text="⭐ Оставить отзыв",
@@ -2479,7 +2478,7 @@ def deal_open_kb(deal: aiosqlite.Row, user_id: int) -> InlineKeyboardMarkup:
 
     # Если спор
     if deal["status"] in (DEAL_DISPUTE_OPEN, DEAL_DISPUTE_WAITING):
-        dispute = get_open_dispute_by_deal(deal["id"])
+        dispute = await get_open_dispute_by_deal(deal["id"])
         if dispute:
             rows.extend(dispute_actions_kb(dispute, user_id).inline_keyboard)
 
@@ -2493,7 +2492,7 @@ def deal_open_kb(deal: aiosqlite.Row, user_id: int) -> InlineKeyboardMarkup:
 
     # Если сделка неуспешна / отменена
     if deal["status"] in (DEAL_FAILED, DEAL_CANCELLED):
-        if not has_user_left_review_for_deal(deal, user_id):
+        if not await has_user_left_review_for_deal(deal, user_id):
             rows.append([
                 InlineKeyboardButton(
                     text="⭐ Оставить отзыв",
@@ -3762,7 +3761,7 @@ async def get_coincidences(
         score, notes = (
             (45, ["Совпадает маршрут по странам"])
             if source_row is None
-            else calculate_coincidence_score(source_row, row)
+            else await calculate_coincidence_score(source_row, row)
         )
 
         if score < 35:
@@ -4567,7 +4566,7 @@ async def begin_create(message: Message, state: FSMContext, post_type: str):
         )
         return
 
-    spam_error = anti_spam_check(message.from_user.id)
+    spam_error = await anti_spam_check(message.from_user.id)
     if spam_error:
         await message.answer(
             spam_error,
@@ -4575,7 +4574,7 @@ async def begin_create(message: Message, state: FSMContext, post_type: str):
         )
         return
 
-    if user_post_create_rate_limited(message.from_user.id):
+    if await user_post_create_rate_limited(message.from_user.id):
         await message.answer(
             "Вы слишком часто создаете объявления. Подождите немного и попробуйте снова.",
             reply_markup=main_menu(message.from_user.id)
@@ -4583,7 +4582,7 @@ async def begin_create(message: Message, state: FSMContext, post_type: str):
         return
 
     user_limit = await get_user_post_limit(message.from_user.id)
-    if active_post_count(message.from_user.id) >= user_limit:
+    if await active_post_count(message.from_user.id) >= user_limit:
         await message.answer(
             f"У вас уже слишком много объявлений. Лимит: {user_limit}. Удалите или деактивируйте старые объявления.",
             reply_markup=main_menu(message.from_user.id)
@@ -4632,24 +4631,26 @@ def format_dispute_status(status: str) -> str:
     return mapping.get(status, status)
 
 
-def get_user_row(user_id: int):
+async def get_user_row(user_id: int):
     async with await connect_db() as conn:
-        return await conn.execute("""
+        cur = await conn.execute("""
             SELECT user_id, username, full_name, created_at, is_banned, is_verified,
                    dispute_no_response_count, onboarding_completed
             FROM users
             WHERE user_id = ?
             LIMIT 1
-        """, (user_id,)).fetchone()
+        """, (user_id,))
+        return await cur.fetchone()
 
 
-def set_user_ban_status(user_id: int, is_banned: int):
+async def set_user_ban_status(user_id: int, is_banned: int):
     async with await connect_db() as conn:
         await conn.execute("""
             UPDATE users
             SET is_banned = ?
             WHERE user_id = ?
         """, (is_banned, user_id))
+        await conn.commit()
 
 
 def fmt_ts(ts: int | None) -> str:
@@ -4661,7 +4662,7 @@ def fmt_ts(ts: int | None) -> str:
         return str(ts)
 
 
-def render_user_admin_card(user_row) -> str:
+async def await render_user_admin_card(user_row) -> str:
     if not user_row:
         return "Пользователь не найден."
 
@@ -5776,7 +5777,7 @@ async def start_handler(message: Message, state: FSMContext):
 
         # ---------- только теперь онбординг ----------
 
-        if not is_onboarding_completed(message.from_user.id):
+        if not await is_onboarding_completed(message.from_user.id):
             await state.set_state(OnboardingFlow.screen_1)
             await show_onboarding_screen(message, 1)
             return
@@ -5815,7 +5816,7 @@ async def onboarding_next_handler(callback: CallbackQuery, state: FSMContext):
     }
 
     if next_screen == 6:
-        set_onboarding_completed(callback.from_user.id)
+        await set_onboarding_completed(callback.from_user.id)
 
     await state.set_state(state_map[next_screen])
     await show_onboarding_screen(callback.message, next_screen)
@@ -5905,7 +5906,7 @@ async def admin_user_profile_handler(callback: CallbackQuery):
         return
 
     await callback.message.edit_text(
-        render_user_admin_card(user_row),
+        await render_user_admin_card(user_row),
         reply_markup=admin_user_moderation_kb(
             target_user_id=target_user_id,
             is_banned=user_row["is_banned"]
@@ -5932,10 +5933,10 @@ async def admin_toggle_ban_handler(callback: CallbackQuery):
     else:
         await unban_user(target_user_id)
 
-    updated_row = get_user_row(target_user_id)
+    updated_row = await get_user_row(target_user_id)
 
     await callback.message.edit_text(
-        render_user_admin_card(updated_row),
+        await render_user_admin_card(updated_row),
         reply_markup=admin_user_moderation_kb(
             target_user_id=target_user_id,
             is_banned=updated_row["is_banned"]
@@ -5978,7 +5979,7 @@ async def admin_ban_post_owner(callback: CallbackQuery):
 
 @router.callback_query(F.data == "onboarding_skip")
 async def onboarding_skip_handler(callback: CallbackQuery, state: FSMContext):
-    set_onboarding_completed(callback.from_user.id)
+    await set_onboarding_completed(callback.from_user.id)
     await state.clear()
 
     await callback.message.answer(
@@ -6008,7 +6009,7 @@ CARGO_LEAD_CONTACT_LIMIT = 3
 async def cargo_get_contact(callback: CallbackQuery):
     user_id = callback.from_user.id
 
-    if not is_admin(user_id) and not is_cargo_user(user_id):
+    if not await is_admin(user_id) and not await is_cargo_user(user_id):
         await callback.answer("Эта функция доступна только карго-партнерам.", show_alert=True)
         return
 
@@ -6058,7 +6059,7 @@ async def cargo_get_contact(callback: CallbackQuery):
 async def onboarding_action_handler(callback: CallbackQuery, state: FSMContext):
     action = callback.data.split(":")[1]
 
-    set_onboarding_completed(callback.from_user.id)
+    await set_onboarding_completed(callback.from_user.id)
     await state.clear()
 
     if action == "trip":
@@ -6092,7 +6093,7 @@ async def onboarding_action_handler(callback: CallbackQuery, state: FSMContext):
         return
 
     if action == "browse":
-        rows = get_recent_posts(10)
+        rows = await get_recent_posts(10)
         if not rows:
             await callback.message.answer(
                 "Пока нет новых активных объявлений.",
@@ -6173,7 +6174,7 @@ async def admin_user_command_handler(message: Message):
         return
 
     await message.answer(
-        render_user_admin_card(user_row),
+        await render_user_admin_card(user_row),
         reply_markup=admin_user_moderation_kb(
             target_user_id=target_user_id,
             is_banned=user_row["is_banned"]
@@ -6185,7 +6186,7 @@ async def admin_user_command_handler(message: Message):
 async def verification_menu_handler(message: Message):
     await upsert_user(message)
 
-    if is_user_verified(message.from_user.id):
+    if await is_user_verified(message.from_user.id):
         await message.answer(
             "✅  <b>Ваш аккаунт уже верифицирован.</b>\n\n"
             "Статус: 🛂 Паспорт подтвержден",
@@ -6249,7 +6250,7 @@ async def verification_menu_handler(message: Message):
 
 @router.callback_query(F.data == "verify:start")
 async def verify_start_handler(callback: CallbackQuery):
-    if is_user_verified(callback.from_user.id):
+    if await is_user_verified(callback.from_user.id):
         await callback.answer("Ваш аккаунт уже верифицирован.", show_alert=True)
         return
 
@@ -6458,7 +6459,7 @@ async def admin_verify_user_cmd(message: Message):
         return
 
     user_id = int(parts[1])
-    verify_user(user_id)
+    await verify_user(user_id)
     await message.answer(f"✅ Пользователь {user_id} верифицирован.")
 
 
@@ -6473,7 +6474,7 @@ async def admin_unverify_user_cmd(message: Message):
         return
 
     user_id = int(parts[1])
-    unverify_user(user_id)
+    await unverify_user(user_id)
     await message.answer(f"↩️ Верификация пользователя {user_id} снята.")
 
 
@@ -6657,7 +6658,7 @@ async def support_help_input(message: Message, state: FSMContext):
 
 @router.callback_query(F.data.startswith("from_country_pick:"))
 async def pick_from_country(callback: CallbackQuery, state: FSMContext):
-    upsert_user(callback)
+   await upsert_user(callback)
     value = callback.data.split(":", 1)[1]
     data = await state.get_data()
     post_type = data.get("post_type", TYPE_PARCEL)
@@ -7136,7 +7137,7 @@ async def deal_review_start(callback: CallbackQuery, state: FSMContext):
         await callback.answer("Отзыв можно оставить только по завершенной или неуспешной сделке", show_alert=True)
         return
 
-    if has_user_left_review_for_deal(deal, callback.from_user.id):
+    if await has_user_left_review_for_deal(deal, callback.from_user.id):
         await callback.answer("Вы уже оставили отзыв", show_alert=True)
         return
 
@@ -7218,7 +7219,7 @@ async def review_text_input(message: Message, state: FSMContext):
 
         await message.answer("✅ Отзыв сохранен.", reply_markup=main_menu(message.from_user.id))
 
-    except sqlite3.IntegrityError:
+    except aiosqlite.IntegrityError:
         await message.answer("Вы уже оставили отзыв по этой сделке.", reply_markup=main_menu(message.from_user.id))
 
     await state.clear()
@@ -7351,7 +7352,7 @@ async def deal_confirm_handler(callback: CallbackQuery):
 
     # При желании можно обновить и текст
     try:
-        route = deal_title(fresh_deal)
+        route = await deal_title(fresh_deal)
         role = "владелец объявления" if callback.from_user.id == fresh_deal["owner_user_id"] else "откликнувшийся пользователь"
 
         text = (
@@ -7623,7 +7624,7 @@ async def find_to(callback: CallbackQuery, state: FSMContext):
         "user_id": callback.from_user.id,
     }
 
-    coincidences = get_coincidences(
+    coincidences = await get_coincidences(
         post_type=source_post_type,
         from_country=data["from_country"],
         to_country=country,
@@ -7667,12 +7668,12 @@ async def view_photo_handler(callback: CallbackQuery):
 @router.callback_query(F.data.startswith("coincidences:"))
 async def coincidences_for_post(callback: CallbackQuery):
     post_id = int(callback.data.split(":")[1])
-    row = owner_only(callback, post_id)
+    row = await owner_only(callback, post_id)
     if not row:
         await callback.answer("Нет доступа", show_alert=True)
         return
 
-    coincidences = get_coincidences(
+    coincidences = await get_coincidences(
         post_type=row["post_type"],
         from_country=row["from_country"],
         to_country=row["to_country"],
@@ -7699,7 +7700,7 @@ async def coincidences_for_post(callback: CallbackQuery):
 @router.message(F.text == "🔥 Популярные маршруты")
 async def popular_routes_handler(message: Message):
     await message.answer(MENU_TEXTS["popular"], reply_markup=main_menu(message.from_user.id))
-    rows = get_popular_routes(10)
+    rows = await get_popular_routes(10)
     if not rows:
         await message.answer("Пока нет активных маршрутов.", reply_markup=main_menu(message.from_user.id))
         return
@@ -7711,7 +7712,7 @@ async def popular_route_open(callback: CallbackQuery):
     await callback.answer()
     try:
         _, from_country, to_country = callback.data.split(":", 2)
-        rows = search_route_posts_all(from_country, to_country, limit=20)
+        rows = await search_route_posts_all(from_country, to_country, limit=20)
 
         if not rows:
             await callback.message.answer("По этому маршруту сейчас нет активных объявлений.")
@@ -7740,7 +7741,7 @@ async def popular_route_open(callback: CallbackQuery):
 
 @router.message(F.text == "🆕 Новые объявления")
 async def recent_posts_handler(message: Message):
-    rows = get_recent_posts(10)
+    rows = await get_recent_posts(10)
     if not rows:
         await message.answer("Пока нет новых активных объявлений.", reply_markup=main_menu(message.from_user.id))
         return
@@ -7997,7 +7998,7 @@ async def sub_list(callback: CallbackQuery):
 @router.callback_query(F.data.startswith("user_reviews:"))
 async def user_reviews_handler(callback: CallbackQuery):
     user_id = int(callback.data.split(":")[1])
-    reviews = get_user_reviews(user_id, limit=10)
+    reviews = await get_user_reviews(user_id, limit=10)
 
     if not reviews:
         await callback.answer("Отзывов пока нет", show_alert=True)
@@ -8037,7 +8038,7 @@ async def contact_owner(callback: CallbackQuery, state: FSMContext):
         await callback.answer("Это ваше объявление", show_alert=True)
         return
 
-    if is_user_blocked(owner_id, callback.from_user.id) or is_user_blocked(callback.from_user.id, owner_id):
+    if await is_user_blocked(owner_id, callback.from_user.id) or await is_user_blocked(callback.from_user.id, owner_id):
         await callback.answer("Диалог недоступен", show_alert=True)
         return
 
@@ -8048,7 +8049,7 @@ async def contact_owner(callback: CallbackQuery, state: FSMContext):
         deal_id=None
     )
 
-    set_active_chat(
+   await set_active_chat(
         user_id=callback.from_user.id,
         target_user_id=owner_id,
         post_id=post_id,
@@ -8220,15 +8221,15 @@ async def admin_user_lookup_input(message: Message, state: FSMContext):
 
     # 1. По USER_ID
     if query.isdigit():
-        user = find_user_by_id(int(query))
+        user = await find_user_by_id(int(query))
 
     # 2. По @username
     elif query.startswith("@"):
-        user = find_user_by_username(query)
+        user = await find_user_by_username(query)
 
     # 3. По имени / username без @ / части имени
     else:
-        users = search_users(query, limit=5)
+        users = await search_users(query, limit=5)
 
         if len(users) == 1:
             user = users[0]
@@ -8254,7 +8255,7 @@ async def admin_user_lookup_input(message: Message, state: FSMContext):
 
     user_id = int(user["user_id"])
 
-    profile = get_user_profile_full(user_id)
+    profile = await get_user_profile_full(user_id)
     profile_user = profile["user"]
 
     if not profile_user:
@@ -8284,7 +8285,7 @@ async def admin_open_user_profile(callback: CallbackQuery):
         return
 
     user_id = int(callback.data.split(":")[1])
-    profile = get_user_profile_full(user_id)
+    profile = await get_user_profile_full(user_id)
     user = profile["user"]
 
     if not user:
@@ -8312,7 +8313,7 @@ async def admin_user_verify_btn(callback: CallbackQuery):
         return
 
     user_id = int(callback.data.split(":")[1])
-    verify_user(user_id)
+    await verify_user(user_id)
     await callback.message.answer(f"✅ Пользователь {user_id} верифицирован.")
     await callback.answer()
     
@@ -8324,7 +8325,7 @@ async def admin_user_unverify_btn(callback: CallbackQuery):
         return
 
     user_id = int(callback.data.split(":")[1])
-    unverify_user(user_id)
+    await unverify_user(user_id)
     await callback.message.answer(f"↩️ Верификация пользователя {user_id} снята.")
     await callback.answer()
 
@@ -8348,7 +8349,7 @@ async def admin_user_unban_btn(callback: CallbackQuery):
         return
 
     user_id = int(callback.data.split(":")[1])
-    unban_user(user_id)
+    await unban_user(user_id)
     await callback.message.answer(f"♻️ Пользователь {user_id} разбанен.")
     await callback.answer()
 
@@ -8413,7 +8414,7 @@ async def admin_user_unhold_btn(callback: CallbackQuery):
         return
 
     user_id = int(callback.data.split(":")[1])
-    unhold_user(user_id)
+    await unhold_user(user_id)
 
     try:
         await callback.bot.send_message(
@@ -8891,7 +8892,7 @@ async def reply_contact_handler(callback: CallbackQuery, state: FSMContext):
             deal_id=deal_id
         )
 
-        set_active_chat(
+        await set_active_chat(
             user_id=callback.from_user.id,
             target_user_id=target_user_id,
             post_id=post_id,
@@ -8925,7 +8926,7 @@ async def relay_message(message: Message, state: FSMContext):
             reply_markup=main_menu(message.from_user.id)
         )
         await state.clear()
-        clear_active_chat(message.from_user.id)
+        await clear_active_chat(message.from_user.id)
         return
 
     if not text:
@@ -8980,14 +8981,14 @@ async def relay_message(message: Message, state: FSMContext):
             """, (post_id, target_user_id, message.from_user.id, now_ts()))
 
         # чат сохраняем ОБОИМ сторонам
-        set_active_chat(
+        await set_active_chat(
             user_id=message.from_user.id,
             target_user_id=target_user_id,
             post_id=post_id,
             deal_id=deal_id
         )
 
-        set_active_chat(
+        await set_active_chat(
             user_id=target_user_id,
             target_user_id=message.from_user.id,
             post_id=post_id,
@@ -9003,7 +9004,7 @@ async def relay_message(message: Message, state: FSMContext):
             reply_markup=main_menu(message.from_user.id)
         )
         await state.clear()
-        clear_active_chat(message.from_user.id)
+        await clear_active_chat(message.from_user.id)
 
 
 @router.message(F.reply_to_message)
@@ -9038,10 +9039,10 @@ async def active_chat_fallback(message: Message, state: FSMContext):
         return
 
     if is_main_menu_text(text):
-        clear_active_chat(message.from_user.id)
+        await clear_active_chat(message.from_user.id)
         return
 
-    active_chat = get_active_chat(message.from_user.id)
+    active_chat = await get_active_chat(message.from_user.id)
     if not active_chat:
         return
 
@@ -9050,7 +9051,7 @@ async def active_chat_fallback(message: Message, state: FSMContext):
     deal_id = active_chat["active_chat_deal_id"]
 
     if not target_user_id or not post_id:
-        clear_active_chat(message.from_user.id)
+        await clear_active_chat(message.from_user.id)
         return
 
     await state.set_state(ContactFlow.message_text)
@@ -9119,14 +9120,14 @@ async def offer_deal_handler(callback: CallbackQuery):
             await callback.answer("Объявление не найдено или неактивно", show_alert=True)
             return
 
-        if not is_user_verified(requester_id) and active_deals_count(requester_id) >= 2:
+        if not await is_user_verified(requester_id) and await active_deals_count(requester_id) >= 2:
             await callback.answer(
                 "У обычных пользователей максимум 2 активные сделки. Пройдите верификацию, чтобы снять лимит.",
                 show_alert=True
             )
             return
 
-        if users_had_recent_deal(owner_id, requester_id):
+        if await users_had_recent_deal(owner_id, requester_id):
             await callback.answer(
                 "Вы недавно уже совершали сделку с этим пользователем. "
                 "Новые сделки между одними и теми же пользователями возможны через 7 дней.",
@@ -9134,7 +9135,7 @@ async def offer_deal_handler(callback: CallbackQuery):
             )
             return
 
-        request_id, is_new_request = ensure_deal_request(
+        request_id, is_new_request = await ensure_deal_request(
             post_id=post_id,
             owner_user_id=owner_id,
             requester_user_id=requester_id
@@ -9189,7 +9190,7 @@ async def offer_deal_handler(callback: CallbackQuery):
 async def deal_request_accept_handler(callback: CallbackQuery):
     try:
         request_id = int(callback.data.split(":")[1])
-        req = get_deal_request(request_id)
+        req = await get_deal_request(request_id)
 
         if not req or req["owner_user_id"] != callback.from_user.id:
             await callback.answer("Нет доступа", show_alert=True)
@@ -9324,7 +9325,7 @@ async def deal_request_accept_handler(callback: CallbackQuery):
 @router.callback_query(F.data.startswith("deal_request_decline:"))
 async def deal_request_decline_handler(callback: CallbackQuery):
     request_id = int(callback.data.split(":")[1])
-    req = get_deal_request(request_id)
+    req = await get_deal_request(request_id)
 
     if not req or req["owner_user_id"] != callback.from_user.id:
         await callback.answer("Нет доступа", show_alert=True)
@@ -9416,7 +9417,7 @@ async def deal_dispute_open_handler(callback: CallbackQuery, state: FSMContext):
         )
         return
 
-    existing = get_open_dispute_by_deal(deal_id)
+    existing = await get_open_dispute_by_deal(deal_id)
     if existing:
         await callback.message.answer(
             dispute_text(existing),
@@ -9461,7 +9462,7 @@ async def dispute_reason_input(message: Message, state: FSMContext):
     deal_id = data["deal_id"]
     against_user_id = data["against_user_id"]
 
-    dispute_id = create_dispute(
+    dispute_id = await create_dispute(
         deal_id=deal_id,
         opened_by_user_id=message.from_user.id,
         against_user_id=against_user_id,
@@ -9474,7 +9475,7 @@ async def dispute_reason_input(message: Message, state: FSMContext):
             (DEAL_DISPUTE_WAITING, now_ts(), deal_id)
         )
 
-    dispute = get_dispute(dispute_id)
+    dispute = await get_dispute(dispute_id)
 
     try:
         await message.bot.send_message(
@@ -9498,7 +9499,7 @@ async def dispute_reason_input(message: Message, state: FSMContext):
 @router.callback_query(F.data.startswith("dispute_reply:"))
 async def dispute_reply_handler(callback: CallbackQuery, state: FSMContext):
     dispute_id = int(callback.data.split(":")[1])
-    dispute = get_dispute(dispute_id)
+    dispute = await get_dispute(dispute_id)
 
     if not dispute:
         await callback.answer("Спор не найден", show_alert=True)
@@ -9532,14 +9533,14 @@ async def dispute_response_input(message: Message, state: FSMContext):
 
     data = await state.get_data()
     dispute_id = data["dispute_id"]
-    dispute = get_dispute(dispute_id)
+    dispute = await get_dispute(dispute_id)
 
     if not dispute:
         await message.answer("Спор не найден.")
         await state.clear()
         return
 
-    save_dispute_response(dispute_id, response_text[:1500])
+    await save_dispute_response(dispute_id, response_text[:1500])
 
     async with await connect_db() as conn:
         await conn.execute(
@@ -9570,7 +9571,7 @@ async def dispute_response_input(message: Message, state: FSMContext):
 @router.callback_query(F.data.startswith("dispute_resolve:"))
 async def dispute_resolve_handler(callback: CallbackQuery):
     dispute_id = int(callback.data.split(":")[1])
-    dispute = get_dispute(dispute_id)
+    dispute = await get_dispute(dispute_id)
 
     if not dispute:
         await callback.answer("Спор не найден", show_alert=True)
@@ -9722,7 +9723,7 @@ async def open_my_deal(callback: CallbackQuery):
             await callback.answer("Нет доступа", show_alert=True)
             return
 
-        route = deal_title(deal)
+        route = await deal_title(deal)
         role = "владелец объявления" if callback.from_user.id == deal["owner_user_id"] else "откликнувшийся пользователь"
 
         text = (
@@ -9733,7 +9734,7 @@ async def open_my_deal(callback: CallbackQuery):
             f"<b>Статус:</b> {format_deal_status(deal['status'])}"
         )
 
-        dispute = get_open_dispute_by_deal(deal_id)
+        dispute = await get_open_dispute_by_deal(deal_id)
         if dispute:
             text += "\n\n" + dispute_text(dispute)
             kb = dispute_actions_kb(dispute, callback.from_user.id)
@@ -9774,24 +9775,6 @@ async def count_user_posts(user_id: int) -> int:
 def pager_kb(prefix: str, offset: int, page_size: int, total: int) -> InlineKeyboardMarkup:
     rows = []
     nav = []
-
-    if offset > 0:
-        nav.append(InlineKeyboardButton(text="⬅️", callback_data=f"{prefix}:{max(0, offset - page_size)}"))
-
-    if offset + page_size < total:
-        nav.append(InlineKeyboardButton(text="➡️", callback_data=f"{prefix}:{offset + page_size}"))
-
-    if nav:
-        rows.append(nav)
-
-    return InlineKeyboardMarkup(
-        inline_keyboard=rows or [[InlineKeyboardButton(text="Ок", callback_data="noop")]]
-    )
-
-
-def pager_kb(prefix: str, offset: int, page_size: int, total: int) -> InlineKeyboardMarkup:
-    rows = []
-    nav = []
     if offset > 0:
         nav.append(InlineKeyboardButton(text="⬅️", callback_data=f"{prefix}:{max(0, offset - page_size)}"))
     if offset + page_size < total:
@@ -9802,8 +9785,8 @@ def pager_kb(prefix: str, offset: int, page_size: int, total: int) -> InlineKeyb
 
 
 async def render_recent_posts_page(target, offset: int = 0):
-    rows = get_recent_posts(POSTS_PAGE_SIZE, offset=offset)
-    total = count_recent_posts()
+    rows = await get_recent_posts(POSTS_PAGE_SIZE, offset=offset)
+    total = await count_recent_posts()
     if not rows:
         await target.answer("Пока нет новых объявлений.")
         return
@@ -9860,7 +9843,7 @@ async def my_posts_page_callback(callback: CallbackQuery):
 @router.callback_query(F.data.startswith("editpost:"))
 async def edit_post_entry(callback: CallbackQuery, state: FSMContext):
     post_id = int(callback.data.split(":", 1)[1])
-    row = owner_only(callback, post_id)
+    row = await owner_only(callback, post_id)
     if not row:
         await callback.answer("Нет доступа", show_alert=True)
         return
@@ -9885,7 +9868,7 @@ class EditPostFlow(StatesGroup):
 async def edit_post_field_pick(callback: CallbackQuery, state: FSMContext):
     _, field, post_id = callback.data.split(":")
     post_id = int(post_id)
-    row = owner_only(callback, post_id)
+    row = await owner_only(callback, post_id)
     if not row:
         await callback.answer("Нет доступа", show_alert=True)
         return
@@ -9979,7 +9962,7 @@ async def edit_post_weight_pick(callback: CallbackQuery, state: FSMContext):
 
         post_id = int(post_id_str)
 
-        row = owner_only(callback, post_id)
+        row = await owner_only(callback, post_id)
         if not row:
             await callback.message.answer("Нет доступа")
             return
@@ -10020,7 +10003,7 @@ async def editpost_back_to_fields(callback: CallbackQuery, state: FSMContext):
 
     post_id = int(parts[1])
 
-    row = owner_only(callback, post_id)
+    row = await owner_only(callback, post_id)
     if not row:
         await callback.answer("Нет доступа", show_alert=True)
         return
@@ -10041,7 +10024,7 @@ async def editpost_back_to_fields(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data.startswith("blockuser:"))
 async def block_user_callback(callback: CallbackQuery):
     target_user_id = int(callback.data.split(":", 1)[1])
-    if add_user_to_blacklist(callback.from_user.id, target_user_id):
+    if await add_user_to_blacklist(callback.from_user.id, target_user_id):
         await callback.answer("Пользователь заблокирован", show_alert=True)
     else:
         await callback.answer("Не удалось выполнить действие", show_alert=True)
@@ -10102,19 +10085,6 @@ async def main():
     dp = Dispatcher(storage=MemoryStorage())
     dp.include_router(router)
 
-    async def on_startup():
-        asyncio.create_task(expire_old_posts(bot))
-        asyncio.create_task(global_coincidence_loop(bot))
-        asyncio.create_task(dispute_timeout_loop(bot))
-        asyncio.create_task(expire_soon_posts_notify(bot))
-
-    await on_startup()
-    await bot.delete_webhook(drop_pending_updates=True)
-    await dp.start_polling(bot)
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
     async def on_startup():
         asyncio.create_task(expire_old_posts(bot))
         asyncio.create_task(global_coincidence_loop(bot))

@@ -3122,7 +3122,7 @@ async def set_verification_status(
         await conn.commit()
 
 
-async def await save_verification_passport(request_id: int, photo_file_id: str):
+async def save_verification_passport(request_id: int, photo_file_id: str):
     async with await connect_db() as conn:
         await conn.execute("""
             UPDATE verification_requests
@@ -3139,7 +3139,7 @@ async def await save_verification_passport(request_id: int, photo_file_id: str):
         await conn.commit()
 
 
-async def await save_verification_selfie(request_id: int, photo_file_id: str):
+async def save_verification_selfie(request_id: int, photo_file_id: str):
     async with await connect_db() as conn:
         await conn.execute("""
             UPDATE verification_requests
@@ -3157,7 +3157,7 @@ async def await save_verification_selfie(request_id: int, photo_file_id: str):
         await conn.commit()
 
 
-async def await clear_verification_files(request_id: int):
+async def clear_verification_files(request_id: int):
     async with await connect_db() as conn:
         await conn.execute("""
             UPDATE verification_requests
@@ -3183,7 +3183,6 @@ async def list_pending_verification_requests(limit: int = 20):
             limit
         ))
         return await cur.fetchall()
-
 
 def format_verification_status(status: str) -> str:
     mapping = {

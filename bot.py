@@ -3797,9 +3797,9 @@ def deal_section_kb(deals: List[aiosqlite.Row]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def mark_deal_failed(post_id: int, user_id: int) -> bool:
+async def mark_deal_failed(post_id: int, user_id: int) -> bool:
     async with await connect_db() as conn:
-        row = conn.execute("""
+        cur = await conn.execute("""
             SELECT id FROM deals
             WHERE post_id=?
               AND (owner_user_id=? OR requester_user_id=?)
@@ -3809,12 +3809,19 @@ def mark_deal_failed(post_id: int, user_id: int) -> bool:
             post_id, user_id, user_id,
             DEAL_CONTACTED, DEAL_OFFERED, DEAL_ACCEPTED,
             DEAL_COMPLETED_BY_OWNER, DEAL_COMPLETED_BY_REQUESTER
-        )).fetchone()
+        ))
+
+        row = await cur.fetchone()
 
         if not row:
             return False
 
-        conn.execute("UPDATE deals SET status=?, updated_at=? WHERE id=?", (DEAL_FAILED, now_ts(), row["id"]))
+        await conn.execute(
+            "UPDATE deals SET status=?, updated_at=? WHERE id=?",
+            (DEAL_FAILED, now_ts(), row["id"])
+        )
+
+        await conn.commit()
         return True
 
 
@@ -3831,12 +3838,19 @@ def contact_admin_kb(deal_id: int):
     )
 
 
-def create_bump_order(user_id: int, post_id: int, amount: int = BUMP_PRICE_AMOUNT, currency: str = BUMP_PRICE_CURRENCY) -> int:
+async def create_bump_order(
+    user_id: int,
+    post_id: int,
+    amount: int = BUMP_PRICE_AMOUNT,
+    currency: str = BUMP_PRICE_CURRENCY
+) -> int:
     async with await connect_db() as conn:
-        cur = conn.execute("""
+        cur = await conn.execute("""
             INSERT INTO bump_orders (user_id, post_id, amount, currency, status, created_at)
             VALUES (?, ?, ?, ?, 'pending', ?)
         """, (user_id, post_id, amount, currency, now_ts()))
+
+        await conn.commit()
         return int(cur.lastrowid)
 
 
@@ -3863,7 +3877,7 @@ async def publish_to_channel(bot: Bot, post_id: int):
         await conn.commit()
 
 
-async def await set_user_cargo(user_id: int, is_cargo: bool):
+async def set_user_cargo(user_id: int, is_cargo: bool):
     await db_execute("""
         UPDATE users
         SET is_cargo=?
@@ -4905,7 +4919,7 @@ async def admin_unban_handler(message: Message):
         await message.answer("Пользователь не найден.")
         return
 
-    unban_user(target_user_id)
+    await unban_user(target_user_id)
     await message.answer(f"✅ Пользователь <code>{target_user_id}</code> разбанен.")
 
 
@@ -5658,18 +5672,21 @@ async def admin_approve_post(callback: CallbackQuery, bot: Bot):
         return
 
     async with await connect_db() as conn:
-        conn.execute(
+        await conn.execute(
             "UPDATE posts SET status=?, updated_at=? WHERE id=?",
             (STATUS_ACTIVE, now_ts(), post_id)
         )
+        await conn.commit()
+
+    row = await get_post(post_id)
 
     try:
         await callback.bot.send_message(
             row["user_id"],
             f"✅ Ваше объявление ID {post_id} одобрено и опубликовано."
         )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.exception("APPROVE USER NOTIFY ERROR: %s", e)
 
     await publish_to_channel(bot, post_id)
     await notify_coincidence_users(bot, post_id)
@@ -5693,22 +5710,23 @@ async def admin_reject_post(callback: CallbackQuery):
         return
 
     async with await connect_db() as conn:
-        conn.execute(
+        await conn.execute(
             "UPDATE posts SET status=?, updated_at=? WHERE id=?",
             (STATUS_REJECTED, now_ts(), post_id)
         )
+        await conn.commit()
 
     try:
         await callback.bot.send_message(
             row["user_id"],
             f"❌ Ваше объявление ID {post_id} отклонено модератором."
         )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.exception("REJECT USER NOTIFY ERROR: %s", e)
 
     await callback.message.answer(f"❌ Объявление {post_id} отклонено.")
     await callback.answer()
-
+    
 
 @router.callback_query(F.data.startswith("admin_user_profile:"))
 async def admin_user_profile_handler(callback: CallbackQuery):
@@ -5717,7 +5735,7 @@ async def admin_user_profile_handler(callback: CallbackQuery):
         return
 
     target_user_id = int(callback.data.split(":")[1])
-    user_row = get_user_row(target_user_id)
+    user_row = await get_user_row(target_user_id)
 
     if not user_row:
         await callback.answer("Пользователь не найден", show_alert=True)
@@ -5740,7 +5758,7 @@ async def admin_toggle_ban_handler(callback: CallbackQuery):
         return
 
     target_user_id = int(callback.data.split(":")[1])
-    user_row = get_user_row(target_user_id)
+    user_row = await get_user_row(target_user_id)
     if not user_row:
         await callback.answer("Пользователь не найден", show_alert=True)
         return
@@ -5749,7 +5767,7 @@ async def admin_toggle_ban_handler(callback: CallbackQuery):
     if new_status == 1:
         await ban_user_with_cleanup(callback.bot, target_user_id)
     else:
-        unban_user(target_user_id)
+        await unban_user(target_user_id)
 
     updated_row = get_user_row(target_user_id)
 
@@ -5985,7 +6003,7 @@ async def admin_user_command_handler(message: Message):
         return
 
     target_user_id = int(parts[1].strip())
-    user_row = get_user_row(target_user_id)
+    user_row = await get_user_row(target_user_id)
     
     if not user_row:
         await message.answer("Пользователь не найден.")
@@ -7312,7 +7330,7 @@ async def bump_post(callback: CallbackQuery):
         await callback.answer("Поднимать можно только активное объявление", show_alert=True)
         return
 
-    order_id = create_bump_order(callback.from_user.id, post_id)
+    order_id = await create_bump_order(...)callback.from_user.id, post_id)
 
     await callback.message.answer(
         f"💰 Поднятие объявления стоит {BUMP_PRICE_AMOUNT} {BUMP_PRICE_CURRENCY}.\n\n"

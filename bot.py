@@ -2446,7 +2446,7 @@ def popular_routes_kb(rows: List[aiosqlite.Row]):
     return InlineKeyboardMarkup(inline_keyboard=buttons or [[InlineKeyboardButton(text="Пока пусто", callback_data="noop")]])
 
 
-def deal_open_kb(deal: aiosqlite.Row, user_id: int) -> InlineKeyboardMarkup:
+async def deal_open_kb(deal: aiosqlite.Row, user_id: int) -> InlineKeyboardMarkup:
     rows = []
 
     viewer_is_owner = user_id == deal["owner_user_id"]
@@ -7288,7 +7288,7 @@ async def deal_confirm_handler(callback: CallbackQuery):
             fresh_deal = await conn.execute("SELECT * FROM deals WHERE id=?", (deal_id,)).fetchone()
             try:
                 await callback.message.edit_reply_markup(
-                    reply_markup=deal_open_kb(fresh_deal, user_id)
+                    reply_markup= await deal_open_kb(fresh_deal, user_id)
                 )
             except Exception as e:
                 logger.exception("DEAL ALREADY CONFIRMED OWNER MARKUP ERROR: %s", e)
@@ -7299,7 +7299,7 @@ async def deal_confirm_handler(callback: CallbackQuery):
             fresh_deal = await conn.execute("SELECT * FROM deals WHERE id=?", (deal_id,)).fetchone()
             try:
                 await callback.message.edit_reply_markup(
-                    reply_markup=deal_open_kb(fresh_deal, user_id)
+                    reply_markup= await deal_open_kb(fresh_deal, user_id)
                 )
             except Exception as e:
                 logger.exception("DEAL ALREADY CONFIRMED REQUESTER MARKUP ERROR: %s", e)
@@ -7346,7 +7346,7 @@ async def deal_confirm_handler(callback: CallbackQuery):
     # СРАЗУ обновляем кнопки текущего сообщения
     try:
         await callback.message.edit_reply_markup(
-            reply_markup=deal_open_kb(fresh_deal, callback.from_user.id)
+            reply_markup= await deal_open_kb(fresh_deal, callback.from_user.id)
         )
     except Exception as e:
         logger.exception("DEAL CONFIRM EDIT MARKUP ERROR: %s", e)
@@ -7371,7 +7371,7 @@ async def deal_confirm_handler(callback: CallbackQuery):
 
         await callback.message.edit_text(
             text,
-            reply_markup=deal_open_kb(fresh_deal, callback.from_user.id)
+            reply_markup= await deal_open_kb(fresh_deal, callback.from_user.id)
         )
     except Exception as e:
         logger.exception("DEAL CONFIRM EDIT TEXT ERROR: %s", e)
@@ -7386,7 +7386,7 @@ async def deal_confirm_handler(callback: CallbackQuery):
             await callback.bot.send_message(
                 other_user_id,
                 "✅ Сделка завершена обеими сторонами.\nТеперь можно оставить отзыв.",
-                reply_markup=deal_open_kb(fresh_deal, other_user_id)
+                reply_markup= await deal_open_kb(fresh_deal, other_user_id)
             )
         else:
             await callback.bot.send_message(
@@ -9604,7 +9604,7 @@ async def dispute_resolve_handler(callback: CallbackQuery):
         "✅ <b>Спор решен</b>\n\n"
         "Сделка завершена по соглашению сторон.\n"
         "Теперь вы можете оставить отзыв о второй стороне.",
-        reply_markup=deal_open_kb(completed_deal, callback.from_user.id)
+        reply_markup= await deal_open_kb(completed_deal, callback.from_user.id)
     )
 
     try:
@@ -9613,7 +9613,7 @@ async def dispute_resolve_handler(callback: CallbackQuery):
             "✅ <b>Спор по сделке решен</b>\n\n"
             "Сделка завершена по соглашению сторон.\n"
             "Теперь вы можете оставить отзыв о второй стороне.",
-            reply_markup=deal_open_kb(completed_deal, dispute["against_user_id"])
+            reply_markup= await deal_open_kb(completed_deal, dispute["against_user_id"])
         )
     except Exception as e:
         logger.exception("DISPUTE RESOLVE NOTIFY ERROR: %s", e)
@@ -9740,7 +9740,7 @@ async def open_my_deal(callback: CallbackQuery):
             text += "\n\n" + dispute_text(dispute)
             kb = dispute_actions_kb(dispute, callback.from_user.id)
         else:
-            kb = deal_open_kb(deal, callback.from_user.id)
+            kb = await deal_open_kb(deal, callback.from_user.id)
 
         await callback.message.answer(text, reply_markup=kb)
         await callback.answer()

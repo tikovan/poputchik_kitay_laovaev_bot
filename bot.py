@@ -4662,7 +4662,7 @@ def fmt_ts(ts: int | None) -> str:
         return str(ts)
 
 
-def render_user_admin_card(user_row) -> str:
+async def render_user_admin_card(user_row) -> str:
     if not user_row:
         return "Пользователь не найден."
 
@@ -5835,12 +5835,15 @@ async def admin_approve_post(callback: CallbackQuery, bot: Bot):
         await callback.answer("Объявление не найдено", show_alert=True)
         return
 
-    async with await connect_db() as conn:
+    conn = await connect_db()
+    try:
         await conn.execute(
             "UPDATE posts SET status=?, updated_at=? WHERE id=?",
             (STATUS_ACTIVE, now_ts(), post_id)
         )
         await conn.commit()
+    finally:
+        await conn.close()
 
     row = await get_post(post_id)
 
@@ -5873,12 +5876,15 @@ async def admin_reject_post(callback: CallbackQuery):
         await callback.answer("Объявление не найдено", show_alert=True)
         return
 
-    async with await connect_db() as conn:
+    conn = await connect_db()
+    try:
         await conn.execute(
             "UPDATE posts SET status=?, updated_at=? WHERE id=?",
             (STATUS_REJECTED, now_ts(), post_id)
         )
         await conn.commit()
+    finally:
+        await conn.close()
 
     try:
         await callback.bot.send_message(
@@ -6009,7 +6015,7 @@ CARGO_LEAD_CONTACT_LIMIT = 3
 async def cargo_get_contact(callback: CallbackQuery):
     user_id = callback.from_user.id
 
-    if not await is_admin(user_id) and not await is_cargo_user(user_id):
+    if not is_admin(user_id) and not await is_cargo_user(user_id):
         await callback.answer("Эта функция доступна только карго-партнерам.", show_alert=True)
         return
 
@@ -6020,20 +6026,23 @@ async def cargo_get_contact(callback: CallbackQuery):
         await callback.answer("Заявка не найдена.", show_alert=True)
         return
 
-    async with await connect_db() as conn:
-        already_opened = await conn.execute("""
+    conn = await connect_db()
+    try:
+        cur = await conn.execute("""
             SELECT 1
             FROM cargo_lead_access
             WHERE lead_id=? AND cargo_user_id=?
             LIMIT 1
-        """, (lead_id, user_id)).fetchone()
+        """, (lead_id, user_id))
+        already_opened = await cur.fetchone()
 
         if not already_opened and not is_admin(user_id):
-            row = await conn.execute("""
+            cur = await conn.execute("""
                 SELECT COUNT(*) AS c
                 FROM cargo_lead_access
                 WHERE lead_id=?
-            """, (lead_id,)).fetchone()
+            """, (lead_id,))
+            row = await cur.fetchone()
 
             opened_count = int(row["c"] or 0)
 
@@ -6050,6 +6059,11 @@ async def cargo_get_contact(callback: CallbackQuery):
             )
             VALUES (?, ?, ?)
         """, (lead_id, user_id, now_ts()))
+
+        await conn.commit()
+
+    finally:
+        await conn.close()
 
     await callback.message.answer(cargo_lead_contact_text(lead))
     await callback.answer("Контакт открыт")
@@ -6596,12 +6610,16 @@ async def forward_hold_user_messages_to_admin(message: Message, state: FSMContex
     if is_admin(user_id):
         return
 
-    async with await connect_db() as conn:
-        row = await conn.execute("""
+    conn = await connect_db()
+    try:
+        cur = await conn.execute("""
             SELECT review_status, username, full_name
             FROM users
             WHERE user_id=?
-        """, (user_id,)).fetchone()
+        """, (user_id,))
+        row = await cur.fetchone()
+    finally:
+        await conn.close()
 
     if not row or row["review_status"] != "hold":
         return
@@ -6728,13 +6746,17 @@ async def back_router(callback: CallbackQuery):
     action = callback.data.split(":")[1]
 
     if action == "my_posts":
-        async with await connect_db() as conn:
-            posts = await conn.execute("""
+        conn = await connect_db()
+        try:
+            cur = await conn.execute("""
                 SELECT * FROM posts
                 WHERE user_id=? AND status != 'deleted'
                 ORDER BY created_at DESC
                 LIMIT 30
-            """, (callback.from_user.id,)).fetchall()
+            """, (callback.from_user.id,))
+            posts = await cur.fetchall()
+        finally:
+            await conn.close()
 
         if not posts:
             await callback.message.answer("У вас пока нет объявлений.")
@@ -7203,7 +7225,8 @@ async def review_text_input(message: Message, state: FSMContext):
     review_text = None if text == "-" else text[:500]
 
     try:
-        async with await connect_db() as conn:
+        conn = await connect_db()
+        try:
             await conn.execute("""
                 INSERT INTO reviews (
                     reviewer_user_id, reviewed_user_id, post_id, rating, text, created_at
@@ -7216,6 +7239,10 @@ async def review_text_input(message: Message, state: FSMContext):
                 review_text,
                 now_ts()
             ))
+            await conn.commit()
+        finally:
+            await conn.close()
+
         invalidate_user_profile_cache(reviewed_user_id)
 
         await message.answer("✅ Отзыв сохранен.", reply_markup=main_menu(message.from_user.id))
@@ -7224,7 +7251,7 @@ async def review_text_input(message: Message, state: FSMContext):
         await message.answer("Вы уже оставили отзыв по этой сделке.", reply_markup=main_menu(message.from_user.id))
 
     await state.clear()
-
+    
 
 @router.callback_query(F.data.startswith("mypost:"))
 async def open_my_post(callback: CallbackQuery):
@@ -7261,14 +7288,17 @@ async def open_my_post(callback: CallbackQuery):
 async def deal_confirm_handler(callback: CallbackQuery):
     deal_id = int(callback.data.split(":")[1])
 
-    async with await connect_db() as conn:
-        deal = await conn.execute("SELECT * FROM deals WHERE id=?", (deal_id,)).fetchone()
+    conn = await connect_db()
+    try:
+        cur = await conn.execute("SELECT * FROM deals WHERE id=?", (deal_id,))
+        deal = await cur.fetchone()
 
         if not deal:
             await callback.answer("Сделка не найдена", show_alert=True)
             return
 
         user_id = callback.from_user.id
+
         if user_id not in (deal["owner_user_id"], deal["requester_user_id"]):
             await callback.answer("Нет доступа", show_alert=True)
             return
@@ -7283,30 +7313,30 @@ async def deal_confirm_handler(callback: CallbackQuery):
         owner_confirmed = int(deal["owner_confirmed"] or 0)
         requester_confirmed = int(deal["requester_confirmed"] or 0)
 
-        # если этот пользователь уже подтвердил — просто обновляем кнопки и выходим
+        # уже подтверждено
         if user_id == deal["owner_user_id"] and owner_confirmed == 1:
-            fresh_deal = await conn.execute("SELECT * FROM deals WHERE id=?", (deal_id,)).fetchone()
-            try:
-                await callback.message.edit_reply_markup(
-                    reply_markup= await deal_open_kb(fresh_deal, user_id)
-                )
-            except Exception as e:
-                logger.exception("DEAL ALREADY CONFIRMED OWNER MARKUP ERROR: %s", e)
+            cur = await conn.execute("SELECT * FROM deals WHERE id=?", (deal_id,))
+            fresh_deal = await cur.fetchone()
+
+            await callback.message.edit_reply_markup(
+                reply_markup=await deal_open_kb(fresh_deal, user_id)
+            )
+
             await callback.answer("Вы уже подтвердили завершение")
             return
 
         if user_id == deal["requester_user_id"] and requester_confirmed == 1:
-            fresh_deal = await conn.execute("SELECT * FROM deals WHERE id=?", (deal_id,)).fetchone()
-            try:
-                await callback.message.edit_reply_markup(
-                    reply_markup= await deal_open_kb(fresh_deal, user_id)
-                )
-            except Exception as e:
-                logger.exception("DEAL ALREADY CONFIRMED REQUESTER MARKUP ERROR: %s", e)
+            cur = await conn.execute("SELECT * FROM deals WHERE id=?", (deal_id,))
+            fresh_deal = await cur.fetchone()
+
+            await callback.message.edit_reply_markup(
+                reply_markup=await deal_open_kb(fresh_deal, user_id)
+            )
+
             await callback.answer("Вы уже подтвердили завершение")
             return
 
-        # ставим подтверждение текущего пользователя
+        # ставим подтверждение
         if user_id == deal["owner_user_id"]:
             owner_confirmed = 1
         else:
@@ -7341,19 +7371,26 @@ async def deal_confirm_handler(callback: CallbackQuery):
             deal_id
         ))
 
-        fresh_deal = await conn.execute("SELECT * FROM deals WHERE id=?", (deal_id,)).fetchone()
+        await conn.commit()
 
-    # СРАЗУ обновляем кнопки текущего сообщения
+        cur = await conn.execute("SELECT * FROM deals WHERE id=?", (deal_id,))
+        fresh_deal = await cur.fetchone()
+
+    finally:
+        await conn.close()
+
+    # обновляем кнопки
     try:
         await callback.message.edit_reply_markup(
-            reply_markup= await deal_open_kb(fresh_deal, callback.from_user.id)
+            reply_markup=await deal_open_kb(fresh_deal, callback.from_user.id)
         )
     except Exception as e:
         logger.exception("DEAL CONFIRM EDIT MARKUP ERROR: %s", e)
 
-    # При желании можно обновить и текст
+    # обновляем текст
     try:
         route = await deal_title(fresh_deal)
+
         role = "владелец объявления" if callback.from_user.id == fresh_deal["owner_user_id"] else "откликнувшийся пользователь"
 
         text = (
@@ -7371,13 +7408,18 @@ async def deal_confirm_handler(callback: CallbackQuery):
 
         await callback.message.edit_text(
             text,
-            reply_markup= await deal_open_kb(fresh_deal, callback.from_user.id)
+            reply_markup=await deal_open_kb(fresh_deal, callback.from_user.id)
         )
+
     except Exception as e:
         logger.exception("DEAL CONFIRM EDIT TEXT ERROR: %s", e)
 
     # уведомление второй стороне
-    other_user_id = fresh_deal["requester_user_id"] if callback.from_user.id == fresh_deal["owner_user_id"] else fresh_deal["owner_user_id"]
+    other_user_id = (
+        fresh_deal["requester_user_id"]
+        if callback.from_user.id == fresh_deal["owner_user_id"]
+        else fresh_deal["owner_user_id"]
+    )
 
     try:
         both_confirmed = int(fresh_deal["owner_confirmed"] or 0) == 1 and int(fresh_deal["requester_confirmed"] or 0) == 1
@@ -7386,7 +7428,7 @@ async def deal_confirm_handler(callback: CallbackQuery):
             await callback.bot.send_message(
                 other_user_id,
                 "✅ Сделка завершена обеими сторонами.\nТеперь можно оставить отзыв.",
-                reply_markup= await deal_open_kb(fresh_deal, other_user_id)
+                reply_markup=await deal_open_kb(fresh_deal, other_user_id)
             )
         else:
             await callback.bot.send_message(
@@ -7406,24 +7448,28 @@ async def deal_confirm_handler(callback: CallbackQuery):
             )
     except Exception as e:
         logger.exception("DEAL CONFIRM NOTIFY ERROR: %s", e)
-    
+        
 
 @router.callback_query(F.data.startswith("delete:"))
 async def delete_post(callback: CallbackQuery):
     post_id = int(callback.data.split(":")[1])
-    row = await owner_only(callback, post_id)  # ← add await (owner_only is now async)
+
+    row = await owner_only(callback, post_id)
     if not row:
         await callback.answer("Нет доступа", show_alert=True)
         return
 
     await remove_post_from_channel(callback.bot, row)
 
-    async with await connect_db() as conn:           # ← async pattern
-        await conn.execute(                          # ← add await
+    conn = await connect_db()
+    try:
+        await conn.execute(
             "UPDATE posts SET status=?, updated_at=? WHERE id=?",
             (STATUS_DELETED, now_ts(), post_id)
         )
-        await conn.commit()                            # ← explicit commit
+        await conn.commit()
+    finally:
+        await conn.close()
 
     await callback.message.answer("🗑 Объявление удалено.")
     await callback.answer()
@@ -7432,6 +7478,7 @@ async def delete_post(callback: CallbackQuery):
 @router.callback_query(F.data.startswith("deactivate:"))
 async def deactivate_post(callback: CallbackQuery):
     post_id = int(callback.data.split(":")[1])
+
     row = await owner_only(callback, post_id)
     if not row:
         await callback.answer("Нет доступа", show_alert=True)
@@ -7439,20 +7486,24 @@ async def deactivate_post(callback: CallbackQuery):
 
     await remove_post_from_channel(callback.bot, row)
 
-    async with await connect_db() as conn:
+    conn = await connect_db()
+    try:
         await conn.execute(
             "UPDATE posts SET status=?, updated_at=? WHERE id=?",
             (STATUS_INACTIVE, now_ts(), post_id)
         )
         await conn.commit()
+    finally:
+        await conn.close()
 
     await callback.message.answer(f"Объявление {post_id} деактивировано.")
     await callback.answer()
-
+    
 
 @router.callback_query(F.data.startswith("activate:"))
 async def activate_post(callback: CallbackQuery, bot: Bot):
     post_id = int(callback.data.split(":")[1])
+
     row = await owner_only(callback, post_id)
     if not row:
         await callback.answer("Нет доступа", show_alert=True)
@@ -7465,15 +7516,20 @@ async def activate_post(callback: CallbackQuery, bot: Bot):
     new_status = STATUS_PENDING if MODERATION_ENABLED else STATUS_ACTIVE
     expires_at = calculate_post_expires_at(now_ts(), row["travel_date"], POST_TTL_DAYS)
 
-    async with await connect_db() as conn:
+    conn = await connect_db()
+    try:
         await conn.execute(
             "UPDATE posts SET status=?, updated_at=?, expires_at=? WHERE id=?",
             (new_status, now_ts(), expires_at, post_id)
         )
         await conn.commit()
+    finally:
+        await conn.close()
 
     await callback.message.answer(
-        f"Объявление {post_id} " + ("отправлено на повторную модерацию." if MODERATION_ENABLED else "активировано.")
+        f"Объявление {post_id} " + (
+            "отправлено на повторную модерацию." if MODERATION_ENABLED else "активировано."
+        )
     )
 
     if not MODERATION_ENABLED:
@@ -7538,9 +7594,11 @@ async def admin_bump_paid(message: Message):
 
     order_id = int(parts[1])
 
-    async with await connect_db() as conn:
+    conn = await connect_db()
+    try:
         cur = await conn.execute("SELECT * FROM bump_orders WHERE id=?", (order_id,))
         order = await cur.fetchone()
+
         if not order:
             await message.answer("Заказ не найден.")
             return
@@ -7563,14 +7621,17 @@ async def admin_bump_paid(message: Message):
 
         await conn.commit()
 
+    finally:
+        await conn.close()
+
     try:
         await message.bot.send_message(
             order["user_id"],
             f"✅ Оплата по заказу {order_id} подтверждена.\n"
             "Ваше объявление поднято выше в поиске."
         )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.exception("BUMP PAID USER NOTIFY ERROR: %s", e)
 
     await message.answer("Объявление поднято.")
 
@@ -7784,12 +7845,13 @@ async def complaint_reason_input(message: Message, state: FSMContext):
     data = await state.get_data()
     post_id = data["post_id"]
 
-    async with await connect_db() as conn:
-        # защита от повторной жалобы от одного и того же пользователя
-        existing = await conn.execute(
+    conn = await connect_db()
+    try:
+        cur = await conn.execute(
             "SELECT 1 FROM complaints WHERE post_id=? AND from_user_id=? LIMIT 1",
             (post_id, message.from_user.id)
-        ).fetchone()
+        )
+        existing = await cur.fetchone()
 
         if existing:
             await state.clear()
@@ -7804,17 +7866,20 @@ async def complaint_reason_input(message: Message, state: FSMContext):
             (post_id, message.from_user.id, reason[:1000], now_ts())
         )
 
-        complaints_count = await conn.execute(
+        cur = await conn.execute(
             "SELECT COUNT(*) AS c FROM complaints WHERE post_id=?",
             (post_id,)
-        ).fetchone()["c"]
+        )
+        count_row = await cur.fetchone()
+        complaints_count = int(count_row["c"] or 0)
 
-        row = await conn.execute("""
+        cur = await conn.execute("""
             SELECT p.*, u.username, u.full_name
             FROM posts p
             LEFT JOIN users u ON u.user_id = p.user_id
             WHERE p.id=?
-        """, (post_id,)).fetchone()
+        """, (post_id,))
+        row = await cur.fetchone()
 
         auto_hidden = False
         if row and row["status"] == STATUS_ACTIVE and complaints_count >= AUTO_HIDE_COMPLAINTS_THRESHOLD:
@@ -7823,6 +7888,11 @@ async def complaint_reason_input(message: Message, state: FSMContext):
                 (STATUS_INACTIVE, now_ts(), post_id)
             )
             auto_hidden = True
+
+        await conn.commit()
+
+    finally:
+        await conn.close()
 
     await state.clear()
 
@@ -8122,23 +8192,27 @@ async def admin_hide_post_direct(callback: CallbackQuery):
 
     await remove_post_from_channel(callback.bot, row)
 
-    async with await connect_db() as conn:
+    conn = await connect_db()
+    try:
         await conn.execute(
             "UPDATE posts SET status=?, updated_at=? WHERE id=?",
             (STATUS_INACTIVE, now_ts(), post_id)
         )
+        await conn.commit()
+    finally:
+        await conn.close()
 
     try:
         await callback.bot.send_message(
             row["user_id"],
             f"⚠️ Ваше объявление ID {post_id} скрыто администратором."
         )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.exception("ADMIN HIDE POST USER NOTIFY ERROR: %s", e)
 
     await callback.message.answer(f"❌ Объявление {post_id} скрыто.")
     await callback.answer()
-
+    
 
 @router.callback_query(F.data.startswith("admin_delete_post:"))
 async def admin_delete_post_direct(callback: CallbackQuery):
@@ -8155,23 +8229,27 @@ async def admin_delete_post_direct(callback: CallbackQuery):
 
     await remove_post_from_channel(callback.bot, row)
 
-    async with await connect_db() as conn:
+    conn = await connect_db()
+    try:
         await conn.execute(
             "UPDATE posts SET status=?, updated_at=? WHERE id=?",
             (STATUS_DELETED, now_ts(), post_id)
         )
+        await conn.commit()
+    finally:
+        await conn.close()
 
     try:
         await callback.bot.send_message(
             row["user_id"],
             f"🗑 Ваше объявление ID {post_id} удалено администратором."
         )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.exception("ADMIN DELETE POST USER NOTIFY ERROR: %s", e)
 
     await callback.message.answer(f"🗑 Объявление {post_id} удалено.")
     await callback.answer()
-
+    
 
 @router.callback_query(F.data.startswith("admin_ban_user:"))
 async def admin_ban_user_direct(callback: CallbackQuery):
@@ -8504,19 +8582,23 @@ async def admin_complaint_hide_post(callback: CallbackQuery):
 
         await remove_post_from_channel(callback.bot, row)
 
-        async with await connect_db() as conn:
+        conn = await connect_db()
+        try:
             await conn.execute(
                 "UPDATE posts SET status=?, updated_at=? WHERE id=?",
                 (STATUS_INACTIVE, now_ts(), post_id)
             )
+            await conn.commit()
+        finally:
+            await conn.close()
 
         try:
             await callback.bot.send_message(
                 row["user_id"],
                 f"⚠️ Ваше объявление ID {post_id} скрыто администратором."
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.exception("ADMIN COMPLAINT HIDE USER NOTIFY ERROR: %s", e)
 
         await callback.message.answer(f"❌ Объявление {post_id} скрыто.")
         await callback.answer()
@@ -8566,8 +8648,15 @@ async def admin_complaint_done(callback: CallbackQuery):
 
         complaint_id = int(callback.data.split(":")[1])
 
-        async with await connect_db() as conn:
-            await conn.execute("DELETE FROM complaints WHERE id=?", (complaint_id,))
+        conn = await connect_db()
+        try:
+            await conn.execute(
+                "DELETE FROM complaints WHERE id=?",
+                (complaint_id,)
+            )
+            await conn.commit()
+        finally:
+            await conn.close()
 
         await callback.message.answer(f"✅ Жалоба #{complaint_id} обработана.")
         await callback.answer()
@@ -8613,8 +8702,14 @@ async def admin_bump_confirm_btn(callback: CallbackQuery):
 
     order_id = int(callback.data.split(":")[1])
 
-    async with await connect_db() as conn:
-        order = await conn.execute("SELECT * FROM bump_orders WHERE id=?", (order_id,)).fetchone()
+    conn = await connect_db()
+    try:
+        cur = await conn.execute(
+            "SELECT * FROM bump_orders WHERE id=?",
+            (order_id,)
+        )
+        order = await cur.fetchone()
+
         if not order:
             await callback.answer("Заказ не найден", show_alert=True)
             return
@@ -8627,18 +8722,24 @@ async def admin_bump_confirm_btn(callback: CallbackQuery):
             "UPDATE bump_orders SET status='paid', paid_at=? WHERE id=?",
             (now_ts(), order_id)
         )
+
         await conn.execute(
             "UPDATE posts SET bumped_at=?, updated_at=? WHERE id=?",
             (now_ts(), now_ts(), order["post_id"])
         )
+
+        await conn.commit()
+
+    finally:
+        await conn.close()
 
     try:
         await callback.bot.send_message(
             order["user_id"],
             f"✅ Оплата по заказу {order_id} подтверждена.\nВаше объявление поднято выше."
         )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.exception("BUMP CONFIRM USER NOTIFY ERROR: %s", e)
 
     await callback.message.answer(f"✅ Заказ {order_id} подтвержден.")
     await callback.answer()
@@ -8652,8 +8753,14 @@ async def admin_bump_reject_btn(callback: CallbackQuery):
 
     order_id = int(callback.data.split(":")[1])
 
-    async with await connect_db() as conn:
-        order = await conn.execute("SELECT * FROM bump_orders WHERE id=?", (order_id,)).fetchone()
+    conn = await connect_db()
+    try:
+        cur = await conn.execute(
+            "SELECT * FROM bump_orders WHERE id=?",
+            (order_id,)
+        )
+        order = await cur.fetchone()
+
         if not order:
             await callback.answer("Заказ не найден", show_alert=True)
             return
@@ -8662,14 +8769,18 @@ async def admin_bump_reject_btn(callback: CallbackQuery):
             "UPDATE bump_orders SET status='rejected' WHERE id=?",
             (order_id,)
         )
+        await conn.commit()
+
+    finally:
+        await conn.close()
 
     try:
         await callback.bot.send_message(
             order["user_id"],
             f"❌ Заявка на поднятие {order_id} отклонена."
         )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.exception("BUMP REJECT USER NOTIFY ERROR: %s", e)
 
     await callback.message.answer(f"❌ Заказ {order_id} отклонен.")
     await callback.answer()
@@ -8934,22 +9045,20 @@ async def relay_message(message: Message, state: FSMContext):
         await message.answer("Сообщение не должно быть пустым.")
         return
 
-    # Rate limiting
-    can_send, error_msg = can_send_chat_message(message.from_user.id)
+    can_send, error_msg = await can_send_chat_message(message.from_user.id)
     if not can_send:
         await message.answer(f"⏳ {error_msg}")
         return
-    
-    # Валидация длины
+
     if len(text) > 2000:
         await message.answer("Сообщение слишком длинное (макс. 2000 символов).")
         return
-        
+
     if target_user_id == message.from_user.id:
         await message.answer("Нельзя отправить сообщение самому себе.")
         return
 
-    if is_user_blocked(target_user_id, message.from_user.id) or is_user_blocked(message.from_user.id, target_user_id):
+    if await is_user_blocked(target_user_id, message.from_user.id) or await is_user_blocked(message.from_user.id, target_user_id):
         await message.answer("Диалог недоступен.")
         return
 
@@ -8975,13 +9084,16 @@ async def relay_message(message: Message, state: FSMContext):
             reply_markup=reply_kb
         )
 
-        async with await connect_db() as conn:
+        conn = await connect_db()
+        try:
             await conn.execute("""
                 INSERT INTO dialogs (post_id, owner_user_id, requester_user_id, created_at)
                 VALUES (?, ?, ?, ?)
             """, (post_id, target_user_id, message.from_user.id, now_ts()))
+            await conn.commit()
+        finally:
+            await conn.close()
 
-        # чат сохраняем ОБОИМ сторонам
         await set_active_chat(
             user_id=message.from_user.id,
             target_user_id=target_user_id,
@@ -9197,7 +9309,7 @@ async def deal_request_accept_handler(callback: CallbackQuery):
             await callback.answer("Нет доступа", show_alert=True)
             return
 
-        row = get_post(req["post_id"])
+        row = await get_post(req["post_id"])  # FIX
         if not row:
             await callback.answer("Объявление не найдено", show_alert=True)
             return
@@ -9207,12 +9319,12 @@ async def deal_request_accept_handler(callback: CallbackQuery):
             await callback.answer("По этому объявлению уже есть активная сделка", show_alert=True)
             return
 
-        async with await connect_db() as conn:
-            req_db = await conn.execute("""
-                SELECT *
-                FROM deal_requests
-                WHERE id=?
-            """, (request_id,)).fetchone()
+        conn = await connect_db()
+        try:
+            cur = await conn.execute("""
+                SELECT * FROM deal_requests WHERE id=?
+            """, (request_id,))
+            req_db = await cur.fetchone()
 
             if not req_db:
                 await callback.answer("Заявка не найдена", show_alert=True)
@@ -9222,12 +9334,11 @@ async def deal_request_accept_handler(callback: CallbackQuery):
                 await callback.answer("Эта заявка уже обработана", show_alert=True)
                 return
 
-            existing_deal_db = await conn.execute("""
+            cur = await conn.execute("""
                 SELECT id
                 FROM deals
                 WHERE post_id=?
                   AND status IN (?, ?, ?, ?, ?)
-                ORDER BY id DESC
                 LIMIT 1
             """, (
                 req["post_id"],
@@ -9236,7 +9347,8 @@ async def deal_request_accept_handler(callback: CallbackQuery):
                 DEAL_COMPLETED_BY_REQUESTER,
                 DEAL_DISPUTE_OPEN,
                 DEAL_DISPUTE_WAITING
-            )).fetchone()
+            ))
+            existing_deal_db = await cur.fetchone()
 
             if existing_deal_db:
                 await callback.answer("По этому объявлению уже есть активная сделка", show_alert=True)
@@ -9283,6 +9395,11 @@ async def deal_request_accept_handler(callback: CallbackQuery):
                 DEAL_REQUEST_PENDING
             ))
 
+            await conn.commit()
+
+        finally:
+            await conn.close()
+
         await remove_post_from_channel(callback.bot, row)
 
         route = post_route_title(row)
@@ -9296,24 +9413,16 @@ async def deal_request_accept_handler(callback: CallbackQuery):
             await callback.bot.send_message(
                 req["requester_user_id"],
                 f"✅ Ваша заявка принята.\n\n"
-                f"Вы успешно открыли сделку по объявлению <b>{html.escape(route)}</b> (ID {req['post_id']}).\n"
-                f"Объявление перенесено в раздел <b>🤝 МОИ СДЕЛКИ</b> — перейдите туда для управления сделкой.\n\n"
-                f"ID сделки: <b>{deal_id}</b>",
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="🤝 Мои сделки", callback_data="back:my_deals")]
-                ])
+                f"Вы успешно открыли сделку по объявлению <b>{html.escape(route)}</b> (ID {req['post_id']}).\n\n"
+                f"ID сделки: <b>{deal_id}</b>"
             )
         except Exception as e:
-            logger.exception("DEAL ACCEPT NOTIFY REQUESTER ERROR: %s", e)
+            logger.exception("DEAL ACCEPT NOTIFY ERROR: %s", e)
 
         await callback.message.answer(
             f"✅ Сделка открыта.\n\n"
-            f"Ваше объявление <b>{html.escape(route)}</b> (ID {req['post_id']}) перенесено из канала "
-            f"в раздел <b>🤝 МОИ СДЕЛКИ</b> — перейдите туда для управления сделкой.\n\n"
-            f"ID сделки: <b>{deal_id}</b>",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🤝 Мои сделки", callback_data="back:my_deals")]
-            ])
+            f"<b>{html.escape(route)}</b>\n"
+            f"ID сделки: <b>{deal_id}</b>"
         )
 
         await callback.answer("Сделка открыта")
@@ -9332,12 +9441,16 @@ async def deal_request_decline_handler(callback: CallbackQuery):
         await callback.answer("Нет доступа", show_alert=True)
         return
 
-    async with await connect_db() as conn:
+    conn = await connect_db()
+    try:
         await conn.execute("""
             UPDATE deal_requests
             SET status=?, updated_at=?
             WHERE id=?
         """, (DEAL_REQUEST_DECLINED, now_ts(), request_id))
+        await conn.commit()
+    finally:
+        await conn.close()
 
     try:
         await callback.bot.send_message(
@@ -9345,8 +9458,8 @@ async def deal_request_decline_handler(callback: CallbackQuery):
             f"❌ Ваша заявка на сделку по объявлению ID {req['post_id']} отклонена.\n"
             "Само объявление остается активным."
         )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.exception("DEAL REQUEST DECLINE NOTIFY ERROR: %s", e)
 
     await callback.message.answer(
         "❌ Заявка отклонена.\n"
@@ -9364,12 +9477,16 @@ async def deal_accept_handler(callback: CallbackQuery):
         await callback.answer("Нет доступа", show_alert=True)
         return
 
-    async with await connect_db() as conn:
+    conn = await connect_db()
+    try:
         await conn.execute("""
             UPDATE deals
             SET status=?, updated_at=?
             WHERE id=?
         """, (DEAL_ACCEPTED, now_ts(), deal_id))
+        await conn.commit()
+    finally:
+        await conn.close()
 
     try:
         await callback.bot.send_message(
@@ -9379,8 +9496,8 @@ async def deal_accept_handler(callback: CallbackQuery):
             "Там вы сможете закрыть сделку и оставить отзыв.",
             reply_markup=go_my_deals_kb()
         )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.exception("DEAL ACCEPT NOTIFY ERROR: %s", e)
 
     await callback.message.answer(
         "✅ <b>Сделка принята.</b>\n\n"
@@ -9397,6 +9514,7 @@ async def deal_accept_handler(callback: CallbackQuery):
     )
 
     await callback.answer()
+    
     
 @router.callback_query(F.data.startswith("deal_dispute_open:"))
 async def deal_dispute_open_handler(callback: CallbackQuery, state: FSMContext):
@@ -9470,11 +9588,15 @@ async def dispute_reason_input(message: Message, state: FSMContext):
         reason_text=reason_text[:1500]
     )
 
-    async with await connect_db() as conn:
+    conn = await connect_db()
+    try:
         await conn.execute(
             "UPDATE deals SET status=?, updated_at=? WHERE id=?",
             (DEAL_DISPUTE_WAITING, now_ts(), deal_id)
         )
+        await conn.commit()
+    finally:
+        await conn.close()
 
     dispute = await get_dispute(dispute_id)
 
@@ -9494,6 +9616,7 @@ async def dispute_reason_input(message: Message, state: FSMContext):
         f"{dispute_text(dispute)}",
         reply_markup=dispute_actions_kb(dispute, message.from_user.id)
     )
+
     await state.clear()
 
 
@@ -9543,11 +9666,15 @@ async def dispute_response_input(message: Message, state: FSMContext):
 
     await save_dispute_response(dispute_id, response_text[:1500])
 
-    async with await connect_db() as conn:
+    conn = await connect_db()
+    try:
         await conn.execute(
             "UPDATE deals SET status=?, updated_at=? WHERE id=?",
             (DEAL_DISPUTE_OPEN, now_ts(), dispute["deal_id"])
         )
+        await conn.commit()
+    finally:
+        await conn.close()
 
     updated_dispute = await get_dispute(dispute_id)
 
@@ -9587,7 +9714,8 @@ async def dispute_resolve_handler(callback: CallbackQuery):
         await callback.answer("Сделка не найдена", show_alert=True)
         return
 
-    async with await connect_db() as conn:
+    conn = await connect_db()
+    try:
         await conn.execute(
             "UPDATE disputes SET status=?, updated_at=? WHERE id=?",
             (DISPUTE_RESOLVED, now_ts(), dispute_id)
@@ -9596,6 +9724,9 @@ async def dispute_resolve_handler(callback: CallbackQuery):
             "UPDATE deals SET status=?, owner_confirmed=1, requester_confirmed=1, updated_at=?, completed_at=? WHERE id=?",
             (DEAL_COMPLETED, now_ts(), now_ts(), dispute["deal_id"])
         )
+        await conn.commit()
+    finally:
+        await conn.close()
 
     completed_deal = await get_deal(dispute["deal_id"])
     updated_dispute = await get_dispute(dispute_id)
@@ -9604,7 +9735,7 @@ async def dispute_resolve_handler(callback: CallbackQuery):
         "✅ <b>Спор решен</b>\n\n"
         "Сделка завершена по соглашению сторон.\n"
         "Теперь вы можете оставить отзыв о второй стороне.",
-        reply_markup= await deal_open_kb(completed_deal, callback.from_user.id)
+        reply_markup=await deal_open_kb(completed_deal, callback.from_user.id)
     )
 
     try:
@@ -9613,7 +9744,7 @@ async def dispute_resolve_handler(callback: CallbackQuery):
             "✅ <b>Спор по сделке решен</b>\n\n"
             "Сделка завершена по соглашению сторон.\n"
             "Теперь вы можете оставить отзыв о второй стороне.",
-            reply_markup= await deal_open_kb(completed_deal, dispute["against_user_id"])
+            reply_markup=await deal_open_kb(completed_deal, dispute["against_user_id"])
         )
     except Exception as e:
         logger.exception("DISPUTE RESOLVE NOTIFY ERROR: %s", e)
@@ -9646,7 +9777,9 @@ async def dispute_unresolved_handler(callback: CallbackQuery):
     post = await get_post(deal["post_id"])
     route = post_route_title(post) if post else f"Объявление ID {deal['post_id']}"
 
-    async with await connect_db() as conn:
+    # ✅ ПРАВИЛЬНАЯ РАБОТА С БД
+    conn = await connect_db()
+    try:
         await conn.execute(
             "UPDATE disputes SET status=?, updated_at=? WHERE id=?",
             (DISPUTE_CLOSED_UNRESOLVED, now_ts(), dispute_id)
@@ -9664,6 +9797,8 @@ async def dispute_unresolved_handler(callback: CallbackQuery):
         """, (dispute["against_user_id"],))
 
         await conn.commit()
+    finally:
+        await conn.close()
 
     invalidate_user_profile_cache(dispute["against_user_id"])
 
@@ -9675,15 +9810,14 @@ async def dispute_unresolved_handler(callback: CallbackQuery):
         f"<b>ID сделки:</b> {deal['id']}\n\n"
         "Сделка признана неуспешной и завершена внутри бота.\n\n"
         "<b>Как сервис реагирует на такую ситуацию:</b>\n"
-        "• пользователю, против которого спор закрыт без решения, в профиле добавляется отметка "
-        "<b>«⚠️ Были спорные сделки»</b>\n"
-        "• это влияет на доверие других пользователей к его профилю\n"
-        "• если пользователь системно игнорирует споры и не отвечает в срок — сервис может ограничить его аккаунт\n\n"
+        "• пользователю добавляется отметка <b>«⚠️ Были спорные сделки»</b>\n"
+        "• это влияет на доверие других пользователей\n"
+        "• при системных нарушениях аккаунт может быть ограничен\n\n"
         "<b>Что можно сделать дальше:</b>\n"
-        "• оставить отзыв о второй стороне\n"
-        "• сохранить переписку и детали ситуации\n"
-        "• при необходимости связаться с администратором\n"
-        "• если отправка или получение всё ещё актуальны — создать новое объявление",
+        "• оставить отзыв\n"
+        "• сохранить переписку\n"
+        "• связаться с администратором\n"
+        "• создать новое объявление",
         reply_markup=dispute_failed_opened_by_kb(failed_deal["id"])
     )
 
@@ -9693,12 +9827,11 @@ async def dispute_unresolved_handler(callback: CallbackQuery):
             f"❌ <b>Спор по сделке закрыт без решения</b>\n\n"
             f"<b>Маршрут:</b> {html.escape(route)}\n"
             f"<b>ID сделки:</b> {deal['id']}\n\n"
-            "Сделка признана неуспешной и завершена внутри бота.\n\n"
-            "В вашем профиле будет отображаться отметка "
-            "<b>«⚠️ Были спорные сделки»</b>, так как спор был закрыт без решения не в вашу пользу.\n\n"
+            "Сделка признана неуспешной.\n\n"
+            "В профиле появится отметка <b>«⚠️ Были спорные сделки»</b>.\n\n"
             "<b>Что можно сделать дальше:</b>\n"
-            "• оставить отзыв о второй стороне\n"
-            "• при необходимости связаться с администратором",
+            "• оставить отзыв\n"
+            "• связаться с администратором",
             reply_markup=dispute_failed_against_kb(failed_deal["id"])
         )
     except Exception as e:
@@ -9809,22 +9942,31 @@ async def render_my_posts_page(target, user_id: int, offset: int = 0):
 
 
 async def db_fetchone(query: str, params: tuple = ()):
-    async with await connect_db() as conn:
+    conn = await connect_db()
+    try:
         cur = await conn.execute(query, params)
         return await cur.fetchone()
+    finally:
+        await conn.close()
 
 
 async def db_fetchall(query: str, params: tuple = ()):
-    async with await connect_db() as conn:
+    conn = await connect_db()
+    try:
         cur = await conn.execute(query, params)
         return await cur.fetchall()
+    finally:
+        await conn.close()
 
 
 async def db_execute(query: str, params: tuple = ()):
-    async with await connect_db() as conn:
+    conn = await connect_db()
+    try:
         cur = await conn.execute(query, params)
         await conn.commit()
         return cur
+    finally:
+        await conn.close()
 
 
 @router.callback_query(F.data.startswith("recentpage:"))
@@ -10035,28 +10177,39 @@ async def expire_soon_posts_notify(bot: Bot):
     while True:
         try:
             warn_before = now_ts() + EXPIRE_WARN_DAYS * 86400
-            async with await connect_db() as conn:
-                rows = await conn.execute("""
-                    SELECT p.*, u.username, u.full_name
-                    FROM posts p
-                    LEFT JOIN users u ON u.user_id = p.user_id
-                    WHERE p.status IN ('active','inactive')
-                      AND p.expires_at IS NOT NULL
-                      AND p.expires_at <= ?
-                      AND p.expires_at > ?
-                      AND (p.expire_warned_at IS NULL OR p.expire_warned_at = 0)
-                    LIMIT 100
-                """, (warn_before, now_ts())).fetchall()
+
+            rows = await db_fetchall("""
+                SELECT p.*, u.username, u.full_name
+                FROM posts p
+                LEFT JOIN users u ON u.user_id = p.user_id
+                WHERE p.status IN ('active','inactive')
+                  AND p.expires_at IS NOT NULL
+                  AND p.expires_at <= ?
+                  AND p.expires_at > ?
+                  AND (p.expire_warned_at IS NULL OR p.expire_warned_at = 0)
+                LIMIT 100
+            """, (warn_before, now_ts()))
+
             for row in rows:
                 try:
-                    await bot.send_message(row["user_id"], f"⌛ Объявление ID {row['id']} скоро истечет. Откройте 'Мои объявления', чтобы активировать его снова.", reply_markup=main_menu(row["user_id"]))
+                    await bot.send_message(
+                        row["user_id"],
+                        f"⌛ Объявление ID {row['id']} скоро истечет. Откройте 'Мои объявления', чтобы активировать его снова.",
+                        reply_markup=main_menu(row["user_id"])
+                    )
                 except Exception as e:
                     logger.exception("EXPIRE SOON NOTIFY ERROR: %s", e)
-                async with await connect_db() as conn:
-                    await conn.execute("UPDATE posts SET expire_warned_at=? WHERE id=?", (now_ts(), row["id"]))
+
+                await db_execute(
+                    "UPDATE posts SET expire_warned_at=? WHERE id=?",
+                    (now_ts(), row["id"])
+                )
+
         except Exception as e:
             logger.exception("EXPIRE SOON LOOP ERROR: %s", e)
+
         await asyncio.sleep(3600)
+        
 
 @router.callback_query(F.data == "noop")
 async def noop(callback: CallbackQuery):

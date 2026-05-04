@@ -4093,12 +4093,12 @@ async def try_update_channel_post(bot: Bot, post_id: int):
         await bot.edit_message_text(
             chat_id=CHANNEL_USERNAME,
             message_id=channel_message_id,
-            text=awaitawait post_text(row, for_channel=True),
+            text=await post_text(row, for_channel=True),
             reply_markup=channel_post_kb(post_id, row["post_type"])
         )
     except Exception as e:
         logger.exception(f"CHANNEL UPDATE ERROR: {e}")
-
+        
 
 async def notify_coincidence_users(bot: Bot, new_post_id: int):
     new_row = await get_post(new_post_id)

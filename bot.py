@@ -594,19 +594,35 @@ def post_deeplink(post_id: int) -> str:
     return bot_link(f"post_{post_id}")
 
 
+class SafeDBConnection:
+    def __init__(self, conn):
+        self.conn = conn
+
+    async def __aenter__(self):
+        return self.conn
+
+    async def __aexit__(self, exc_type, exc, tb):
+        await self.conn.close()
+
+    def __getattr__(self, name):
+        return getattr(self.conn, name)
+
+
 async def connect_db():
     conn = await aiosqlite.connect(
-        DB_PATH, 
+        DB_PATH,
         timeout=max(5, SQLITE_BUSY_TIMEOUT_MS // 1000)
     )
     conn.row_factory = aiosqlite.Row
+
     await conn.execute("PRAGMA journal_mode=WAL")
     await conn.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
     await conn.execute("PRAGMA synchronous=NORMAL")
     await conn.execute("PRAGMA foreign_keys=ON")
     await conn.execute("PRAGMA temp_store=MEMORY")
     await conn.execute("PRAGMA cache_size=-64000")
-    return conn
+
+    return SafeDBConnection(conn)
     
 
 async def init_db_connection():

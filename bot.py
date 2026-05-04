@@ -4308,39 +4308,39 @@ async def notify_subscribers(bot: Bot, post_id: int):
     if not row or row["status"] != STATUS_ACTIVE:
         return
 
-async with await connect_db() as conn:
-    cur = await conn.execute("""
-        SELECT * FROM route_subscriptions
-        WHERE post_type=?
-          AND from_country=?
-          AND to_country=?
-          AND user_id != ?
-          AND (from_city IS NULL OR from_city='' OR from_city=COALESCE(?, ''))
-          AND (to_city IS NULL OR to_city='' OR to_city=COALESCE(?, ''))
-        ORDER BY created_at DESC
-        LIMIT 50
-    """, (
-        row["post_type"],
-        row["from_country"],
-        row["to_country"],
-        row["user_id"],
-        row["from_city"],
-        row["to_city"]
-    ))
+    async with await connect_db() as conn:
+        cur = await conn.execute("""
+            SELECT * FROM route_subscriptions
+            WHERE post_type=?
+              AND from_country=?
+              AND to_country=?
+              AND user_id != ?
+              AND (from_city IS NULL OR from_city='' OR from_city=COALESCE(?, ''))
+              AND (to_city IS NULL OR to_city='' OR to_city=COALESCE(?, ''))
+            ORDER BY created_at DESC
+            LIMIT 50
+        """, (
+            row["post_type"],
+            row["from_country"],
+            row["to_country"],
+            row["user_id"],
+            row["from_city"],
+            row["to_city"]
+        ))
 
-    subscribers = await cur.fetchall()
+        subscribers = await cur.fetchall()
 
-for sub in subscribers:
-    try:
-        await send_post_card_to_user(
-            bot,
-            sub["user_id"],
-            row,
-            prefix_text="🔔 По вашей подписке появилось новое объявление:"
-        )
-    except Exception as e:
-        logger.exception("SUBSCRIBER SEND ERROR: %s", e)
-
+    for sub in subscribers:
+        try:
+            await send_post_card_to_user(
+                bot,
+                sub["user_id"],
+                row,
+                prefix_text="🔔 По вашей подписке появилось новое объявление:"
+            )
+        except Exception as e:
+            logger.exception("SUBSCRIBER SEND ERROR: %s", e)
+            
 
 async def notify_cargo_users(bot: Bot, lead_id: int):
     lead = await get_cargo_lead(lead_id)

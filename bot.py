@@ -1,3 +1,4 @@
+import time
 import asyncio
 import html
 import os 
@@ -5881,6 +5882,20 @@ async def add_trip(message: Message, state: FSMContext):
     await state.clear()
     await message.answer(MENU_TEXTS["trip"], reply_markup=main_menu(message.from_user.id))
     await begin_create(message, state, TYPE_TRIP)
+t0 = time.perf_counter()
+logger.info("CREATE_START clicked")
+
+upsert_user(message)
+logger.info("CREATE_START after upsert_user %.3f", time.perf_counter() - t0)
+
+spam = anti_spam_check(message.from_user.id)
+logger.info("CREATE_START after anti_spam_check %.3f", time.perf_counter() - t0)
+
+await state.clear()
+logger.info("CREATE_START after state.clear %.3f", time.perf_counter() - t0)
+
+await message.answer("...", reply_markup=...)
+logger.info("CREATE_START after answer %.3f", time.perf_counter() - t0)
 
 
 @router.message(StateFilter("*"), Command("new_parcel"))
@@ -5889,6 +5904,20 @@ async def add_parcel(message: Message, state: FSMContext):
     await state.clear()
     await message.answer(MENU_TEXTS["parcel"], reply_markup=main_menu(message.from_user.id))
     await begin_create(message, state, TYPE_PARCEL)
+t0 = time.perf_counter()
+logger.info("CREATE_START clicked")
+
+upsert_user(message)
+logger.info("CREATE_START after upsert_user %.3f", time.perf_counter() - t0)
+
+spam = anti_spam_check(message.from_user.id)
+logger.info("CREATE_START after anti_spam_check %.3f", time.perf_counter() - t0)
+
+await state.clear()
+logger.info("CREATE_START after state.clear %.3f", time.perf_counter() - t0)
+
+await message.answer("...", reply_markup=...)
+logger.info("CREATE_START after answer %.3f", time.perf_counter() - t0)
       
 
 @router.message(F.text == "ℹ️ Помощь")

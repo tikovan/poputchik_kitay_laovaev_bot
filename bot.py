@@ -8643,7 +8643,7 @@ async def admin_verif_ok_handler(callback: CallbackQuery):
         await callback.answer("Заявка не найдена", show_alert=True)
         return
 
-    await verify_user(req["user_id"])"user_id"])
+    await verify_user(req["user_id"])
     set_verification_status(
         request_id,
         VERIF_STATUS_APPROVED,

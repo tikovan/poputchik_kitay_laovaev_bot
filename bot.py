@@ -5879,54 +5879,14 @@ async def onboarding_action_handler(callback: CallbackQuery, state: FSMContext):
 @router.message(StateFilter("*"), Command("new_trip"))
 @router.message(StateFilter("*"), F.text == "✈️ Взять посылку")
 async def add_trip(message: Message, state: FSMContext):
-
-    t0 = time.perf_counter()
-    logger.info("CREATE_START clicked")
-
-    upsert_user(message)
-    logger.info("after upsert_user %.3f", time.perf_counter() - t0)
-
-    spam = anti_spam_check(message.from_user.id)
-    logger.info("after anti_spam_check %.3f", time.perf_counter() - t0)
-
-    if spam:
-        await message.answer(spam)
-        return
-
-    await state.clear()
-    logger.info("after state.clear %.3f", time.perf_counter() - t0)
-
     await message.answer(MENU_TEXTS["trip"], reply_markup=main_menu(message.from_user.id))
-    logger.info("after answer %.3f", time.perf_counter() - t0)
-
     await begin_create(message, state, TYPE_TRIP)
-    logger.info("after begin_create %.3f", time.perf_counter() - t0)
 
 @router.message(StateFilter("*"), Command("new_parcel"))
 @router.message(StateFilter("*"), F.text == "📦 Отправить посылку")
 async def add_parcel(message: Message, state: FSMContext):
-
-    t0 = time.perf_counter()
-    logger.info("CREATE_START clicked")
-
-    upsert_user(message)
-    logger.info("after upsert_user %.3f", time.perf_counter() - t0)
-
-    spam = anti_spam_check(message.from_user.id)
-    logger.info("after anti_spam_check %.3f", time.perf_counter() - t0)
-
-    if spam:
-        await message.answer(spam)
-        return
-
-    await state.clear()
-    logger.info("after state.clear %.3f", time.perf_counter() - t0)
-
     await message.answer(MENU_TEXTS["parcel"], reply_markup=main_menu(message.from_user.id))
-    logger.info("after answer %.3f", time.perf_counter() - t0)
-
     await begin_create(message, state, TYPE_PARCEL)
-    logger.info("after begin_create %.3f", time.perf_counter() - t0)
       
 
 @router.message(F.text == "ℹ️ Помощь")

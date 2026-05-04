@@ -3073,7 +3073,7 @@ async def active_deals_count(user_id: int) -> int:
     return int(row["c"] or 0)
 
 
-async def await set_verification_status(
+async def set_verification_status(
     request_id: int,
     status: str,
     *,

@@ -1431,19 +1431,19 @@ async def show_user_deals_sections(target, user_id: int, include_descriptions: b
         text = "🟢 <b>Сделки в процессе</b>"
         if include_descriptions:
             text += "\nЗдесь сделки, по которым сейчас идёт передача или ожидание подтверждения."
-        await target.answer(text, reply_markup=deal_section_kb(in_progress))
+        await target.answer(text, reply_markup=await deal_section_kb(in_progress))
 
     if disputes:
         text = "⚖️ <b>Споры</b>"
         if include_descriptions:
             text += "\nЗдесь сделки, по которым открыт спор или ожидается решение."
-        await target.answer(text, reply_markup=deal_section_kb(disputes))
+        await target.answer(text, reply_markup=await deal_section_kb(disputes))
 
     if finished:
         text = "✅ <b>Завершённые и закрытые</b>"
         if include_descriptions:
             text += "\nЗдесь завершённые, неуспешные и отменённые сделки."
-        await target.answer(text, reply_markup=deal_section_kb(finished))
+        await target.answer(text, reply_markup=await deal_section_kb(finished))
         
 
 def reviews_word(n: int) -> str:
@@ -1819,7 +1819,7 @@ async def send_post_card(
     prefix_text: Optional[str] = None,
     reply_markup=None
 ):
-    await post_text(row)
+    text = await post_text(row)
 
     if prefix_text:
         text = f"{prefix_text}\n\n{text}"
@@ -1855,7 +1855,7 @@ async def send_post_card_to_user(
     prefix_text: Optional[str] = None,
     reply_markup=None
 ):
-    await post_text(row)
+    text = await post_text(row)
 
     if prefix_text:
         text = f"{prefix_text}\n\n{text}"
@@ -1871,7 +1871,6 @@ async def send_post_card_to_user(
         row["user_id"]
     )
 
-    # ✅ ИСПРАВЛЕНО: убран сломанный блок с cargo/lead
     await bot.send_message(
         user_id,
         text,
@@ -2138,7 +2137,7 @@ def dispute_failed_against_kb(deal_id: int):
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def deal_list_kb(deals: List[aiosqlite.Row]):
+async def deal_list_kb(deals: List[aiosqlite.Row]):
     rows = []
 
     for d in deals:
@@ -2155,7 +2154,9 @@ def deal_list_kb(deals: List[aiosqlite.Row]):
         else:
             status_icon = "🤝"
 
-        label = f"{status_icon} {deal_title(d)}"
+        title = await deal_title(d)
+        label = f"{status_icon} {title}"
+
         rows.append([
             InlineKeyboardButton(
                 text=label[:64],
@@ -2230,7 +2231,7 @@ def admin_post_actions_kb(post_id: int):
 
 
 async def public_post_kb(post_id: int, owner_id: int):
-    _, reviews_count = user_rating_summary(owner_id)
+    _, reviews_count = await user_rating_summary(owner_id)
     row = await get_post(post_id)
 
     rows = [
@@ -3824,23 +3825,28 @@ async def ensure_deal(
         return int(cur.lastrowid)
 
 
-def get_deal(deal_id: int) -> Optional[aiosqlite.Row]:
+async def get_deal(deal_id: int) -> Optional[aiosqlite.Row]:
     async with await connect_db() as conn:
-        return await conn.execute("SELECT * FROM deals WHERE id=?", (deal_id,)).fetchone()
+        cur = await conn.execute(
+            "SELECT * FROM deals WHERE id=?",
+            (deal_id,)
+        )
+        return await cur.fetchone()
 
 
-def list_user_deals(user_id: int) -> List[aiosqlite.Row]:
+async def list_user_deals(user_id: int) -> List[aiosqlite.Row]:
     async with await connect_db() as conn:
-        return await conn.execute("""
+        cur = await conn.execute("""
             SELECT *
             FROM deals
             WHERE owner_user_id=? OR requester_user_id=?
             ORDER BY updated_at DESC, created_at DESC
             LIMIT 30
-        """, (user_id, user_id)).fetchall()
+        """, (user_id, user_id))
+        return await cur.fetchall()
 
 
-def deal_title(deal: aiosqlite.Row) -> str:
+async def deal_title(deal: aiosqlite.Row) -> str:
     post = await get_post(deal["post_id"])
 
     if not post:
@@ -3852,7 +3858,6 @@ def deal_title(deal: aiosqlite.Row) -> str:
         route += f", {post['from_city']}"
 
     route += " → "
-
     route += post["to_country"] or ""
 
     if post["to_city"]:
@@ -3868,7 +3873,6 @@ def post_route_title(row: aiosqlite.Row) -> str:
         route += f", {row['from_city']}"
 
     route += " → "
-
     route += row["to_country"] or ""
 
     if row["to_city"]:
@@ -3925,7 +3929,7 @@ def split_deals_by_sections(deals: List[aiosqlite.Row]):
     return in_progress, disputes, finished
 
 
-def deal_section_kb(deals: List[aiosqlite.Row]) -> InlineKeyboardMarkup:
+async def deal_section_kb(deals: List[aiosqlite.Row]) -> InlineKeyboardMarkup:
     rows = []
 
     for d in deals:
@@ -3940,7 +3944,9 @@ def deal_section_kb(deals: List[aiosqlite.Row]) -> InlineKeyboardMarkup:
         else:
             icon = "❌"
 
-        label = f"{icon} {deal_title(d)}"
+        title = await deal_title(d)
+        label = f"{icon} {title}"
+
         rows.append([
             InlineKeyboardButton(
                 text=label[:64],

@@ -4357,15 +4357,17 @@ async def notify_cargo_users(bot: Bot, lead_id: int):
 async def run_global_coincidence_scan(bot: Bot):
     try:
         async with await connect_db() as conn:
-    cur = await conn.execute("""
-        SELECT p.*, u.username, u.full_name
-        FROM posts p
-        LEFT JOIN users u ON u.user_id = p.user_id
-        WHERE p.status='active'
-          AND (p.expires_at IS NULL OR p.expires_at > ?)
-        ORDER BY COALESCE(p.bumped_at, p.created_at) DESC
-        LIMIT 300
-    """, (now_ts(),))
+            cur = await conn.execute("""
+                SELECT p.*, u.username, u.full_name
+                FROM posts p
+                LEFT JOIN users u ON u.user_id = p.user_id
+                WHERE p.status='active'
+                  AND (p.expires_at IS NULL OR p.expires_at > ?)
+                ORDER BY COALESCE(p.bumped_at, p.created_at) DESC
+                LIMIT 300
+            """, (now_ts(),))
+
+            rows = await cur.fetchall()
 
     rows = await cur.fetchall()
 

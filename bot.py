@@ -7331,13 +7331,18 @@ async def bump_post(callback: CallbackQuery):
 
     order_id = await create_bump_order(...)callback.from_user.id, post_id)
 
-    await callback.message.answer(
-        f"💰 Поднятие объявления стоит {BUMP_PRICE_AMOUNT} {BUMP_PRICE_CURRENCY}.\n\n"
+   await callback.message.answer(
+    (
+        f"💰 <b>Поднятие объявления</b>\n\n"
+        f"Стоимость: <b>{BUMP_PRICE_AMOUNT} {BUMP_PRICE_CURRENCY}</b>\n\n"
         "Оплатите через WeChat / Alipay и отправьте скрин администратору.\n"
         "После подтверждения оплаты объявление будет поднято выше.\n\n"
-        f"ID заказа: <b>{order_id}</b>"
-    )
-    await callback.answer("Заявка создана")
+        f"🆔 ID заказа: <b>{order_id}</b>"
+    ),
+    parse_mode=ParseMode.HTML
+)
+
+await callback.answer("Заявка создана")
 
 
 @router.message(F.text == "💰 Поднять объявление")

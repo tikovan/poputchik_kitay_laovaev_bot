@@ -4435,7 +4435,7 @@ async def run_global_coincidence_scan(bot: Bot):
         logger.exception("GLOBAL COINCIDENCE SCAN ERROR: %s", e)
 
 
-aasync def expire_old_posts(bot: Bot):
+async def expire_old_posts(bot: Bot):
     while True:
         try:
             async with await connect_db() as conn:

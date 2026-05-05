@@ -1794,12 +1794,9 @@ async def post_text(row, for_channel: bool = False) -> str:
         lines.append(f"🪪 <b>Имя:</b> {html.escape(short_name)}")
 
     if owner_user_id in ADMIN_IDS:
-        lines.append("🟩 <b>АДМИН СЕРВИСА</b> 🟩")
+        lines.append("🔰 <b>АДМИН СЕРВИСА</b> 🔰")
 
     status_parts = []
-
-    if profile["verified"]:
-        status_parts.append("🛡 Паспорт подтвержден")
 
     if profile.get("is_cargo"):
         status_parts.append("🚀 Карго-партнер")
@@ -1821,17 +1818,19 @@ async def post_text(row, for_channel: bool = False) -> str:
     lines.append("")
     lines.append(f"<b>ID объявления:</b> {row['id']}")
 
-    if for_channel:
-        lines.append(
-            "Откройте объявление и напишите пользователю.\n"
-            "Возможно, ваша посылка уже почти в пути ✈️📦."
-        )
-    else:
-        if owner_username:
-            lines.append(f"<b>Telegram:</b> @{html.escape(owner_username)}")
+    lines.append("")
+    lines.append(f"<b>ID объявления:</b> {row['id']}")
 
-    return "\n".join(lines)
+    lines.append("")
+    lines.append("───────────────")
 
+if profile["verified"]:
+    lines.append("🛂<b>Паспорт верифицрован</b>")
+else:
+    lines.append("📈 <i>Верификация повышает доверие и увеличивает шанс отклика.</i>")
+
+    if not for_channel:
+        lines.append("👉 <a href='https://t.me/Poputchik_china_bot?start=verify'>Пройти верификацию</a>")
 
 async def send_post_card(
     target,

@@ -965,6 +965,25 @@ async def init_db():
         """)
 
 
+async def db_fetchone(query: str, params: tuple = ()):
+    async with await connect_db() as conn:
+        cur = await conn.execute(query, params)
+        return await cur.fetchone()
+
+
+async def db_fetchall(query: str, params: tuple = ()):
+    async with await connect_db() as conn:
+        cur = await conn.execute(query, params)
+        return await cur.fetchall()
+
+
+async def db_execute(query: str, params: tuple = ()):
+    async with await connect_db() as conn:
+        cur = await conn.execute(query, params)
+        await conn.commit()
+        return cur
+
+
 async def upsert_user(message_or_callback):
     user = message_or_callback.from_user
     existing = await db_fetchone("SELECT created_at FROM users WHERE user_id=?", (user.id,))
@@ -3738,7 +3757,7 @@ async def get_coincidences(
         score, notes = (
             (45, ["Совпадает маршрут по странам"])
             if source_row is None
-            else await calculate_coincidence_score(source_row, row)
+            else calculate_coincidence_score(source_row, row)
         )
 
         if score < 35:

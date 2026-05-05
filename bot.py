@@ -1822,9 +1822,10 @@ async def post_text(row, for_channel: bool = False) -> str:
     lines.append("───────────────")
 
     if profile["verified"]:
-        lines.append("🛂 <b>Паспорт верифицирован</b>")
+    lines.append("🛂 <b>Паспорт верифицирован</b>")
     else:
-        lines.append("📈 <i>Верификация повышает доверие и увеличивает шанс отклика.</i>")
+    lines.append("🛂 <b>Паспорт не верифицирован</b>")
+    lines.append("📈 <i>Верификация повышает доверие и увеличивает шанс отклика.</i>")
 
     if for_channel:
         lines.append("")

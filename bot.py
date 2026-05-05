@@ -1826,9 +1826,6 @@ async def post_text(row, for_channel: bool = False) -> str:
     else:
         lines.append("📈 <i>Верификация повышает доверие и увеличивает шанс отклика.</i>")
 
-        if not for_channel:
-            lines.append("👉 <a href='https://t.me/Poputchik_china_bot?start=verify'>Пройти верификацию</a>")
-
     if for_channel:
         lines.append("")
         lines.append(
@@ -2263,8 +2260,6 @@ def admin_post_actions_kb(post_id: int):
 
 async def public_post_kb(post_id: int, owner_id: int):
     _, reviews_count = await user_rating_summary(owner_id)
-    
-    # Получаем пост для проверки фото
     post = await get_post(post_id)
 
     rows = [
@@ -2292,6 +2287,13 @@ async def public_post_kb(post_id: int, owner_id: int):
         InlineKeyboardButton(
             text="⚠️ Пожаловаться",
             callback_data=f"complain:{post_id}"
+        )
+    ])
+
+    rows.append([
+        InlineKeyboardButton(
+            text="🛂 Верифицировать паспорт",
+            callback_data="verify:start"
         )
     ])
 

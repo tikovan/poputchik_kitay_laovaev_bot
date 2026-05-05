@@ -2230,12 +2230,6 @@ def post_actions_kb(post_id: int, status: str):
         rows.append([
             InlineKeyboardButton(text="✏️ Редактировать", callback_data=f"editpost:{post_id}")
         ])
-        rows.append([
-            InlineKeyboardButton(
-                text="🛂 Верифицировать паспорт",
-                callback_data="verify:start"
-            )
-        ])
 
     elif status == STATUS_PENDING:
         rows.append([
@@ -2247,6 +2241,13 @@ def post_actions_kb(post_id: int, status: str):
             InlineKeyboardButton(text="🗑 Удалить", callback_data=f"delete:{post_id}")
         ])
 
+    # 🛂 КНОПКА ВЕРИФИКАЦИИ — показывается при любом статусе объявления
+    rows.append([
+        InlineKeyboardButton(
+            text="🛂 Верифицировать паспорт",
+            callback_data="verify:start"
+        )
+    ])
 
     # ⬅️ КНОПКА НАЗАД
     rows.append([

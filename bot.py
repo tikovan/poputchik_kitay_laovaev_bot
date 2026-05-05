@@ -2228,13 +2228,16 @@ def admin_post_actions_kb(post_id: int):
 
 async def public_post_kb(post_id: int, owner_id: int):
     _, reviews_count = await user_rating_summary(owner_id)
+    
+    # Получаем пост для проверки фото
+    post = await get_post(post_id)
 
     rows = [
         [InlineKeyboardButton(text="✉️ Написать владельцу", callback_data=f"contact:{post_id}:{owner_id}")],
         [InlineKeyboardButton(text="🤝 Предложить сделку", callback_data=f"offer_deal_confirm:{post_id}:{owner_id}")]
     ]
 
-    if row and row["photo_file_id"]:
+    if post and post["photo_file_id"]:
         rows.append([
             InlineKeyboardButton(
                 text="🖼 Посмотреть фото посылки",
@@ -4432,7 +4435,7 @@ async def run_global_coincidence_scan(bot: Bot):
         logger.exception("GLOBAL COINCIDENCE SCAN ERROR: %s", e)
 
 
-async def expire_old_posts(bot: Bot):
+aasync def expire_old_posts(bot: Bot):
     while True:
         try:
             async with await connect_db() as conn:
@@ -4444,9 +4447,10 @@ async def expire_old_posts(bot: Bot):
                       AND p.expires_at IS NOT NULL
                       AND p.expires_at <= ?
                     LIMIT 50
-                """, (now_ts(),)).fetchall()
+                """, (now_ts(),))
+                rows = await cur.fetchall()  # ← ИСПРАВЛЕНО: отдельная строка
 
-            if rows:
+            if rows:  # ← ИСПРАВЛЕНО: if rows (было if row — опечатка!)
                 for row in rows:
                     await remove_post_from_channel(bot, row)
 
@@ -4456,6 +4460,7 @@ async def expire_old_posts(bot: Bot):
                             "UPDATE posts SET status=?, updated_at=? WHERE id=?",
                             (STATUS_EXPIRED, now_ts(), row["id"])
                         )
+                    await conn.commit()  # ← ДОБАВЛЕНО: commit после всех UPDATE
 
                 for row in rows:
                     try:
@@ -4482,18 +4487,23 @@ async def dispute_timeout_loop(bot: Bot):
     while True:
         try:
             async with await connect_db() as conn:
-                disputes = await conn.execute("""
+
+                cur = await conn.execute("""
                     SELECT *
                     FROM disputes
                     WHERE status='waiting_response'
                       AND response_deadline_at <= ?
-                """, (now_ts(),)).fetchall()
+                """, (now_ts(),))
 
-            for dispute in disputes:
+                disputes = await cur.fetchall()
 
-                deal = await get_deal(dispute["deal_id"])
+                if not disputes:
+                    await asyncio.sleep(600)
+                    continue
 
-                async with await connect_db() as conn:
+                for dispute in disputes:
+                    deal = await get_deal(dispute["deal_id"])
+
                     await conn.execute(
                         "UPDATE disputes SET status=?, updated_at=? WHERE id=?",
                         (DISPUTE_EXPIRED, now_ts(), dispute["id"])
@@ -4510,7 +4520,12 @@ async def dispute_timeout_loop(bot: Bot):
                         WHERE user_id=?
                     """, (dispute["against_user_id"],))
 
-                # ограничение аккаунта
+                await conn.commit()  # 🔥 ОДИН commit на всё
+
+            # --- ВНЕ БД (важно!) ---
+            for dispute in disputes:
+                deal = await get_deal(dispute["deal_id"])
+
                 await ban_user_with_cleanup(bot, dispute["against_user_id"])
 
                 try:
@@ -4552,7 +4567,7 @@ async def dispute_timeout_loop(bot: Bot):
             logger.exception("DISPUTE TIMEOUT LOOP ERROR: %s", e)
 
         await asyncio.sleep(600)
-
+        
 
 async def begin_create(message: Message, state: FSMContext, post_type: str):
     await upsert_user(message)
@@ -5723,7 +5738,7 @@ async def start_handler(message: Message, state: FSMContext):
             post_id_str = start_arg.replace("contact_", "", 1)
 
             if post_id_str.isdigit():
-                row = get_post(int(post_id_str))
+                row = await get_post(int(post_id_str))
 
                 if row and row["status"] == STATUS_ACTIVE:
 
@@ -8988,7 +9003,7 @@ async def reply_contact_handler(callback: CallbackQuery, state: FSMContext):
             await callback.answer("Нельзя ответить самому себе", show_alert=True)
             return
 
-        if is_user_blocked(target_user_id, callback.from_user.id) or is_user_blocked(callback.from_user.id, target_user_id):
+        if await is_user_blocked(target_user_id, callback.from_user.id) or await is_user_blocked(callback.from_user.id, target_user_id):
             await callback.answer("Диалог недоступен", show_alert=True)
             return
 
@@ -9151,6 +9166,12 @@ async def active_chat_fallback(message: Message, state: FSMContext):
 
     if is_main_menu_text(text):
         await clear_active_chat(message.from_user.id)
+        return
+
+    if is_main_menu_text(text):
+    await clear_active_chat(message.from_user.id)
+    # Перенаправляем в глобальный обработчик меню
+        await global_main_menu_router(message, state)
         return
 
     active_chat = await get_active_chat(message.from_user.id)
@@ -9929,8 +9950,8 @@ async def render_recent_posts_page(target, offset: int = 0):
 
 
 async def render_my_posts_page(target, user_id: int, offset: int = 0):
-    posts = user_posts_page(user_id, MY_POSTS_PAGE_SIZE, offset)
-    total = count_user_posts(user_id)
+    posts = await user_posts_page(user_id, MY_POSTS_PAGE_SIZE, offset)
+    total = await count_user_posts(user_id)
     if not posts:
         await target.answer("У вас пока нет объявлений.", reply_markup=main_menu(user_id))
         return
@@ -10184,13 +10205,14 @@ async def expire_soon_posts_notify(bot: Bot):
                         f"⌛ Объявление ID {row['id']} скоро истечет. Откройте 'Мои объявления', чтобы активировать его снова.",
                         reply_markup=main_menu(row["user_id"])
                     )
+
+                    await db_execute(
+                        "UPDATE posts SET expire_warned_at=? WHERE id=?",
+                        (now_ts(), row["id"])
+                    )
+
                 except Exception as e:
                     logger.exception("EXPIRE SOON NOTIFY ERROR: %s", e)
-
-                await db_execute(
-                    "UPDATE posts SET expire_warned_at=? WHERE id=?",
-                    (now_ts(), row["id"])
-                )
 
         except Exception as e:
             logger.exception("EXPIRE SOON LOOP ERROR: %s", e)

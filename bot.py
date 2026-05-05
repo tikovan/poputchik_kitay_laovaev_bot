@@ -9926,18 +9926,16 @@ async def db_fetchone(query: str, params: tuple = ()):
         return await cur.fetchone()
 
 
-async def db_fetchall(query: str, params: tuple = ()):
+async def db_fetchall(query, params=()):
     async with await connect_db() as conn:
-        cur = await conn.execute(query, params)
+        cur = await conn.execute(query, params)   
         return await cur.fetchall()
 
 
-async def db_execute(query: str, params: tuple = ()):
+async def db_fetchone(query, params=()):
     async with await connect_db() as conn:
         cur = await conn.execute(query, params)
-        await conn.commit()
-        return cur
-
+        return await cur.fetchone()
 
 @router.callback_query(F.data.startswith("recentpage:"))
 async def recent_page_callback(callback: CallbackQuery):

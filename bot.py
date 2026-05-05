@@ -9169,7 +9169,7 @@ async def active_chat_fallback(message: Message, state: FSMContext):
         return
 
     if is_main_menu_text(text):
-    await clear_active_chat(message.from_user.id)
+        await clear_active_chat(message.from_user.id)
     # Перенаправляем в глобальный обработчик меню
         await global_main_menu_router(message, state)
         return

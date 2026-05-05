@@ -2245,7 +2245,7 @@ def post_actions_kb(post_id: int, status: str):
     rows.append([
         InlineKeyboardButton(
             text="🛂 Верифицировать паспорт",
-            callback_data="verify:start"
+            callback_data="verify:info"
         )
     ])
 
@@ -8436,6 +8436,13 @@ async def admin_user_unverify_btn(callback: CallbackQuery):
     await unverify_user(user_id)
     await callback.message.answer(f"↩️ Верификация пользователя {user_id} снята.")
     await callback.answer()
+
+
+@router.callback_query(F.data == "verify:info")
+async def verification_info_from_button(callback: CallbackQuery):
+    await callback.answer()
+
+    await verification_menu_handler(callback.message)
 
 
 @router.callback_query(F.data.startswith("admin_user_ban:"))

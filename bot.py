@@ -5708,8 +5708,6 @@ async def start_handler(message: Message, state: FSMContext):
 
         print(f"START ARG = {start_arg!r}")
 
-        # ---------- deep links сначала ----------
-
         if start_arg == "wechat":
             await message.answer(
                 "👋 <b>Добро пожаловать в Попутчик Китай</b>\n\n"
@@ -5740,7 +5738,7 @@ async def start_handler(message: Message, state: FSMContext):
             await begin_create(message, state, TYPE_TRIP)
             return
 
-                if start_arg.startswith("contact_"):
+        if start_arg.startswith("contact_"):
             post_id_str = start_arg.replace("contact_", "", 1)
 
             if not post_id_str.isdigit():
@@ -5792,8 +5790,6 @@ async def start_handler(message: Message, state: FSMContext):
 
             return
 
-        # ---------- только теперь онбординг ----------
-
         if not await is_onboarding_completed(message.from_user.id):
             await state.set_state(OnboardingFlow.screen_1)
             await show_onboarding_screen(message, 1)
@@ -5806,9 +5802,7 @@ async def start_handler(message: Message, state: FSMContext):
 
     except Exception as e:
         logger.exception("START HANDLER ERROR: %s", e)
-        await message.answer(
-            "Произошла ошибка при запуске бота. Попробуйте еще раз."
-        )
+        await message.answer("Произошла ошибка при запуске бота. Попробуйте еще раз.")
         
 
 @router.callback_query(F.data.startswith("onboarding_next:"))

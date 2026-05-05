@@ -5740,59 +5740,57 @@ async def start_handler(message: Message, state: FSMContext):
             await begin_create(message, state, TYPE_TRIP)
             return
 
-        if start_arg.startswith("contact_"):
+                if start_arg.startswith("contact_"):
             post_id_str = start_arg.replace("contact_", "", 1)
 
-            if post_id_str.isdigit():
-                row = await get_post(int(post_id_str))
+            if not post_id_str.isdigit():
+                await message.answer("Некорректная ссылка на объявление.")
+                return
 
-                if row and row["status"] == STATUS_ACTIVE:
+            row = await get_post(int(post_id_str))
 
-                    if row["user_id"] == message.from_user.id:
-                        await message.answer(
-                            "Это ваше объявление.",
-                            reply_markup=main_menu(message.from_user.id)
-                        )
-                        return
+            if not row or row["status"] != STATUS_ACTIVE:
+                await message.answer("Объявление не найдено или уже неактивно.")
+                return
 
-                    await state.set_state(ContactFlow.message_text)
+            if row["user_id"] == message.from_user.id:
+                await message.answer(
+                    "Это ваше объявление.",
+                    reply_markup=main_menu(message.from_user.id)
+                )
+                return
 
-                    await state.update_data(
-                        post_id=row["id"],
-                        target_user_id=row["user_id"],
-                        deal_id=None
-                    )
+            await state.set_state(ContactFlow.message_text)
+            await state.update_data(
+                post_id=row["id"],
+                target_user_id=row["user_id"],
+                deal_id=None
+            )
 
-                    await message.answer(
-                        "✉️ Вы открыли связь с владельцем объявления:"
-                    )
-
-                    await send_post_card(message, row)
-
-                    await message.answer(
-                        "Напишите сообщение, и я перешлю его владельцу."
-                    )
-
-                    return
+            await message.answer("✉️ Вы открыли связь с владельцем объявления:")
+            await send_post_card(message, row)
+            await message.answer("Напишите сообщение, и я перешлю его владельцу.")
+            return
 
         if start_arg.startswith("post_"):
-           post_id_str = start_arg.replace("post_", "", 1)
+            post_id_str = start_arg.replace("post_", "", 1)
 
-        if post_id_str.isdigit():
-           row = await get_post(int(post_id_str))
+            if not post_id_str.isdigit():
+                await message.answer("Некорректная ссылка на объявление.")
+                return
 
-        if row and row["status"] == STATUS_ACTIVE:
-            await send_post_card(
-                message,
-                row,
-                prefix_text="📤 Открыто объявление по ссылке:"
-            )
-        else:
-            await message.answer("Объявление не найдено или неактивно.")
-    else:
-        await message.answer("Ошибка: некорректный ID объявления.")
+            row = await get_post(int(post_id_str))
 
-    return
+            if row and row["status"] == STATUS_ACTIVE:
+                await send_post_card(
+                    message,
+                    row,
+                    prefix_text="📤 Открыто объявление по ссылке:"
+                )
+            else:
+                await message.answer("Объявление не найдено или уже неактивно.")
+
+            return
 
         # ---------- только теперь онбординг ----------
 

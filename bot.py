@@ -5776,23 +5776,23 @@ async def start_handler(message: Message, state: FSMContext):
                     return
 
         if start_arg.startswith("post_"):
-            post_id_str = start_arg.replace("post_", "", 1)
+           post_id_str = start_arg.replace("post_", "", 1)
 
-            if post_id_str.isdigit():
-                row = get_post(int(post_id_str))
+        if post_id_str.isdigit():
+           row = await get_post(int(post_id_str))
 
-                if row and row["status"] == STATUS_ACTIVE:
-                    await send_post_card(
-                        message,
-                        row,
-                        prefix_text="📤 Открыто объявление по ссылке:"
-                    )
-                else:
-                    await message.answer(
-                        "Объявление не найдено или уже неактивно."
-                    )
+        if row and row["status"] == STATUS_ACTIVE:
+            await send_post_card(
+                message,
+                row,
+                prefix_text="📤 Открыто объявление по ссылке:"
+            )
+        else:
+            await message.answer(
+                "Объявление не найдено или уже неактивно."
+            )
 
-                return
+        return
 
         # ---------- только теперь онбординг ----------
 

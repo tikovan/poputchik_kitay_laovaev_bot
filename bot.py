@@ -965,6 +965,32 @@ async def init_db():
         """)
 
 
+        # ---- ensure columns ----
+        await ensure_column(conn, "users", "failed_dispute_count", "failed_dispute_count INTEGER DEFAULT 0")
+        await ensure_column(conn, "users", "review_status", "review_status TEXT DEFAULT 'clear'")
+        await ensure_column(conn, "users", "review_requested_at", "review_requested_at INTEGER")
+        await ensure_column(conn, "users", "review_admin_id", "review_admin_id INTEGER")
+        await ensure_column(conn, "users", "is_cargo", "is_cargo INTEGER DEFAULT 0")
+        await ensure_column(conn, "users", "cargo_company_name", "cargo_company_name TEXT")
+        await ensure_column(conn, "users", "active_chat_target_user_id", "active_chat_target_user_id INTEGER")
+        await ensure_column(conn, "users", "active_chat_post_id", "active_chat_post_id INTEGER")
+        await ensure_column(conn, "users", "active_chat_deal_id", "active_chat_deal_id INTEGER")
+        await ensure_column(conn, "users", "last_chat_message_at", "last_chat_message_at INTEGER DEFAULT 0")
+        await ensure_column(conn, "users", "chat_message_count_10min", "chat_message_count_10min INTEGER DEFAULT 0")
+        await ensure_column(conn, "users", "verified_at", "verified_at INTEGER")
+        await ensure_column(conn, "users", "verification_type", "verification_type TEXT")
+
+        await ensure_column(conn, "posts", "expire_warned_at", "expire_warned_at INTEGER")
+
+        await ensure_column(conn, "route_subscriptions", "from_city", "from_city TEXT")
+        await ensure_column(conn, "route_subscriptions", "to_city", "to_city TEXT")
+
+        await ensure_column(conn, "cargo_leads", "photo_file_id", "photo_file_id TEXT")
+        await ensure_column(conn, "cargo_leads", "delivery_date", "delivery_date TEXT")
+
+        await conn.commit()
+
+
 async def db_fetchone(query: str, params: tuple = ()):
     async with await connect_db() as conn:
         cur = await conn.execute(query, params)

@@ -1763,7 +1763,7 @@ async def post_text(row, for_channel: bool = False) -> str:
 
     owner_user_id = row["user_id"]
     profile = await get_user_profile_short_cached(owner_user_id)
-        
+
     owner_username = row["username"] if "username" in row.keys() else None
     owner_full_name = row["full_name"] if "full_name" in row.keys() else None
 
@@ -1785,7 +1785,7 @@ async def post_text(row, for_channel: bool = False) -> str:
 
     if "photo_file_id" in row.keys() and row["photo_file_id"]:
         lines.append("<b>Фото посылки:</b> доступно по кнопке ниже")
-        
+
     lines.append("")
     lines.append("<b>👤 Профиль пользователя</b>")
 
@@ -1819,18 +1819,28 @@ async def post_text(row, for_channel: bool = False) -> str:
     lines.append(f"<b>ID объявления:</b> {row['id']}")
 
     lines.append("")
-    lines.append(f"<b>ID объявления:</b> {row['id']}")
-
-    lines.append("")
     lines.append("───────────────")
 
-if profile["verified"]:
-    lines.append("🛂<b>Паспорт верифицрован</b>")
-else:
-    lines.append("📈 <i>Верификация повышает доверие и увеличивает шанс отклика.</i>")
+    if profile["verified"]:
+        lines.append("🛂 <b>Паспорт верифицирован</b>")
+    else:
+        lines.append("📈 <i>Верификация повышает доверие и увеличивает шанс отклика.</i>")
 
-    if not for_channel:
-        lines.append("👉 <a href='https://t.me/Poputchik_china_bot?start=verify'>Пройти верификацию</a>")
+        if not for_channel:
+            lines.append("👉 <a href='https://t.me/Poputchik_china_bot?start=verify'>Пройти верификацию</a>")
+
+    if for_channel:
+        lines.append("")
+        lines.append(
+            "Откройте объявление и напишите пользователю.\n"
+            "Возможно, ваша посылка уже почти в пути ✈️📦."
+        )
+    else:
+        if owner_username:
+            lines.append(f"<b>Telegram:</b> @{html.escape(owner_username)}")
+
+    return "\n".join(lines)
+    
 
 async def send_post_card(
     target,

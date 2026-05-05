@@ -2241,6 +2241,13 @@ def post_actions_kb(post_id: int, status: str):
             InlineKeyboardButton(text="🗑 Удалить", callback_data=f"delete:{post_id}")
         ])
 
+        rows.append([
+        InlineKeyboardButton(
+            text="🛂 Верифицировать паспорт",
+            callback_data="verify:start"
+        )
+    ])
+
     # ⬅️ КНОПКА НАЗАД
     rows.append([
         InlineKeyboardButton(text="⬅️ Назад", callback_data="back:my_posts")
@@ -5773,7 +5780,7 @@ async def start_handler(message: Message, state: FSMContext):
             await message.answer("Напишите сообщение, и я перешлю его владельцу.")
             return
 
-        if start_arg.startswith("post_"):
+                if start_arg.startswith("post_"):
             post_id_str = start_arg.replace("post_", "", 1)
 
             if not post_id_str.isdigit():
@@ -5782,30 +5789,25 @@ async def start_handler(message: Message, state: FSMContext):
 
             row = await get_post(int(post_id_str))
 
-            if row and row["status"] == STATUS_ACTIVE:
-                await send_post_card(
-                    message,
-                    row,
-                    prefix_text="📤 Открыто объявление по ссылке:"
-                )
-            else:
+            if not row or row["status"] != STATUS_ACTIVE:
                 await message.answer("Объявление не найдено или уже неактивно.")
+                return
+
+            if row["user_id"] == message.from_user.id:
+                await message.answer(
+                    "📋 <b>Это ваше объявление.</b>\n\n"
+                    "Здесь можно управлять объявлением:",
+                    reply_markup=post_actions_kb(row["id"], row["status"])
+                )
+                return
+
+            await send_post_card(
+                message,
+                row,
+                prefix_text="📤 Открыто объявление по ссылке:"
+            )
 
             return
-
-        if not await is_onboarding_completed(message.from_user.id):
-            await state.set_state(OnboardingFlow.screen_1)
-            await show_onboarding_screen(message, 1)
-            return
-
-        await message.answer(
-            WELCOME_TEXT,
-            reply_markup=main_menu(message.from_user.id)
-        )
-
-    except Exception as e:
-        logger.exception("START HANDLER ERROR: %s", e)
-        await message.answer("Произошла ошибка при запуске бота. Попробуйте еще раз.")
         
 
 @router.callback_query(F.data.startswith("onboarding_next:"))

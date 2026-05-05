@@ -7955,8 +7955,10 @@ async def complaint_reason_input(message: Message, state: FSMContext):
 @router.message(F.text == "📊 Статистика")
 async def stats_handler(message: Message):
     await message.answer(MENU_TEXTS["stats"], reply_markup=main_menu(message.from_user.id))
+
     stats = await service_stats()
     top = await top_route()
+
     text = (
         "📊 <b>Статистика сервиса</b>\n\n"
         f"Пользователей: <b>{stats['users_count']}</b>\n"
@@ -7964,8 +7966,13 @@ async def stats_handler(message: Message):
         f"✈️ Попутчиков: <b>{stats['active_trips']}</b>\n"
         f"📦 Посылок: <b>{stats['active_parcels']}</b>\n"
     )
-    if route:
-        text += f"\nПопулярный маршрут:\n<b>{route['from_country']} → {route['to_country']}</b> ({route['cnt']})"
+
+    if top:
+        text += (
+            f"\nПопулярный маршрут:\n"
+            f"<b>{top['from_country']} → {top['to_country']}</b> ({top['cnt']})"
+        )
+
     await message.answer(text, reply_markup=main_menu(message.from_user.id))
 
 

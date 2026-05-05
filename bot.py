@@ -5456,24 +5456,6 @@ async def cargo_weight_manual(message: Message, state: FSMContext):
     await render_cargo_step("description", message, state)
 
 
-@router.callback_query(F.data.startswith("cargo_weight:"), CargoLeadFlow.weight)
-async def cargo_weight(callback: CallbackQuery, state: FSMContext):
-    weight = callback.data.split(":", 1)[1]
-
-    if weight == "__manual__":
-        await state.set_state(CargoLeadFlow.weight_manual)
-        await callback.message.answer(
-            cargo_form_text(6, "Введите вес или объём вручную.\n\nНапример: 35 кг, 2 коробки, 0.5 куба"),
-            reply_markup=cargo_back_only_kb()
-        )
-        await callback.answer()
-        return
-
-    await state.update_data(weight=weight)
-    await render_cargo_step("description", callback.message, state)
-    await callback.answer()
-
-
 @router.message(CargoLeadFlow.from_country_manual)
 async def cargo_from_country_manual(message: Message, state: FSMContext):
     await state.update_data(from_country=message.text.strip())
@@ -5508,27 +5490,6 @@ async def cargo_description(message: Message, state: FSMContext):
 
     await state.update_data(description=text[:1000])
     await render_cargo_step("photo_choice", message, state)
-
-
-@router.callback_query(F.data.startswith("cargo_photo_choice:"), CargoLeadFlow.photo_choice)
-async def cargo_photo_choice(callback: CallbackQuery, state: FSMContext):
-    action = callback.data.split(":", 1)[1]
-
-    if action == "add":
-        await state.set_state(CargoLeadFlow.photo_upload)
-        await callback.message.answer(
-            cargo_form_text(
-                8,
-                "Отправьте одно фото груза."
-            ),
-            reply_markup=cargo_back_only_kb()
-        )
-        await callback.answer()
-        return
-
-    await state.update_data(photo_file_id=None)
-    await render_cargo_step("contact", callback.message, state)
-    await callback.answer()
 
 
 @router.message(CargoLeadFlow.photo_upload)
@@ -5582,22 +5543,6 @@ async def cargo_contact(message: Message, state: FSMContext):
         await notify_cargo_users(message.bot, lead_id)
     except Exception as e:
         logger.exception("CARGO NOTIFY ERROR: %s", e)
-
-
-@router.callback_query(F.data.startswith("cargo_view_photo:"))
-async def cargo_view_photo_handler(callback: CallbackQuery):
-    lead_id = int(callback.data.split(":", 1)[1])
-    lead = await get_cargo_lead(lead_id)
-
-    if not lead or not lead["photo_file_id"]:
-        await callback.answer("Фото не найдено", show_alert=True)
-        return
-
-    await callback.message.answer_photo(
-        photo=lead["photo_file_id"],
-        caption=f"🖼 Фото груза по заявке #{lead_id}"
-    )
-    await callback.answer()
     
 
 @router.inline_query()
@@ -10011,23 +9956,6 @@ async def render_my_posts_page(target, user_id: int, offset: int = 0):
     if total > MY_POSTS_PAGE_SIZE:
         await target.answer(f"Показано {offset + 1}-{offset + len(posts)} из {total}", reply_markup=pager_kb("mypostspage", offset, MY_POSTS_PAGE_SIZE, total))
 
-
-async def db_fetchone(query: str, params: tuple = ()):
-    async with await connect_db() as conn:
-        cur = await conn.execute(query, params)
-        return await cur.fetchone()
-
-
-async def db_fetchall(query, params=()):
-    async with await connect_db() as conn:
-        cur = await conn.execute(query, params)   
-        return await cur.fetchall()
-
-
-async def db_fetchone(query, params=()):
-    async with await connect_db() as conn:
-        cur = await conn.execute(query, params)
-        return await cur.fetchone()
 
 @router.callback_query(F.data.startswith("recentpage:"))
 async def recent_page_callback(callback: CallbackQuery):

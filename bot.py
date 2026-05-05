@@ -5788,11 +5788,11 @@ async def start_handler(message: Message, state: FSMContext):
                 prefix_text="📤 Открыто объявление по ссылке:"
             )
         else:
-            await message.answer(
-                "Объявление не найдено или уже неактивно."
-            )
+            await message.answer("Объявление не найдено или неактивно.")
+    else:
+        await message.answer("Ошибка: некорректный ID объявления.")
 
-        return
+    return
 
         # ---------- только теперь онбординг ----------
 

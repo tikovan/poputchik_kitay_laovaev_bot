@@ -5751,9 +5751,10 @@ async def start_handler(message: Message, state: FSMContext):
                 return
 
             if row["user_id"] == message.from_user.id:
-                await message.answer(
-                    "📋 <b>Это ваше объявление.</b>\n\n"
-                    "Здесь можно управлять объявлением:",
+                await send_post_card(
+                    message,
+                    row,
+                    prefix_text="📋 Это ваше объявление. Здесь можно управлять объявлением:",
                     reply_markup=post_actions_kb(row["id"], row["status"])
                 )
                 return

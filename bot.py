@@ -5791,7 +5791,7 @@ async def start_handler(message: Message, state: FSMContext):
                     prefix_text="📋 <b>Это ваше объявление.</b>\n\nЗдесь можно управлять объявлением:",
                     reply_markup=post_actions_kb(row["id"], row["status"])
                )
-               return
+                return
 
             await send_post_card(
                 message,

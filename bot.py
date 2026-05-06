@@ -52,6 +52,7 @@ if db_dir:
 
 CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME", "")
 BOT_USERNAME = os.getenv("BOT_USERNAME", "Poputchik_china_bot").lstrip("@")
+ONBOARDING_STICKER_ID = "AAMCBAADGQEAAUjr52n7QmKLCLixTO2WNScl6FQio1KUAAKJDgACD_GQU0kUNvQgGBYOAQAHbQADOwQ"
 ADMIN_IDS = {474671704}
 MODERATION_ENABLED = False
 
@@ -345,15 +346,15 @@ WELCOME_TEXT = (
     "Это <b>Попутчик Китай</b> — бот для передачи посылок через попутчиков.\n\n"
     "<b>Здесь можно отправить свою посылку или взять чужую по маршруту.</b>\n\n"
     "🔎 <b>Обязательно подпишись на канал с объявлениями:</b>\n"
-    "t.me/china_poputchik\n\n"
-    "Я настолько крутой, что сам ищу тебе попутчика/посылку и уведомляю о них, пока ты пьешь свой лате!\n\n"
-    "В правом углу поисковой строки есть квадратик с 4-мя кружочками — нажми — это твой центр управления ботом.\n\n"
+    "👉 <a href='https://t.me/china_poputchik'>Открыть канал</a>\n\n"
+   "🤖 Я сам ищу для вас подходящие совпадения и уведомляю, когда они появляются.\n\n"
+   "В правом углу поисковой строки есть квадратик с 4-мя кружочками — нажми — это твой центр управления ботом.\n\n"
     "⬇️ <b>Синяя кнопка МЕНЮ — это только лишь меню с базовыми командами бота</b>"
 )
 ONBOARDING_TEXTS = {
     1: (
         "👋 <b>Добро пожаловать в Попутчик Китай</b>\n\n"
-        "Сервис для передачи посылок с попутчиками.\n\n"
+        "Передавайте посылки через людей, которые уже летят нужным маршрутом.\n\n"
         "📦 Нужно отправить посылку?\n"
         "✈️ Летите и готовы помочь другим людям?\n\n"
         "Платформа соединяет пользователей\n"
@@ -381,85 +382,26 @@ ONBOARDING_TEXTS = {
         "🔔 моментально видеть новые маршруты\n"
         "⚡ писать пользователям первым\n"
         "📦 быстрее находить попутчиков\n\n"
-        "👉 <b>Канал:</b> t.me/china_poputchik"
-    ),
-
-    4: (
-        "🌍 <b>Примеры маршрутов пользователей</b>\n\n"
-        "✈️ Китай, Шэньчжэнь → Россия, Москва\n"
-        "📦 образцы тканей\n\n"
-        "✈️ Китай, Гуанчжоу → Казахстан, Алматы\n"
-        "📦 до 5 кг\n\n"
-        "✈️ Китай, Шанхай → ОАЭ, Дубай\n"
-        "📦 документы\n\n"
-        "✈️ Китай, Пекин → Россия, Санкт-Петербург\n"
-        "📦 личные вещи\n\n"
-        "Каждый день появляются <b>новые объявления.</b>"
-    ),
-
-    5: (
-        "🚀 <b>Что умеет Попутчик Китай</b>\n\n"
-        "🤖 <b>Автоматический умный поиск совпадений</b>\n"
-        "Система 24/7 анализирует маршруты и соединяет пользователей.\n\n"
-        "⭐ <b>Отзывы и рейтинг</b>\n"
-        "Можно видеть репутацию пользователей.\n\n"
-        "🤝 <b>Система сделок</b>\n"
-        "Позволяет фиксировать договоренности внутри бота.\n\n"
-        "🔔 <b>Уведомления</b>\n"
-        "Бот сообщает, когда появляется подходящее Вам обьявление."
-    ),
-
-    6: (
-        "📱 <b>Навигация в боте</b>\n\n"
-        "В Боте есть два типа кнопок с помощью которых происходит управление.\n\n"
-        "⬜ <b>Кнопка с четырьмя кружками</b>\n"
-        "<i>(в правом углу строки ввода сообщения)</i>\n\n"
-        "Это <b>интерактивное меню действий</b>.\n\n"
-        "Здесь находится основной функционал сервиса.\n"
-        "Именно им Вы будете пользоваться чаще всего.\n\n"
-        "Через эти кнопки можно быстро управлять вкладками:\n\n"
-        "✈️ Взять посылку\n"
-        "📦 Отправить посылку\n"
-        "🔎 Найти совпадения\n"
-        "📋 Мои объявления\n"
-        "🤝 Мои сделки\n"
-        "🔔 Подписки\n"
-        "🆕 Новые объявления\n"
-        "🔥 Популярные маршруты\n"
-        "💰 Поднять объявление\n"
-        "📊 Статистика\n"
-        "🚩 Пожаловаться\n"
-        "ℹ️ Помощь\n\n"
-        "🟦 <b>Кнопка Menu</b>\n"
-        "<i>(в левом углу строки ввода сообщения)</i>\n\n"
-        "Открывает основные команды бота:\n\n"
-        "• Запустить бот\n"
-        "• Взять посылку\n"
-        "• Отправить посылку\n"
-        "• Найти совпадения\n"
-        "• Мои объявления"
+        "👉 <a href='https://t.me/china_poputchik'>Открыть канал</a>"
     ),
 }
-
 
 def onboarding_next_kb(screen: int):
     rows = []
 
-    if screen == 3:
+    # если НЕ последний экран
+    if screen < max(ONBOARDING_TEXTS.keys()):
+        rows.append([InlineKeyboardButton(text="➡️ Далее", callback_data=f"onboarding_next:{screen}")])
+        rows.append([InlineKeyboardButton(text="⏭ Пропустить", callback_data="onboarding_skip")])
+
+    else:
+        # последний экран → показываем финал
+        rows.append([InlineKeyboardButton(text="✈️ Я лечу", callback_data="onboarding_action:trip")])
+        rows.append([InlineKeyboardButton(text="📦 Отправить посылку", callback_data="onboarding_action:parcel")])
+        rows.append([InlineKeyboardButton(text="🔎 Смотреть объявления", callback_data="onboarding_action:browse")])
         rows.append([InlineKeyboardButton(text="📢 Открыть канал", url="https://t.me/china_poputchik")])
 
-    rows.append([InlineKeyboardButton(text="➡️ Далее", callback_data=f"onboarding_next:{screen}")])
-    rows.append([InlineKeyboardButton(text="⏭ Пропустить", callback_data="onboarding_skip")])
-
     return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-def onboarding_finish_kb():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✈️ Я лечу", callback_data="onboarding_action:trip")],
-        [InlineKeyboardButton(text="📦 Отправить посылку", callback_data="onboarding_action:parcel")],
-        [InlineKeyboardButton(text="🔎 Смотреть объявления", callback_data="onboarding_action:browse")],
-    ])
     
 
 def now_ts() -> int:
@@ -1908,7 +1850,7 @@ async def send_post_card_to_user(
     
 
 async def show_onboarding_screen(target, screen: int):
-    text = ONBOARDING_TEXTS[screen]
+    ONBOARDING_TEXTS.get(screen)
     kb = onboarding_finish_kb() if screen == 6 else onboarding_next_kb(screen)
 
     try:
@@ -5803,9 +5745,11 @@ async def start_handler(message: Message, state: FSMContext):
 
         if not await is_onboarding_completed(message.from_user.id):
             await state.set_state(OnboardingFlow.screen_1)
+
+            await message.answer_sticker(ONBOARDING_STICKER_ID)
+
             await show_onboarding_screen(message, 1)
             return
-
         await message.answer(
             WELCOME_TEXT,
             reply_markup=main_menu(message.from_user.id)

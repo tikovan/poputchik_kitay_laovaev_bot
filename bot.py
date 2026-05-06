@@ -2045,7 +2045,7 @@ def cargo_photo_choice_kb():
     ])
 
 
-def my_posts_kb(posts: List[aiosqlite.Row]):
+def my_posts_kb(posts: List[aiosqlite.Row], offset: int = 0):
     rows = []
 
     for index, p in enumerate(posts, start=offset + 1):
@@ -9919,13 +9919,22 @@ async def render_recent_posts_page(target, offset: int = 0):
 async def render_my_posts_page(target, user_id: int, offset: int = 0):
     posts = await user_posts_page(user_id, MY_POSTS_PAGE_SIZE, offset)
     total = await count_user_posts(user_id)
+
     if not posts:
         await target.answer("У вас пока нет объявлений.", reply_markup=main_menu(user_id))
         return
-    await target.answer("📋 Ваши объявления:", reply_markup=my_posts_kb(posts))
-    if total > MY_POSTS_PAGE_SIZE:
-        await target.answer(f"Показано {offset + 1}-{offset + len(posts)} из {total}", reply_markup=pager_kb("mypostspage", offset, MY_POSTS_PAGE_SIZE, total))
 
+    await target.answer(
+        "📋 Ваши объявления:",
+        reply_markup=my_posts_kb(posts, offset)
+    )
+
+    if total > MY_POSTS_PAGE_SIZE:
+        await target.answer(
+            f"Показано {offset + 1}-{offset + len(posts)} из {total}",
+            reply_markup=pager_kb("mypostspage", offset, MY_POSTS_PAGE_SIZE, total)
+        )
+        
 
 @router.callback_query(F.data.startswith("recentpage:"))
 async def recent_page_callback(callback: CallbackQuery):

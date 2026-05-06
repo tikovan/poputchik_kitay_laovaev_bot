@@ -6786,23 +6786,6 @@ async def pick_from_city(callback: CallbackQuery, state: FSMContext):
     await render_create_step("to_country", callback, state)
 
 
-@router.message(CreatePost.to_country_manual)
-async def to_country_manual_input(message: Message, state: FSMContext):
-    if await block_menu_text_during_form(message, state):
-        return
-
-    data = await state.get_data()
-    post_type = data.get("post_type", TYPE_PARCEL)
-    value = normalize_country_input(message.text.strip()[:80])
-
-    await state.update_data(to_country=value)
-    await state.set_state(CreatePost.to_city)
-    await message.answer(
-        form_text(post_type, 4, f"Выберите город назначения в стране {value}"),
-        reply_markup=cities_select_kb("to_city_pick", value, include_back=True)
-    )
-
-
 @router.callback_query(F.data.startswith("to_city_pick:"))
 async def pick_to_city(callback: CallbackQuery, state: FSMContext):
     value = callback.data.split(":", 1)[1]
@@ -6821,6 +6804,43 @@ async def pick_to_city(callback: CallbackQuery, state: FSMContext):
 
     await state.update_data(to_city=None if value == "__skip__" else value)
     await render_create_step("delivery_date", callback, state)
+
+
+@router.message(CreatePost.to_country_manual)
+async def to_country_manual_input(message: Message, state: FSMContext):
+    if await block_menu_text_during_form(message, state):
+        return
+
+    data = await state.get_data()
+    post_type = data.get("post_type", TYPE_PARCEL)
+    value = normalize_country_input(message.text.strip()[:80])
+
+    await state.update_data(to_country=value)
+    await state.set_state(CreatePost.to_city)
+    await message.answer(
+        form_text(post_type, 4, f"Выберите город назначения в стране {value}"),
+        reply_markup=cities_select_kb("to_city_pick", value, include_back=True)
+    )
+
+
+@router.callback_query(F.data.startswith("to_country_pick:"))
+async def pick_to_country(callback: CallbackQuery, state: FSMContext):
+    value = callback.data.split(":", 1)[1]
+
+    if value == "__manual__":
+        data = await state.get_data()
+        post_type = data.get("post_type", TYPE_PARCEL)
+
+        await state.set_state(CreatePost.to_country_manual)
+        await callback.message.answer(
+            form_text(post_type, 3, "Введите страну назначения вручную"),
+            reply_markup=back_only_kb()
+        )
+        await callback.answer()
+        return
+
+    await state.update_data(to_country=value)
+    await render_create_step("to_city", callback, state)
     
 
 @router.message(CreatePost.to_city_manual)

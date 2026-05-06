@@ -4160,13 +4160,19 @@ def cargo_lead_contact_text(lead) -> str:
     
 
 def cargo_lead_kb(lead):
-    lead_id = lead["id"]
+    if isinstance(lead, int):
+        lead_id = lead
+        photo_file_id = None
+    else:
+        lead_id = lead["id"]
+        photo_file_id = lead["photo_file_id"] if "photo_file_id" in lead.keys() else None
+
     rows = [[InlineKeyboardButton(
         text="📩 Получить контакт клиента",
         callback_data=f"cargo_get_contact:{lead_id}"
     )]]
 
-    if lead["photo_file_id"]:
+    if photo_file_id:
         rows.append([InlineKeyboardButton(
             text="🖼 Посмотреть фото",
             callback_data=f"cargo_view_photo:{lead_id}"

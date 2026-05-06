@@ -4890,10 +4890,11 @@ async def render_create_step(step: str, target, state: FSMContext):
 
     elif step == "description":
         await state.set_state(CreatePost.description)
-        await target.answer(
-            form_text(post_type, 7, "Опишите посылку или что готовы взять"),
-            reply_markup=back_only_kb()
-        )
+        await smart_form_answer(
+        target,
+        form_text(post_type, 7, "Опишите посылку или что готовы взять"),
+        reply_markup=back_only_kb()
+    )
 
     elif step == "photo_choice":
         await state.set_state(CreatePost.photo_choice)

@@ -4908,7 +4908,7 @@ async def render_create_step(step: str, target, state: FSMContext):
         await state.set_state(CreatePost.contact_note)
         await smart_form_answer(
         target,
-        form_text(post_type, 9, "Оставьте контакт для связи"),
+        form_text(post_type, 9, "Оставьте контакт для связи (WeChat/TG/WhatsApp"),
         reply_markup=back_only_kb()
     )
         

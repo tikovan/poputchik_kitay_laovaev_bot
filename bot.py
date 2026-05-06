@@ -1850,19 +1850,19 @@ async def send_post_card_to_user(
     
 
 async def show_onboarding_screen(target, screen: int):
-    ONBOARDING_TEXTS.get(screen)
-    kb = onboarding_finish_kb() if screen == 6 else onboarding_next_kb(screen)
+    text = ONBOARDING_TEXTS.get(screen)
 
-    try:
-        if hasattr(target, "edit_text"):
-            await target.edit_text(text, reply_markup=kb)
-        else:
-            await target.answer(text, reply_markup=kb)
-    except Exception as e:
-        logger.exception("SHOW_ONBOARDING_SCREEN ERROR: %s", e)
-        if hasattr(target, "answer"):
-            await target.answer(text, reply_markup=kb)
+    if not text:
+        await target.answer("Ошибка онбординга.")
+        return
 
+    kb = onboarding_next_kb(screen)
+
+    if isinstance(target, CallbackQuery):
+        await target.message.edit_text(text, reply_markup=kb)
+    else:
+        await target.answer(text, reply_markup=kb)
+        
 
 def chunk_buttons(items: List[tuple], prefix: str, per_row: int = 2):
     rows = []

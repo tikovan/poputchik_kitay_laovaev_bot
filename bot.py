@@ -5246,7 +5246,7 @@ async def cargo_lead_start(message: Message, state: FSMContext):
         "Представитель компании сможет связаться с вами и предложить условия."
     )
 
-    await render_cargo_step("from_country", callback.message, state)
+    await render_cargo_step("from_country", message, state)
     
 
 @router.callback_query(F.data.startswith("cargo_from_country:"))
@@ -5264,7 +5264,7 @@ async def cargo_from_country(callback: CallbackQuery, state: FSMContext):
             return
 
         await state.update_data(from_country=country)
-        await render_cargo_step("from_city", callback.message, state)
+        await render_cargo_step("from_city", callback, state)
 
     except Exception as e:
         logger.exception("CARGO_FROM_COUNTRY ERROR: %s", e)
@@ -5308,7 +5308,7 @@ async def cargo_to_country(callback: CallbackQuery, state: FSMContext):
             return
 
         await state.update_data(to_country=country)
-        await render_cargo_step("to_city", callback.message, state)
+        await render_cargo_step("to_city", callback, state)
 
     except Exception as e:
         logger.exception("CARGO_TO_COUNTRY ERROR: %s", e)
@@ -5330,7 +5330,7 @@ async def cargo_to_city(callback: CallbackQuery, state: FSMContext):
             return
 
         await state.update_data(to_city=city)
-        await render_cargo_step("delivery_date", callback.message, state)
+        await render_cargo_step("delivery_date", callback, state)
 
     except Exception as e:
         logger.exception("CARGO_TO_CITY ERROR: %s", e)
@@ -5361,7 +5361,7 @@ async def cargo_delivery_date(callback: CallbackQuery, state: FSMContext):
             delivery_date = value
 
         await state.update_data(delivery_date=delivery_date)
-        await render_cargo_step("weight", callback.message, state)
+        await render_cargo_step("weight", callback, state)
 
     except Exception as e:
         logger.exception("CARGO_DELIVERY_DATE ERROR: %s", e)
@@ -5383,7 +5383,7 @@ async def cargo_weight(callback: CallbackQuery, state: FSMContext):
             return
 
         await state.update_data(weight=weight)
-        await render_cargo_step("description", callback.message, state)
+        await render_cargo_step("description", callback, state)
 
     except Exception as e:
         logger.exception("CARGO_WEIGHT ERROR: %s", e)
@@ -5405,7 +5405,7 @@ async def cargo_photo_choice(callback: CallbackQuery, state: FSMContext):
             return
 
         await state.update_data(photo_file_id=None)
-        await render_cargo_step("contact", callback.message, state)
+        await render_cargo_step("contact", callback, state)
 
     except Exception as e:
         logger.exception("CARGO_PHOTO_CHOICE ERROR: %s", e)

@@ -4906,10 +4906,11 @@ async def render_create_step(step: str, target, state: FSMContext):
 
     elif step == "contact":
         await state.set_state(CreatePost.contact_note)
-        await target.answer(
-            form_text(post_type, 9, "Оставьте контакт для связи"),
-            reply_markup=back_only_kb()
-        )
+        await smart_form_answer(
+        target,
+        form_text(post_type, 9, "Оставьте контакт для связи"),
+        reply_markup=back_only_kb()
+    )
         
 
 async def render_cargo_step(target_step: str, target_message: Message, state: FSMContext):

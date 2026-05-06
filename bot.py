@@ -407,6 +407,14 @@ def now_ts() -> int:
     return int(time.time())
 
 
+async def smart_form_answer(target, text: str, reply_markup=None):
+    if isinstance(target, CallbackQuery):
+        await target.message.edit_text(text, reply_markup=reply_markup)
+        await target.answer()
+    else:
+        await target.answer(text, reply_markup=reply_markup)
+
+
 DEAL_CONFIRM_DELAY_HOURS = 24
 
 
@@ -4828,69 +4836,76 @@ def cargo_form_text(step: int, prompt: str) -> str:
     )
 
 
-async def render_create_step(step: str, message: Message, state: FSMContext):
+async def render_create_step(step: str, target, state: FSMContext):
     data = await state.get_data()
     post_type = data.get("post_type", TYPE_PARCEL)
 
     if step == "from_country":
         await state.set_state(CreatePost.from_country)
-        await message.answer(
+        await smart_form_answer(
+            target,
             form_text(post_type, 1, "Выберите страну отправления"),
             reply_markup=countries_select_kb("from_country_pick")
         )
 
     elif step == "from_city":
         await state.set_state(CreatePost.from_city)
-        await message.answer(
+        await smart_form_answer(
+            target,
             form_text(post_type, 2, f"Выберите город отправления в стране {data.get('from_country', '')}"),
             reply_markup=cities_select_kb("from_city_pick", data.get("from_country"), include_back=True)
         )
 
     elif step == "to_country":
         await state.set_state(CreatePost.to_country)
-        await message.answer(
+        await smart_form_answer(
+            target,
             form_text(post_type, 3, "Выберите страну назначения"),
             reply_markup=countries_select_kb("to_country_pick")
         )
 
     elif step == "to_city":
         await state.set_state(CreatePost.to_city)
-        await message.answer(
+        await smart_form_answer(
+            target,
             form_text(post_type, 4, f"Выберите город назначения в стране {data.get('to_country', '')}"),
             reply_markup=cities_select_kb("to_city_pick", data.get("to_country"), include_back=True)
         )
 
     elif step == "delivery_date":
         await state.set_state(CreatePost.travel_date)
-        await message.answer(
+        await smart_form_answer(
+            target,
             form_text(post_type, 5, "Выберите дату поездки / отправки"),
             reply_markup=date_select_kb()
         )
 
     elif step == "weight":
         await state.set_state(CreatePost.weight)
-        await message.answer(
+        await smart_form_answer(
+            target,
             form_text(post_type, 6, "Выберите вес или объём"),
             reply_markup=weight_select_kb()
         )
 
     elif step == "description":
         await state.set_state(CreatePost.description)
-        await message.answer(
+        await target.answer(
             form_text(post_type, 7, "Опишите посылку или что готовы взять"),
             reply_markup=back_only_kb()
         )
 
     elif step == "photo_choice":
         await state.set_state(CreatePost.photo_choice)
-        await message.answer(
+        await smart_form_answer(
+            target,
             form_text(post_type, 8, "Хотите добавить фото посылки? Это необязательно."),
             reply_markup=photo_choice_kb()
         )
 
     elif step == "contact":
         await state.set_state(CreatePost.contact_note)
-        await message.answer(
+        await target.answer(
             form_text(post_type, 9, "Оставьте контакт для связи"),
             reply_markup=back_only_kb()
         )

@@ -4925,18 +4925,13 @@ async def render_create_step(step: str, target, state: FSMContext):
 def cargo_form_header(step: int, total_steps: int = 9) -> str:
     percent = int(step / total_steps * 100)
 
-    progress = ""
-    for i in range(1, total_steps + 1):
-        if i < step:
-            progress += "🟩"
-        elif i == step:
-            progress += "🟡"
-        else:
-            progress += "⚪"
+    filled = "▰" * step
+    empty = "▱" * (total_steps - step)
+    progress = filled + empty
 
     return (
-        f"🚀 <b>Быстрая доставка (карго)</b>\n\n"
-        f"<b>Шаг {step} из {total_steps}</b> · {percent}%\n"
+        "🚀 <b>Быстрая доставка (карго)</b>\n\n"
+        f"<b>Шаг {step} / {total_steps}</b> · {percent}%\n"
         f"{progress}\n\n"
     )
 

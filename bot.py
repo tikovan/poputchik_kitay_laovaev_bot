@@ -1687,8 +1687,10 @@ def format_coincidence_badges(score: int, notes: List[str]) -> str:
 def form_header(post_type: str, step: int, total_steps: int = 9) -> str:
     title = "📦 Отправить посылку" if post_type == TYPE_PARCEL else "✈️ Взять посылку"
 
-    filled = "▰" * step
-    empty = "▱" * (total_steps - step)
+    completed = step - 1  # ключевая правка
+
+    filled = "▰" * completed
+    empty = "▱" * (total_steps - completed)
     progress = filled + empty
 
     return (
@@ -4929,7 +4931,7 @@ async def render_create_step(step: str, target, state: FSMContext):
         
 
 def cargo_form_header(step: int, total_steps: int = 9) -> str:
-    percent = int(step / total_steps * 100)
+    percent = int((step - 1) / total_steps * 100)
 
     filled = "▰" * step
     empty = "▱" * (total_steps - step)

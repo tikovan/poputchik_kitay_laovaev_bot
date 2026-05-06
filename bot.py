@@ -4922,17 +4922,33 @@ async def render_create_step(step: str, target, state: FSMContext):
     )
         
 
-async def render_cargo_step(target_step: str, target_message: Message, state: FSMContext):
+def cargo_form_header(step: int, total_steps: int = 9) -> str:
+    percent = int(step / total_steps * 100)
+
+    progress = ""
+    for i in range(1, total_steps + 1):
+        if i < step:
+            progress += "🟩"
+        elif i == step:
+            progress += "🟡"
+        else:
+            progress += "⚪"
+
+    return (
+        f"🚀 <b>Быстрая доставка (карго)</b>\n\n"
+        f"<b>Шаг {step} из {total_steps}</b> · {percent}%\n"
+        f"{progress}\n\n"
+    )
+
+
+async def render_cargo_step(target_step: str, target, state: FSMContext):
     data = await state.get_data()
 
     if target_step == "from_country":
         await state.set_state(CargoLeadFlow.from_country)
-        await target_message.answer(
-            "🚀 <b>Быстрая доставка (карго)</b>\n\n"
-            "━━━━━━━━━━━━━━\n"
-            "Шаг 1 / 9\n"
-            "━━━━━━━━━━━━━━\n\n"
-            "Выберите страну отправления",
+        await smart_form_answer(
+            target,
+            cargo_form_header(1) + "Выберите страну отправления",
             reply_markup=countries_select_kb("cargo_from_country", include_back=False)
         )
         return
@@ -4940,24 +4956,18 @@ async def render_cargo_step(target_step: str, target_message: Message, state: FS
     if target_step == "from_city":
         await state.set_state(CargoLeadFlow.from_city)
         country = data.get("from_country", "")
-        await target_message.answer(
-            "🚀 <b>Быстрая доставка (карго)</b>\n\n"
-            "━━━━━━━━━━━━━━\n"
-            "Шаг 2 / 9\n"
-            "━━━━━━━━━━━━━━\n\n"
-            f"Выберите город отправления в стране {country}",
+        await smart_form_answer(
+            target,
+            cargo_form_header(2) + f"Выберите город отправления в стране {country}",
             reply_markup=cities_select_kb("cargo_from_city", country, include_back=True, back_callback="back:cargo")
         )
         return
 
     if target_step == "to_country":
         await state.set_state(CargoLeadFlow.to_country)
-        await target_message.answer(
-            "🚀 <b>Быстрая доставка (карго)</b>\n\n"
-            "━━━━━━━━━━━━━━\n"
-            "Шаг 3 / 9\n"
-            "━━━━━━━━━━━━━━\n\n"
-            "Выберите страну назначения",
+        await smart_form_answer(
+            target,
+            cargo_form_header(3) + "Выберите страну назначения",
             reply_markup=countries_select_kb("cargo_to_country", include_back=True, back_callback="back:cargo")
         )
         return
@@ -4965,73 +4975,54 @@ async def render_cargo_step(target_step: str, target_message: Message, state: FS
     if target_step == "to_city":
         await state.set_state(CargoLeadFlow.to_city)
         country = data.get("to_country", "")
-        await target_message.answer(
-            "🚀 <b>Быстрая доставка (карго)</b>\n\n"
-            "━━━━━━━━━━━━━━\n"
-            "Шаг 4 / 9\n"
-            "━━━━━━━━━━━━━━\n\n"
-            f"Выберите город назначения в стране {country}",
+        await smart_form_answer(
+            target,
+            cargo_form_header(4) + f"Выберите город назначения в стране {country}",
             reply_markup=cities_select_kb("cargo_to_city", country, include_back=True, back_callback="back:cargo")
         )
         return
 
     if target_step == "delivery_date":
         await state.set_state(CargoLeadFlow.delivery_date)
-        await target_message.answer(
-            "🚀 <b>Быстрая доставка (карго)</b>\n\n"
-            "━━━━━━━━━━━━━━\n"
-            "Шаг 5 / 9\n"
-            "━━━━━━━━━━━━━━\n\n"
-            "Выберите желаемую дату отправки / доставки",
+        await smart_form_answer(
+            target,
+            cargo_form_header(5) + "Выберите желаемую дату отправки / доставки",
             reply_markup=cargo_date_select_kb()
         )
         return
 
     if target_step == "weight":
         await state.set_state(CargoLeadFlow.weight)
-        await target_message.answer(
-            "🚀 <b>Быстрая доставка (карго)</b>\n\n"
-            "━━━━━━━━━━━━━━\n"
-            "Шаг 6 / 9\n"
-            "━━━━━━━━━━━━━━\n\n"
-            "Выберите вес или объём груза",
+        await smart_form_answer(
+            target,
+            cargo_form_header(6) + "Выберите вес или объём груза",
             reply_markup=cargo_weight_select_kb()
         )
         return
 
     if target_step == "description":
         await state.set_state(CargoLeadFlow.description)
-        await target_message.answer(
-            "🚀 <b>Быстрая доставка (карго)</b>\n\n"
-            "━━━━━━━━━━━━━━\n"
-            "Шаг 7 / 9\n"
-            "━━━━━━━━━━━━━━\n\n"
-            "Опишите груз подробно\nЧто за товар / объём / упаковка / срочность",
+        await smart_form_answer(
+            target,
+            cargo_form_header(7) + "Опишите груз подробно\nЧто за товар / объём / упаковка / срочность",
             reply_markup=cargo_back_only_kb()
         )
         return
 
     if target_step == "photo_choice":
         await state.set_state(CargoLeadFlow.photo_choice)
-        await target_message.answer(
-            "🚀 <b>Быстрая доставка (карго)</b>\n\n"
-            "━━━━━━━━━━━━━━\n"
-            "Шаг 8 / 9\n"
-            "━━━━━━━━━━━━━━\n\n"
-            "Хотите добавить фото груза? Это необязательно.",
+        await smart_form_answer(
+            target,
+            cargo_form_header(8) + "Хотите добавить фото груза? Это необязательно.",
             reply_markup=cargo_photo_choice_kb()
         )
         return
 
     if target_step == "contact":
         await state.set_state(CargoLeadFlow.contact)
-        await target_message.answer(
-            "🚀 <b>Быстрая доставка (карго)</b>\n\n"
-            "━━━━━━━━━━━━━━\n"
-            "Шаг 9 / 9\n"
-            "━━━━━━━━━━━━━━\n\n"
-            "Укажите контакт для связи.\n\n"
-            "Лучше Telegram или WeChat ID.",
+        await smart_form_answer(
+            target,
+            cargo_form_header(9) + "Укажите контакт для связи.\n\nЛучше Telegram или WeChat ID.",
             reply_markup=cargo_back_only_kb()
         )
         return
@@ -5255,7 +5246,7 @@ async def cargo_lead_start(message: Message, state: FSMContext):
         "Представитель компании сможет связаться с вами и предложить условия."
     )
 
-    await render_cargo_step("from_country", message, state)
+    await render_cargo_step("from_country", callback.message, state)
     
 
 @router.callback_query(F.data.startswith("cargo_from_country:"))
@@ -5295,7 +5286,7 @@ async def cargo_from_city(callback: CallbackQuery, state: FSMContext):
             return
 
         await state.update_data(from_city=city)
-        await render_cargo_step("to_country", callback.message, state)
+        await render_cargo_step("to_country", message, state)
 
     except Exception as e:
         logger.exception("CARGO_FROM_CITY ERROR: %s", e)

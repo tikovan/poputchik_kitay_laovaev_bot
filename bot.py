@@ -6660,10 +6660,11 @@ async def pick_from_country(callback: CallbackQuery, state: FSMContext):
     await upsert_user(callback)
 
     value = callback.data.split(":", 1)[1]
-    data = await state.get_data()
-    post_type = data.get("post_type", TYPE_PARCEL)
 
     if value == "__manual__":
+        data = await state.get_data()
+        post_type = data.get("post_type", TYPE_PARCEL)
+
         await state.set_state(CreatePost.from_country_manual)
         await callback.message.answer(
             form_text(post_type, 1, "Введите страну отправления вручную"),
@@ -6673,12 +6674,7 @@ async def pick_from_country(callback: CallbackQuery, state: FSMContext):
         return
 
     await state.update_data(from_country=value)
-    await state.set_state(CreatePost.from_city)
-    await callback.message.answer(
-        form_text(post_type, 2, f"Выберите город отправления в стране {value}"),
-        reply_markup=cities_select_kb("from_city_pick", value, include_back=True)
-    )
-    await callback.answer()
+    await render_create_step("from_city", callback, state)
     
 
 @router.message(CreatePost.from_country_manual)
@@ -6701,10 +6697,11 @@ async def from_country_manual_input(message: Message, state: FSMContext):
 @router.callback_query(F.data.startswith("from_city_pick:"))
 async def pick_from_city(callback: CallbackQuery, state: FSMContext):
     value = callback.data.split(":", 1)[1]
-    data = await state.get_data()
-    post_type = data.get("post_type", TYPE_PARCEL)
 
     if value == "__manual__":
+        data = await state.get_data()
+        post_type = data.get("post_type", TYPE_PARCEL)
+
         await state.set_state(CreatePost.from_city_manual)
         await callback.message.answer(
             form_text(post_type, 2, "Введите город отправления вручную"),
@@ -6714,12 +6711,7 @@ async def pick_from_city(callback: CallbackQuery, state: FSMContext):
         return
 
     await state.update_data(from_city=None if value == "__skip__" else value)
-    await state.set_state(CreatePost.to_country)
-    await callback.message.answer(
-        form_text(post_type, 3, "Выберите страну назначения"),
-        reply_markup=countries_select_kb("to_country_pick", include_back=True)
-    )
-    await callback.answer()
+    await render_create_step("to_country", callback, state)
 
 
 @router.callback_query(F.data.startswith("back:"))
@@ -6774,28 +6766,24 @@ async def from_city_manual_input(message: Message, state: FSMContext):
     )
 
 
-@router.callback_query(F.data.startswith("to_country_pick:"))
-async def pick_to_country(callback: CallbackQuery, state: FSMContext):
+@router.callback_query(F.data.startswith("from_city_pick:"))
+async def pick_from_city(callback: CallbackQuery, state: FSMContext):
     value = callback.data.split(":", 1)[1]
-    data = await state.get_data()
-    post_type = data.get("post_type", TYPE_PARCEL)
 
     if value == "__manual__":
-        await state.set_state(CreatePost.to_country_manual)
+        data = await state.get_data()
+        post_type = data.get("post_type", TYPE_PARCEL)
+
+        await state.set_state(CreatePost.from_city_manual)
         await callback.message.answer(
-            form_text(post_type, 3, "Введите страну назначения вручную"),
+            form_text(post_type, 2, "Введите город отправления вручную"),
             reply_markup=back_only_kb()
         )
         await callback.answer()
         return
 
-    await state.update_data(to_country=value)
-    await state.set_state(CreatePost.to_city)
-    await callback.message.answer(
-        form_text(post_type, 4, f"Выберите город назначения в стране {value}"),
-        reply_markup=cities_select_kb("to_city_pick", value, include_back=True)
-    )
-    await callback.answer()
+    await state.update_data(from_city=None if value == "__skip__" else value)
+    await render_create_step("to_country", callback, state)
 
 
 @router.message(CreatePost.to_country_manual)
@@ -6818,10 +6806,11 @@ async def to_country_manual_input(message: Message, state: FSMContext):
 @router.callback_query(F.data.startswith("to_city_pick:"))
 async def pick_to_city(callback: CallbackQuery, state: FSMContext):
     value = callback.data.split(":", 1)[1]
-    data = await state.get_data()
-    post_type = data.get("post_type", TYPE_PARCEL)
 
     if value == "__manual__":
+        data = await state.get_data()
+        post_type = data.get("post_type", TYPE_PARCEL)
+
         await state.set_state(CreatePost.to_city_manual)
         await callback.message.answer(
             form_text(post_type, 4, "Введите город назначения вручную"),
@@ -6831,13 +6820,8 @@ async def pick_to_city(callback: CallbackQuery, state: FSMContext):
         return
 
     await state.update_data(to_city=None if value == "__skip__" else value)
-    await state.set_state(CreatePost.travel_date)
-    await callback.message.answer(
-        form_text(post_type, 5, "Выберите дату поездки / отправки"),
-        reply_markup=date_select_kb()
-    )
-    await callback.answer()
-
+    await render_create_step("delivery_date", callback, state)
+    
 
 @router.message(CreatePost.to_city_manual)
 async def to_city_manual_input(message: Message, state: FSMContext):
@@ -6874,10 +6858,11 @@ async def complaint_from_button(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data.startswith("datepick:"))
 async def pick_date(callback: CallbackQuery, state: FSMContext):
     value = callback.data.split(":", 1)[1]
-    data = await state.get_data()
-    post_type = data.get("post_type", TYPE_PARCEL)
 
     if value == "manual":
+        data = await state.get_data()
+        post_type = data.get("post_type", TYPE_PARCEL)
+
         await state.set_state(CreatePost.travel_date_manual)
         await callback.message.answer(
             form_text(post_type, 5, "Введите точную дату\nНапример: 15.03.2026"),
@@ -6895,12 +6880,7 @@ async def pick_date(callback: CallbackQuery, state: FSMContext):
         return
 
     await state.update_data(travel_date=travel_date)
-    await state.set_state(CreatePost.weight)
-    await callback.message.answer(
-        form_text(post_type, 6, "Выберите вес или объём"),
-        reply_markup=weight_select_kb()
-    )
-    await callback.answer()
+    await render_create_step("weight", callback, state)
 
 
 @router.message(CreatePost.travel_date_manual)
@@ -6927,10 +6907,11 @@ async def date_manual_input(message: Message, state: FSMContext):
 @router.callback_query(F.data.startswith("weightpick:"))
 async def pick_weight(callback: CallbackQuery, state: FSMContext):
     value = callback.data.split(":", 1)[1]
-    data = await state.get_data()
-    post_type = data.get("post_type", TYPE_PARCEL)
 
     if value == "__manual__":
+        data = await state.get_data()
+        post_type = data.get("post_type", TYPE_PARCEL)
+
         await state.set_state(CreatePost.weight_manual)
         await callback.message.answer(
             form_text(post_type, 6, "Введите вес / объём\nНапример: 7 кг"),
@@ -6940,12 +6921,7 @@ async def pick_weight(callback: CallbackQuery, state: FSMContext):
         return
 
     await state.update_data(weight_kg=value)
-    await state.set_state(CreatePost.description)
-    await callback.message.answer(
-        form_text(post_type, 7, "Опишите объявление подробно\nЧто нужно передать / сколько места есть / условия"),
-        reply_markup=back_only_kb()
-    )
-    await callback.answer()
+    await render_create_step("description", callback, state)
 
 
 @router.message(CreatePost.weight_manual)
@@ -6994,10 +6970,11 @@ async def enter_description(message: Message, state: FSMContext):
 @router.callback_query(F.data.startswith("photo_choice:"))
 async def photo_choice_handler(callback: CallbackQuery, state: FSMContext):
     action = callback.data.split(":", 1)[1]
-    data = await state.get_data()
-    post_type = data.get("post_type", TYPE_PARCEL)
 
     if action == "add":
+        data = await state.get_data()
+        post_type = data.get("post_type", TYPE_PARCEL)
+
         await state.set_state(CreatePost.photo_upload)
         await callback.message.answer(
             form_text(post_type, 8, "Отправьте 1 фото посылки"),
@@ -7008,16 +6985,7 @@ async def photo_choice_handler(callback: CallbackQuery, state: FSMContext):
 
     if action == "skip":
         await state.update_data(photo_file_id=None)
-        await state.set_state(CreatePost.contact_note)
-        await callback.message.answer(
-            form_text(
-                post_type,
-                9,
-                "Введите дополнительный контакт или примечание\nНапример: WeChat ID / только текст / без звонков\nЕсли не нужно — напишите -"
-            ),
-            reply_markup=back_only_kb()
-        )
-        await callback.answer()
+        await render_create_step("contact", callback, state)
         return
 
     await callback.answer("Неверная команда", show_alert=True)

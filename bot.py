@@ -4859,10 +4859,10 @@ async def render_create_step(step: str, target, state: FSMContext):
     elif step == "to_country":
         await state.set_state(CreatePost.to_country)
         await smart_form_answer(
-            target,
-            form_text(post_type, 3, "Выберите страну назначения"),
-            reply_markup=countries_select_kb("to_country_pick")
-        )
+        target,
+        form_text(post_type, 3, "Выберите страну назначения"),
+        reply_markup=countries_select_kb("to_country_pick", include_back=True)
+    )
 
     elif step == "to_city":
         await state.set_state(CreatePost.to_city)

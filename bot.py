@@ -2051,7 +2051,8 @@ def my_posts_kb(posts: List[aiosqlite.Row]):
     for index, p in enumerate(posts, start=1):
         icon = "✈️" if p["post_type"] == TYPE_TRIP else "📦"
         status_text = format_post_status(p["status"])
-        label = f"{index}. {icon} {p['from_country']} → {p['to_country']} • {status_text}"
+
+        label = f"{index}. {icon} {p['from_country']} → {p['to_country']} · ID {p['id']} · {status_text}"
 
         rows.append([
             InlineKeyboardButton(

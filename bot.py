@@ -6504,7 +6504,7 @@ async def create_back_handler(callback: CallbackQuery, state: FSMContext):
 
     prev_step = STEP_ORDER[idx - 1]
     await clear_step_data_from(state, prev_step)
-    await render_create_step(prev_step, callback.message, state)
+    await render_create_step(prev_step, callback, state)
     
 
 @router.callback_query(F.data.startswith("support:"))

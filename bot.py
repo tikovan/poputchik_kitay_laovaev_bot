@@ -52,7 +52,7 @@ if db_dir:
 
 CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME", "")
 BOT_USERNAME = os.getenv("BOT_USERNAME", "Poputchik_china_bot").lstrip("@")
-ONBOARDING_STICKER_ID = "CAACAgQAAxkBAAFI6-dp-0Jiwi4szUtIjUnJehUIqNSIAACIQ4AAxkUNvQgGBYOAQAHbQADOwQ"
+ONBOARDING_STICKER_ID = "CAACAgQAAxkBAAFI6-dp-0Jiiwi4sUztljUnJehUIqNSlAACiQ4AAg_xkFNJFDb0IBgWDjsE"
 ADMIN_IDS = {474671704}
 MODERATION_ENABLED = False
 
@@ -10173,6 +10173,10 @@ async def expire_soon_posts_notify(bot: Bot):
 @router.callback_query(F.data == "noop")
 async def noop(callback: CallbackQuery):
     await callback.answer()
+
+@router.message(Command("test"))
+async def test_handler(message: Message):
+    await message.answer_sticker(ONBOARDING_STICKER_ID)
 
 
 async def main():

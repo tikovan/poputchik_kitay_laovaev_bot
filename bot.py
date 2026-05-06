@@ -5286,7 +5286,7 @@ async def cargo_from_city(callback: CallbackQuery, state: FSMContext):
             return
 
         await state.update_data(from_city=city)
-        await render_cargo_step("to_country", message, state)
+        await render_cargo_step("to_country", callback, state)
 
     except Exception as e:
         logger.exception("CARGO_FROM_CITY ERROR: %s", e)

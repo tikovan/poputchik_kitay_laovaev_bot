@@ -1686,7 +1686,16 @@ def format_coincidence_badges(score: int, notes: List[str]) -> str:
 
 def form_header(post_type: str, step: int, total_steps: int = 9) -> str:
     title = "📦 Отправить посылку" if post_type == TYPE_PARCEL else "✈️ Взять посылку"
-    return f"{title}\n\n━━━━━━━━━━━━━━\nШаг {step} / {total_steps}\n━━━━━━━━━━━━━━\n\n"
+
+    filled = "▰" * step
+    empty = "▱" * (total_steps - step)
+    progress = filled + empty
+
+    return (
+        f"{title}\n\n"
+        f"Шаг {step} / {total_steps}\n"
+        f"{progress}\n\n"
+    )
 
 
 def form_text(post_type: str, step: int, prompt: str, total_steps: int = 9) -> str:

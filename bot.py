@@ -9921,19 +9921,31 @@ async def render_my_posts_page(target, user_id: int, offset: int = 0):
     total = await count_user_posts(user_id)
 
     if not posts:
-        await target.answer("У вас пока нет объявлений.", reply_markup=main_menu(user_id))
+        text = "У вас пока нет объявлений."
+        kb = main_menu(user_id)
+
+        if isinstance(target, CallbackQuery):
+            await target.message.edit_text(text)
+            await target.answer()
+        else:
+            await target.answer(text, reply_markup=kb)
         return
 
-    await target.answer(
-        "📋 Ваши объявления:",
-        reply_markup=my_posts_kb(posts, offset)
-    )
+    text = f"📋 <b>Ваши объявления</b>\n\nПоказано {offset + 1}-{offset + len(posts)} из {total}"
+
+    post_kb = my_posts_kb(posts, offset)
+    rows = post_kb.inline_keyboard
 
     if total > MY_POSTS_PAGE_SIZE:
-        await target.answer(
-            f"Показано {offset + 1}-{offset + len(posts)} из {total}",
-            reply_markup=pager_kb("mypostspage", offset, MY_POSTS_PAGE_SIZE, total)
-        )
+        rows += pager_kb("mypostspage", offset, MY_POSTS_PAGE_SIZE, total).inline_keyboard
+
+    kb = InlineKeyboardMarkup(inline_keyboard=rows)
+
+    if isinstance(target, CallbackQuery):
+        await target.message.edit_text(text, reply_markup=kb)
+        await target.answer()
+    else:
+        await target.answer(text, reply_markup=kb)
         
 
 @router.callback_query(F.data.startswith("recentpage:"))
@@ -9945,9 +9957,8 @@ async def recent_page_callback(callback: CallbackQuery):
 
 @router.callback_query(F.data.startswith("mypostspage:"))
 async def my_posts_page_callback(callback: CallbackQuery):
-    offset = int(callback.data.split(":", 1)[1])
-    await render_my_posts_page(callback.message, callback.from_user.id, offset)
-    await callback.answer()
+    offset = int(callback.data.split(":")[1])
+    await render_my_posts_page(callback, callback.from_user.id, offset)
 
 
 @router.callback_query(F.data.startswith("editpost:"))

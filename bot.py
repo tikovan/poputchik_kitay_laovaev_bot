@@ -2048,7 +2048,7 @@ def cargo_photo_choice_kb():
 def my_posts_kb(posts: List[aiosqlite.Row]):
     rows = []
 
-    for index, p in enumerate(posts, start=1):
+    for index, p in enumerate(posts, start=offset + 1):
         icon = "✈️" if p["post_type"] == TYPE_TRIP else "📦"
         status_text = format_post_status(p["status"])
 

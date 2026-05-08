@@ -4290,13 +4290,27 @@ async def try_update_channel_post(bot: Bot, post_id: int):
     if not channel_message_id or not CHANNEL_USERNAME:
         return
 
+    text = await post_text(row, for_channel=True)
+    kb = channel_post_kb(post_id, row["post_type"])
+
     try:
-        await bot.edit_message_text(
-            chat_id=CHANNEL_USERNAME,
-            message_id=channel_message_id,
-            text=await post_text(row, for_channel=True),
-            reply_markup=channel_post_kb(post_id, row["post_type"])
-        )
+        if row["photo_file_id"]:
+            await bot.edit_message_caption(
+                chat_id=CHANNEL_USERNAME,
+                message_id=channel_message_id,
+                caption=text,
+                reply_markup=kb,
+                parse_mode="HTML"
+            )
+        else:
+            await bot.edit_message_text(
+                chat_id=CHANNEL_USERNAME,
+                message_id=channel_message_id,
+                text=text,
+                reply_markup=kb,
+                parse_mode="HTML"
+            )
+
     except Exception as e:
         logger.exception(f"CHANNEL UPDATE ERROR: {e}")
         

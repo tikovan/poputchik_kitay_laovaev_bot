@@ -10068,22 +10068,44 @@ async def edit_post_value_input(message: Message, state: FSMContext):
     data = await state.get_data()
     post_id = data.get("edit_post_id")
     field = data.get("edit_field")
+
     if not post_id or not field:
         await state.clear()
         return
+
     value = (message.text or "").strip()
+
     if field == "contact_note" and value == "-":
         value = None
-    ok = await update_post_record(post_id, message.from_user.id, {field: value})
+
+    ok = await update_post_record(
+        post_id,
+        message.from_user.id,
+        {field: value}
+    )
+
     await state.clear()
+
     if not ok:
         await message.answer("Не удалось обновить объявление.")
         return
-    row = await get_post(post_id)
-    await message.answer("✅ Объявление обновлено.", reply_markup=main_menu(message.from_user.id))
-    if row:
-        await send_post_card(message, row, reply_markup=post_actions_kb(post_id, row["status"]))
 
+    await try_update_channel_post(message.bot, post_id)
+
+    row = await get_post(post_id)
+
+    await message.answer(
+        "✅ Объявление обновлено.",
+        reply_markup=main_menu(message.from_user.id)
+    )
+
+    if row:
+        await send_post_card(
+            message,
+            row,
+            reply_markup=post_actions_kb(post_id, row["status"])
+        )
+        
 
 @router.callback_query(F.data.startswith("editweightpick:"))
 async def edit_post_weight_pick(callback: CallbackQuery, state: FSMContext):

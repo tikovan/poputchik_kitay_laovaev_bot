@@ -4501,9 +4501,9 @@ async def expire_old_posts(bot: Bot):
                       AND p.expires_at <= ?
                     LIMIT 50
                 """, (now_ts(),))
-                rows = await cur.fetchall()  # ← ИСПРАВЛЕНО: отдельная строка
+                rows = await cur.fetchall()
 
-            if rows:  # ← ИСПРАВЛЕНО: if rows (было if row — опечатка!)
+            if rows:
                 for row in rows:
                     await remove_post_from_channel(bot, row)
 
@@ -4513,17 +4513,43 @@ async def expire_old_posts(bot: Bot):
                             "UPDATE posts SET status=?, updated_at=? WHERE id=?",
                             (STATUS_EXPIRED, now_ts(), row["id"])
                         )
-                    await conn.commit()  # ← ДОБАВЛЕНО: commit после всех UPDATE
+                    await conn.commit()
+
+                # группируем истекшие объявления по пользователю
+                grouped = {}
 
                 for row in rows:
+                    user_id = row["user_id"]
+                    if user_id not in grouped:
+                        grouped[user_id] = []
+                    grouped[user_id].append(row["id"])
+
+                # отправляем одно уведомление на пользователя
+                for user_id, post_ids in grouped.items():
                     try:
+                        if len(post_ids) == 1:
+                            text = (
+                                f"⌛ Ваше объявление ID {post_ids[0]} истекло и скрыто.\n\n"
+                                "Откройте 'Мои объявления', чтобы активировать его снова."
+                            )
+                        else:
+                            ids_text = "\n".join(f"• ID {post_id}" for post_id in post_ids)
+
+                            text = (
+                                "⌛ У вас истекли объявления:\n\n"
+                                f"{ids_text}\n\n"
+                                "Откройте 'Мои объявления', чтобы активировать их снова."
+                            )
+
                         await bot.send_message(
-                            row["user_id"],
-                            f"⌛ Ваше объявление ID {row['id']} истекло и скрыто.\nОткройте 'Мои объявления', чтобы активировать его снова.",
-                            reply_markup=main_menu(row["user_id"])
+                            user_id,
+                            text,
+                            reply_markup=main_menu(user_id)
                         )
+
                     except Exception as e:
                         logger.exception("EXPIRE USER NOTIFY ERROR: %s", e)
+
         except Exception as e:
             logger.exception("EXPIRE LOOP ERROR: %s", e)
 

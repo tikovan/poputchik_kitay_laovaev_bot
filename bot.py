@@ -7480,6 +7480,14 @@ async def delete_post(callback: CallbackQuery):
         await callback.answer("Нет доступа", show_alert=True)
         return
 
+    logger.warning(
+        "MANUAL DELETE DEBUG: post_id=%s status=%s channel_message_id=%s channel=%s",
+        row["id"],
+        row["status"],
+        row["channel_message_id"],
+        CHANNEL_USERNAME
+    )
+
     await remove_post_from_channel(callback.bot, row)
 
     conn = await connect_db()

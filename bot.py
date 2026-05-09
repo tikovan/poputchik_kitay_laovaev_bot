@@ -4244,40 +4244,47 @@ async def cargo_back(callback: CallbackQuery, state: FSMContext):
 
 async def remove_post_from_channel(bot: Bot, row):
     if not CHANNEL_USERNAME:
-        return
+        logger.warning("CHANNEL DELETE SKIPPED: CHANNEL_USERNAME is empty")
+        return False
 
     channel_message_id = row["channel_message_id"] if row and "channel_message_id" in row.keys() else None
 
     if not channel_message_id:
-        return
+        logger.warning(
+            "CHANNEL DELETE SKIPPED: post_id=%s no channel_message_id",
+            row["id"] if row and "id" in row.keys() else None
+        )
+        return False
 
     try:
-        await bot.delete_message(CHANNEL_USERNAME, channel_message_id)
+        await bot.delete_message(
+            chat_id=CHANNEL_USERNAME,
+            message_id=channel_message_id
+        )
 
-    except Exception as e:
-        error_text = str(e).lower()
-
-        if (
-            "message can't be deleted" in error_text
-            or "message to delete not found" in error_text
-            or "message identifier is not specified" in error_text
-        ):
-            logger.warning(
-                "CHANNEL DELETE SKIPPED: post_id=%s message_id=%s reason=%s",
-                row["id"] if row and "id" in row.keys() else None,
-                channel_message_id,
-                e
-            )
-        else:
-            logger.exception("CHANNEL DELETE ERROR: %s", e)
-
-    try:
         await db_execute(
             "UPDATE posts SET channel_message_id=NULL WHERE id=?",
             (row["id"],)
         )
+
+        logger.warning(
+            "CHANNEL DELETE OK: post_id=%s message_id=%s",
+            row["id"],
+            channel_message_id
+        )
+
+        return True
+
     except Exception as e:
-        logger.exception("CHANNEL MESSAGE ID CLEAR ERROR: %s", e)
+        logger.exception(
+            "CHANNEL DELETE ERROR: post_id=%s message_id=%s channel=%s error=%s",
+            row["id"] if row and "id" in row.keys() else None,
+            channel_message_id,
+            CHANNEL_USERNAME,
+            e
+        )
+
+        return False
 
 
 async def try_update_channel_post(bot: Bot, post_id: int):

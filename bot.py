@@ -7039,20 +7039,25 @@ async def enter_description(message: Message, state: FSMContext):
     )
     
 
-@router.callback_query(F.data.startswith("photo_choice:"))
+@router.callback_query(StateFilter(CreatePost.photo_choice), F.data.startswith("photo_choice:"))
 async def photo_choice_handler(callback: CallbackQuery, state: FSMContext):
     action = callback.data.split(":", 1)[1]
 
-    if action == "add":
-        data = await state.get_data()
-        post_type = data.get("post_type", TYPE_PARCEL)
+    data = await state.get_data()
+    post_type = data.get("post_type", TYPE_PARCEL)
 
+    if not data.get("description"):
+        await callback.answer("Сначала заполните описание.", show_alert=True)
+        await render_create_step("description", callback, state)
+        return
+
+    if action == "add":
         await state.set_state(CreatePost.photo_upload)
-        await callback.message.answer(
+        await smart_form_answer(
+            callback,
             form_text(post_type, 8, "Отправьте 1 фото посылки"),
             reply_markup=back_only_kb()
         )
-        await callback.answer()
         return
 
     if action == "skip":

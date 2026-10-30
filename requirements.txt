@@ -5,3 +5,4 @@ qrcode[pil]
 aiohttp
 pillow
 aiosqlite>=0.20.0
+openai>=1.0,<3.0

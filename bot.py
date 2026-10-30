@@ -10294,6 +10294,8 @@ async def main():
         raise RuntimeError("Set BOT_TOKEN env var")
 
     await init_db()
+    from ai_import import init_db as init_ai_import_db
+    await init_ai_import_db()
 
     bot = Bot(
         BOT_TOKEN,
@@ -10310,6 +10312,8 @@ async def main():
     ])
 
     dp = Dispatcher(storage=MemoryStorage())
+    from ai_import import router as ai_import_router
+    dp.include_router(ai_import_router)
     dp.include_router(router)
     
 

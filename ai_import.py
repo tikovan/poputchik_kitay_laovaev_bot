@@ -24,6 +24,7 @@ from aiogram.fsm.state import StatesGroup, State
 
 
 router = Router(name="ai_import")
+publish_callback = None
 
 ADMINS = {474671704}
 
@@ -39,6 +40,7 @@ FIELDS = {
     "delivery_date": "Дата",
     "weight": "Вес",
     "description": "Описание",
+    "contact": "Контакт (Telegram / WeChat / WhatsApp / телефон)",
 }
 
 
@@ -72,7 +74,7 @@ def kb(draft_id):
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="💾 Сохранить черновик",
+                    text="✅ Опубликовать",
                     callback_data=f"ai_save:{draft_id}",
                 )
             ],
@@ -285,10 +287,7 @@ def fmt(d):
             "\n⚠️ Дата объявления уже прошла."
         )
 
-    lines.append(
-        "\n🔒 Это черновик. "
-        "Публикация возможна только с согласия автора."
-    )
+    lines.append("\n🔒 Черновик. Публикация после подтверждения администратором.")
 
     return "\n".join(lines)
 
@@ -437,7 +436,7 @@ async def forwarded(message: Message):
                         "Верни только JSON с ключами: "
                         "post_type, from_country, from_city, "
                         "to_country, to_city, delivery_date, "
-                        "weight, description. "
+                        "weight, description, contact. "
 
                         "post_type может быть только: "
                         "trip, parcel, cargo, other. "
@@ -465,6 +464,8 @@ async def forwarded(message: Message):
                         "Если вес отсутствует, верни null. "
                         "Если описание отсутствует, верни null. "
 
+                        "Контакт извлекай из исходного текста: Telegram @username, WeChat ID, WhatsApp или телефон. "
+                        "Не угадывай мессенджер по номеру. Если контакта нет — null. "
                         "Не придумывай даты, маршруты "
                         "или другие факты. "
 
@@ -621,21 +622,28 @@ async def save(callback: CallbackQuery):
 
         return
 
-    await update_status(
-        draft_id,
-        "saved",
-    )
+    if row["status"] == "published":
+        await callback.answer("Уже опубликовано", show_alert=True)
+        return
 
+    if publish_callback is None:
+        await callback.answer("Публикация не подключена", show_alert=True)
+        return
+    data = json.loads(row["extracted_json"])
+    try:
+        post_id = await publish_callback(data, draft_id, callback.bot)
+    except ValueError as exc:
+        await callback.answer(str(exc)[:190], show_alert=True)
+        return
+    except Exception:
+        logging.exception("AI publish failed")
+        await callback.answer("Ошибка публикации. Проверь Railway logs", show_alert=True)
+        return
+
+    await update_status(draft_id, "published")
     await callback.message.edit_text(
-        fmt(
-            json.loads(
-                row["extracted_json"]
-            )
-        )
-        + f"\n\n💾 Черновик #{draft_id} сохранён. "
-        "Не опубликован."
+        fmt(data) + f"\n\n✅ Опубликовано. ID объявления: {post_id}"
     )
-
     await callback.answer()
 
 

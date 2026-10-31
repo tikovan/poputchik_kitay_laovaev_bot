@@ -930,6 +930,10 @@ async def init_db():
         await ensure_column(conn, "users", "verification_type", "verification_type TEXT")
 
         await ensure_column(conn, "posts", "expire_warned_at", "expire_warned_at INTEGER")
+        await ensure_column(conn, "posts", "is_ai", "is_ai INTEGER NOT NULL DEFAULT 0")
+        await ensure_column(conn, "posts", "ai_draft_id", "ai_draft_id INTEGER")
+        await conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_posts_ai_draft ON posts(ai_draft_id) WHERE ai_draft_id IS NOT NULL")
+        await conn.execute("INSERT OR IGNORE INTO users(user_id, username, full_name, created_at) VALUES(-1, NULL, NULL, 0)")
 
         await ensure_column(conn, "route_subscriptions", "from_city", "from_city TEXT")
         await ensure_column(conn, "route_subscriptions", "to_city", "to_city TEXT")
@@ -1721,8 +1725,9 @@ async def post_text(row, for_channel: bool = False) -> str:
     if row["to_city"]:
         route += f", {html.escape(row['to_city'])}"
 
+    is_ai = bool(row["is_ai"]) if "is_ai" in row.keys() else False
     owner_user_id = row["user_id"]
-    profile = await get_user_profile_short_cached(owner_user_id)
+    profile = None if is_ai else await get_user_profile_short_cached(owner_user_id)
 
     owner_username = row["username"] if "username" in row.keys() else None
     owner_full_name = row["full_name"] if "full_name" in row.keys() else None
@@ -1736,7 +1741,10 @@ async def post_text(row, for_channel: bool = False) -> str:
         lines.append(f"<b>Дата:</b> {html.escape(row['travel_date'])}")
 
     if row["weight_kg"]:
-        lines.append(f"<b>Вес/объем:</b> {html.escape(row['weight_kg'])}")
+        weight_text = html.escape(row["weight_kg"])
+        if is_ai and row["weight_kg"] == "20 кг":
+            weight_text += " (уточняйте у автора)"
+        lines.append(f"<b>Вес/объем:</b> {weight_text}")
 
     lines.append(f"<b>Описание:</b> {html.escape(row['description'])}")
 
@@ -1745,6 +1753,10 @@ async def post_text(row, for_channel: bool = False) -> str:
 
     if "photo_file_id" in row.keys() and row["photo_file_id"]:
         lines.append("<b>Фото посылки:</b> доступно по кнопке ниже")
+
+    if is_ai:
+        lines.extend(["", "🤖 <b>Попутчик AI</b>", "", f"<b>ID объявления:</b> {row['id']}"])
+        return "\n".join(lines)
 
     lines.append("")
     lines.append("<b>👤 Профиль пользователя</b>")
@@ -2229,8 +2241,10 @@ def admin_post_actions_kb(post_id: int):
 
 
 async def public_post_kb(post_id: int, owner_id: int):
-    _, reviews_count = await user_rating_summary(owner_id)
     post = await get_post(post_id)
+    if post and post["is_ai"]:
+        return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📤 Поделиться", url=f"https://t.me/share/url?url={post_deeplink(post_id)}")]])
+    _, reviews_count = await user_rating_summary(owner_id)
 
     rows = [
         [InlineKeyboardButton(text="✉️ Написать владельцу", callback_data=f"contact:{post_id}:{owner_id}")],
@@ -2301,7 +2315,9 @@ def confirm_offer_deal_kb(post_id: int, owner_id: int):
     ])
     
 
-def channel_post_kb(post_id: int, post_type: Optional[str] = None):
+def channel_post_kb(post_id: int, post_type: Optional[str] = None, is_ai: bool = False):
+    if is_ai:
+        return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="👁 Открыть объявление", url=post_deeplink(post_id))], [InlineKeyboardButton(text="📤 Поделиться", url=f"https://t.me/share/url?url={post_deeplink(post_id)}")]])
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -4034,7 +4050,7 @@ async def publish_to_channel(bot: Bot, post_id: int):
     msg = await bot.send_message(
         CHANNEL_USERNAME,
        await post_text(row, for_channel=True),
-        reply_markup=channel_post_kb(post_id, row["post_type"])
+        reply_markup=channel_post_kb(post_id, row["post_type"], bool(row["is_ai"]))
     )
 
     async with await connect_db() as conn:
@@ -4346,26 +4362,16 @@ async def notify_coincidence_users(bot: Bot, new_post_id: int):
 
         intro = format_coincidence_badges(score, notes)
 
-        try:
-            await send_post_card_to_user(
-                bot,
-                new_row["user_id"],
-                row,
-                prefix_text=f"🔔 Найдено новое совпадение!\n\n{intro}"
-            )
-        except Exception as e:
-            logger.exception("COINCIDENCE SEND A ERROR: %s", e)
-
-        try:
-            await send_post_card_to_user(
-                bot,
-                row["user_id"],
-                new_row,
-                prefix_text=f"🔔 Найдено новое совпадение!\n\n{intro}"
-            )
-        except Exception as e:
-            logger.exception("COINCIDENCE SEND B ERROR: %s", e)
-
+        if not new_row["is_ai"]:
+            try:
+                await send_post_card_to_user(bot, new_row["user_id"], row, prefix_text=f"🔔 Найдено новое совпадение!\n\n{intro}")
+            except Exception as e:
+                logger.exception("COINCIDENCE SEND A ERROR: %s", e)
+        if not row["is_ai"]:
+            try:
+                await send_post_card_to_user(bot, row["user_id"], new_row, prefix_text=f"🔔 Найдено новое совпадение!\n\n{intro}")
+            except Exception as e:
+                logger.exception("COINCIDENCE SEND B ERROR: %s", e)
 
 async def notify_subscribers(bot: Bot, post_id: int):
     row = await get_post(post_id)
@@ -5760,6 +5766,10 @@ async def start_handler(message: Message, state: FSMContext):
                 await message.answer("Объявление не найдено или уже неактивно.")
                 return
 
+            if row["is_ai"]:
+                await send_post_card(message, row)
+                return
+
             if row["user_id"] == message.from_user.id:
                 await send_post_card(
                     message,
@@ -5792,6 +5802,10 @@ async def start_handler(message: Message, state: FSMContext):
 
             if not row or row["status"] != STATUS_ACTIVE:
                 await message.answer("Объявление не найдено или уже неактивно.")
+                return
+
+            if row["is_ai"]:
+                await send_post_card(message, row)
                 return
 
             if row["user_id"] == message.from_user.id:
@@ -8146,6 +8160,11 @@ async def contact_owner(callback: CallbackQuery, state: FSMContext):
     post_id = int(post_id)
     owner_id = int(owner_id)
 
+    post = await get_post(post_id)
+    if not post or post["is_ai"] or post["user_id"] != owner_id:
+        await callback.answer("Для AI-объявлений внутренний чат недоступен", show_alert=True)
+        return
+
     if owner_id == callback.from_user.id:
         await callback.answer("Это ваше объявление", show_alert=True)
         return
@@ -9243,6 +9262,9 @@ async def offer_deal_confirm_handler(callback: CallbackQuery):
             return
 
         row = await get_post(post_id)
+        if row and row["is_ai"]:
+            await callback.answer("Сделки с AI-объявлениями недоступны", show_alert=True)
+            return
         if not row or row["status"] != STATUS_ACTIVE:
             await callback.answer("Объявление не найдено или неактивно", show_alert=True)
             return
@@ -9283,6 +9305,9 @@ async def offer_deal_handler(callback: CallbackQuery):
             return
 
         row = await get_post(post_id)
+        if row and row["is_ai"]:
+            await callback.answer("Сделки с AI-объявлениями недоступны", show_alert=True)
+            return
         if not row or row["status"] != STATUS_ACTIVE:
             await callback.answer("Объявление не найдено или неактивно", show_alert=True)
             return
@@ -10289,11 +10314,59 @@ async def test_handler(message: Message):
     await message.answer_sticker(ONBOARDING_STICKER_ID)
 
 
+
+async def publish_ai_draft(data: dict, draft_id: int, bot: Bot) -> int:
+    """Publish reviewed AI draft as an independent listing; never use a real owner's account."""
+    if data.get("post_type") not in ("trip", "parcel"):
+        raise ValueError("Для публикации поддерживаются trip и parcel; cargo требует отдельной интеграции")
+    required = ("from_country", "to_country", "description", "contact")
+    missing = [key for key in required if not str(data.get(key) or "").strip()]
+    if missing:
+        raise ValueError("Не заполнены поля: " + ", ".join(missing))
+    travel_date = data.get("delivery_date")
+    if not travel_date:
+        raise ValueError("Дата обязательна для публикации")
+    dt = parse_date_loose(travel_date)
+    if dt is None or dt.date() < datetime.now().date():
+        raise ValueError("Укажите актуальную дату в формате YYYY-MM-DD")
+    ts = now_ts()
+    async with await connect_db() as conn:
+        cur = await conn.execute("SELECT id FROM posts WHERE ai_draft_id=?", (draft_id,))
+        existing = await cur.fetchone()
+        if existing:
+            return int(existing["id"])
+        cur = await conn.execute("""INSERT INTO posts
+            (user_id, post_type, from_country, from_city, to_country, to_city,
+             travel_date, weight_kg, description, contact_note, status,
+             is_anonymous_contact, created_at, updated_at, bumped_at, expires_at, is_ai, ai_draft_id)
+            VALUES (-1, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 1, ?, ?, ?, ?, 1, ?)
+        """, (data["post_type"], data["from_country"], data.get("from_city"),
+              data["to_country"], data.get("to_city"), dt.strftime("%d.%m.%Y"),
+              data.get("weight"), data["description"], data["contact"],
+              ts, ts, ts, calculate_post_expires_at(ts, dt.strftime("%d.%m.%Y")), draft_id))
+        post_id = int(cur.lastrowid)
+        await conn.commit()
+    try:
+        await publish_to_channel(bot, post_id)
+    except Exception:
+        logger.exception("AI post %s channel publishing failed", post_id)
+    try:
+        await notify_subscribers(bot, post_id)
+    except Exception:
+        logger.exception("AI post %s subscriber notifications failed", post_id)
+    try:
+        await notify_coincidence_users(bot, post_id)
+    except Exception:
+        logger.exception("AI post %s coincidence notifications failed", post_id)
+    return post_id
+
 async def main():
     if not BOT_TOKEN:
         raise RuntimeError("Set BOT_TOKEN env var")
 
     await init_db()
+    import ai_import
+    ai_import.publish_callback = publish_ai_draft
     from ai_import import init_db as init_ai_import_db
     await init_ai_import_db()
 

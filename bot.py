@@ -260,7 +260,14 @@ STEP_ORDER = [
 
 STEP_NUMBERS = {name: i + 1 for i, name in enumerate(STEP_ORDER)}
 
+# New navigation labels; legacy commands remain recognized for old Telegram keyboards.
+NAV_FIND = "🔎 Найти попутчика или посылку"
+NAV_CHANNEL = "📢 Все объявления — канал"
+NAV_MORE = "☰ Ещё"
+NAV_BACK = "⬅️ Главное меню"
+
 MAIN_MENU_TEXTS = {
+    NAV_FIND, NAV_CHANNEL, NAV_MORE, NAV_BACK,
     "✈️ Взять посылку",
     "📦 Отправить посылку",
     "🚀 Быстрая доставка (карго)",
@@ -2686,24 +2693,29 @@ def dispute_actions_kb(dispute: aiosqlite.Row, viewer_user_id: int) -> InlineKey
 
 
 def main_menu(user_id: Optional[int] = None):
+    """Six core actions, with advanced features one level deeper."""
     keyboard = [
+        [KeyboardButton(text=NAV_FIND)],
         [KeyboardButton(text="✈️ Взять посылку"), KeyboardButton(text="📦 Отправить посылку")],
+        [KeyboardButton(text=NAV_CHANNEL)],
+        [KeyboardButton(text="📋 Мои объявления"), KeyboardButton(text=NAV_MORE)],
+    ]
+    return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
+
+
+def more_menu(user_id: Optional[int] = None):
+    keyboard = [
         [KeyboardButton(text="🚀 Быстрая доставка (карго)")],
-        [KeyboardButton(text="🔎 Найти совпадения"), KeyboardButton(text="📋 Мои объявления")],
         [KeyboardButton(text="🤝 Мои сделки"), KeyboardButton(text="🔔 Подписки")],
         [KeyboardButton(text="🆕 Новые объявления"), KeyboardButton(text="🔥 Популярные маршруты")],
         [KeyboardButton(text="💰 Поднять объявление"), KeyboardButton(text="🛂 Верификация аккаунта")],
         [KeyboardButton(text="📊 Статистика"), KeyboardButton(text="🚩 Жалоба / Баг / Поддержка")],
         [KeyboardButton(text="ℹ️ Помощь")],
     ]
-
     if user_id is not None and is_admin(user_id):
         keyboard.append([KeyboardButton(text="👨‍💼 Админка")])
-
-    return ReplyKeyboardMarkup(
-        keyboard=keyboard,
-        resize_keyboard=True
-    )
+    keyboard.append([KeyboardButton(text=NAV_BACK)])
+    return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 
 
 class CreatePost(StatesGroup):
@@ -5707,6 +5719,29 @@ async def global_main_menu_router(message: Message, state: FSMContext):
 
     await state.clear()
 
+    if text == NAV_MORE:
+        await message.answer("☰ Дополнительные функции:", reply_markup=more_menu(message.from_user.id))
+        return
+
+    if text == NAV_BACK:
+        await message.answer("🏠 Главное меню", reply_markup=main_menu(message.from_user.id))
+        return
+
+    if text == NAV_CHANNEL:
+        await message.answer(
+            "📢 <b>Все объявления в Telegram-канале</b>\n\n"
+            "Здесь публикуются маршруты и предложения по отправке посылок.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="📢 Открыть канал", url="https://t.me/china_poputchik")
+            ]]),
+            parse_mode="HTML",
+        )
+        return
+
+    if text == NAV_FIND:
+        await find_start(message, state)
+        return
+
     if text == "✈️ Взять посылку":
         await add_trip(message, state)
         return
@@ -7905,10 +7940,13 @@ async def popular_route_open(callback: CallbackQuery):
 @router.message(F.text == "🆕 Новые объявления")
 async def recent_posts_handler(message: Message):
     rows = await get_recent_posts(10)
+    channel_kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="📢 Все объявления в канале", url="https://t.me/china_poputchik")
+    ]])
     if not rows:
-        await message.answer("Пока нет новых активных объявлений.", reply_markup=main_menu(message.from_user.id))
+        await message.answer("Пока нет новых активных объявлений.", reply_markup=channel_kb)
         return
-    await message.answer("🆕 Последние объявления:")
+    await message.answer("🆕 Последние объявления:", reply_markup=channel_kb)
     for row in rows:
         await send_post_card(message, row, with_age=True)
 

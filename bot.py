@@ -979,6 +979,27 @@ async def init_db():
             attempted_at INTEGER NOT NULL,
             error TEXT
         )""")
+        await conn.executescript("""
+        CREATE TABLE IF NOT EXISTS broadcast_jobs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            admin_id INTEGER NOT NULL,
+            audience TEXT NOT NULL,
+            message_text TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'draft',
+            created_at INTEGER NOT NULL,
+            started_at INTEGER,
+            finished_at INTEGER
+        );
+        CREATE TABLE IF NOT EXISTS broadcast_recipients (
+            job_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            error TEXT,
+            attempted_at INTEGER,
+            PRIMARY KEY (job_id, user_id)
+        );
+        """)
+        await ensure_column(conn, "users", "broadcast_opt_out", "broadcast_opt_out INTEGER NOT NULL DEFAULT 0")
         await conn.commit()
 
 
@@ -2504,7 +2525,7 @@ def admin_menu_kb():
         [InlineKeyboardButton(text="🛂 Верификации", callback_data="admin:verifications")],
         [InlineKeyboardButton(text="🆘 Последние жалобы", callback_data="admin:complaints")],
         [InlineKeyboardButton(text="📊 Аудитория и аналитика", callback_data="admin_users:home")],
-        [InlineKeyboardButton(text="📣 Пригласить в канал", callback_data="admin_channel:preview")],
+        [InlineKeyboardButton(text="📣 Рассылки", callback_data="admin_broadcast:home")],
         [InlineKeyboardButton(text="👤 Пользователь", callback_data="admin:user_lookup")],
         [InlineKeyboardButton(text="💰 Заявки на поднятие", callback_data="admin:bump_orders")],
         [InlineKeyboardButton(text="📊 Статистика сервиса", callback_data="admin:stats")],
@@ -8173,129 +8194,233 @@ async def stats_handler(message: Message):
     await message.answer(text, reply_markup=main_menu(message.from_user.id))
 
 
-# Manual, one-time channel invitation for existing users. Never starts automatically.
-_channel_campaign_task = None
-_channel_campaign_progress = {"status": "не запускалась", "checked": 0, "sent": 0, "skipped": 0, "failed": 0, "unknown": 0}
+# General-purpose, administrator-confirmed Telegram broadcasts.
+# Historical channel_invite_campaign records are retained for auditing.
+class BroadcastFlow(StatesGroup):
+    writing = State()
+
+_broadcast_task = None
 
 
-def channel_campaign_kb(confirm=False):
-    rows = []
-    if confirm:
-        rows.append([InlineKeyboardButton(text="🚀 Подтвердить рассылку", callback_data="admin_channel:send")])
-    rows.append([InlineKeyboardButton(text="📊 Статус рассылки", callback_data="admin_channel:status")])
-    rows.append([InlineKeyboardButton(text="⬅️ Админка", callback_data="admin_channel:back")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+def broadcast_home_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✍️ Новая рассылка", callback_data="admin_broadcast:new")],
+        [InlineKeyboardButton(text="📊 Последняя рассылка", callback_data="admin_broadcast:status")],
+        [InlineKeyboardButton(text="⬅️ Админка", callback_data="admin_broadcast:back")],
+    ])
 
 
-@router.callback_query(F.data == "admin_channel:preview")
-async def admin_channel_preview(callback: CallbackQuery):
+def broadcast_audience_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="👥 Все доступные", callback_data="admin_broadcast:aud:all")],
+        [InlineKeyboardButton(text="🟢 Активные за 30 дней", callback_data="admin_broadcast:aud:active")],
+        [InlineKeyboardButton(text="💤 Неактивные 30+ дней", callback_data="admin_broadcast:aud:inactive")],
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="admin_broadcast:home")],
+    ])
+
+
+def broadcast_confirm_kb(job_id):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🚀 Подтвердить отправку", callback_data=f"admin_broadcast:send:{job_id}")],
+        [InlineKeyboardButton(text="❌ Отменить", callback_data=f"admin_broadcast:cancel:{job_id}")],
+    ])
+
+
+def broadcast_stop_kb(job_id):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⏸ Остановить", callback_data=f"admin_broadcast:stop:{job_id}")],
+        [InlineKeyboardButton(text="📊 Обновить статус", callback_data="admin_broadcast:status")],
+    ])
+
+
+def broadcast_unsubscribe_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔕 Отключить общие рассылки", callback_data="broadcast:unsubscribe")]
+    ])
+
+
+@router.callback_query(F.data == "broadcast:unsubscribe")
+async def broadcast_unsubscribe(callback: CallbackQuery):
+    await db_execute("UPDATE users SET broadcast_opt_out=1 WHERE user_id=?", (callback.from_user.id,))
+    await callback.answer("Общие рассылки отключены", show_alert=True)
+    await callback.message.answer("🔕 Общие информационные рассылки отключены. Уведомления по вашим объявлениям и маршрутам остаются доступными.")
+
+
+@router.callback_query(F.data == "admin_broadcast:home")
+async def broadcast_home(callback: CallbackQuery, state: FSMContext):
     if not is_admin(callback.from_user.id):
-        await callback.answer("Нет доступа", show_alert=True)
-        return
-    if not CHANNEL_USERNAME:
-        await callback.answer("CHANNEL_USERNAME не задан", show_alert=True)
-        return
-    counts = await db_fetchone("""SELECT
-      (SELECT COUNT(*) FROM users WHERE user_id>0 AND user_id NOT IN (SELECT user_id FROM channel_invite_campaign)) AS eligible,
-      (SELECT COUNT(*) FROM channel_invite_campaign WHERE status='sent') AS sent,
-      (SELECT COUNT(*) FROM channel_invite_campaign WHERE status='failed') AS failed""")
+        return await callback.answer("Нет доступа", show_alert=True)
+    await state.clear()
     await callback.message.answer(
-        "📣 <b>Разовая рассылка приглашений</b>\n\n"
-        f"Потенциально для проверки: <b>{counts['eligible']}</b> пользователей.\n"
-        f"Ранее отправлено: <b>{counts['sent']}</b>. Ошибок доставки: <b>{counts['failed']}</b>.\n\n"
-        "Перед отправкой каждому будет проверена подписка через Telegram. "
-        "Уже подписанным ничего не отправляем. Если проверка недоступна — пропускаем. "
-        "Каждому пользователю сообщение отправляется не более одного раза.\n\n"
-        "⚠️ Число неподписанных заранее неизвестно; показано число пользователей для проверки. "
-        "Отправка запускается только после подтверждения.",
-        reply_markup=channel_campaign_kb(confirm=not (_channel_campaign_task and not _channel_campaign_task.done()))
-    )
+        "📣 <b>Рассылки</b>\n\nСоздавайте информационные сообщения для пользователей бота. "
+        "Перед отправкой можно выбрать аудиторию, посмотреть текст и подтвердить запуск.\n\n"
+        "Пользователи могут отключить необязательные рассылки.", reply_markup=broadcast_home_kb())
     await callback.answer()
 
 
-async def run_channel_invite_campaign(bot: Bot, admin_id: int):
-    global _channel_campaign_progress
-    _channel_campaign_progress = {"status": "идёт", "checked": 0, "sent": 0, "skipped": 0, "failed": 0, "unknown": 0}
+@router.callback_query(F.data == "admin_broadcast:new")
+async def broadcast_new(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("Нет доступа", show_alert=True)
+    await state.clear()
+    await state.set_state(BroadcastFlow.writing)
+    await callback.message.answer("✍️ Отправьте текст рассылки одним сообщением (до 3500 символов). Для отмены: /cancel")
+    await callback.answer()
+
+
+@router.message(BroadcastFlow.writing, Command("cancel"))
+async def broadcast_cancel_writing(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer("Создание рассылки отменено.")
+
+
+@router.message(BroadcastFlow.writing)
+async def broadcast_capture_text(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    if not message.text or not (1 <= len(message.text.strip()) <= 3500):
+        await message.answer("Нужен текст длиной от 1 до 3500 символов.")
+        return
+    await state.update_data(broadcast_text=message.text.strip())
+    await state.set_state(None)
+    await message.answer("👥 <b>Кому отправить?</b>", reply_markup=broadcast_audience_kb())
+
+
+def broadcast_where(audience):
+    base = "user_id>0 AND COALESCE(is_banned,0)=0 AND COALESCE(broadcast_opt_out,0)=0 AND COALESCE(bot_contact_status,'')!='blocked'"
+    if audience == 'active':
+        return base + " AND COALESCE(last_interaction_at,created_at,0)>=?", (now_ts()-30*86400,)
+    if audience == 'inactive':
+        return base + " AND COALESCE(last_interaction_at,created_at,0)<?", (now_ts()-30*86400,)
+    return base, ()
+
+
+@router.callback_query(F.data.startswith("admin_broadcast:aud:"))
+async def broadcast_choose_audience(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("Нет доступа", show_alert=True)
+    audience = callback.data.rsplit(':',1)[1]
+    if audience not in {'all','active','inactive'}:
+        return await callback.answer("Неверная аудитория", show_alert=True)
+    data = await state.get_data()
+    msg = data.get('broadcast_text')
+    if not msg:
+        return await callback.answer("Начните новую рассылку", show_alert=True)
+    where, params = broadcast_where(audience)
+    users = await db_fetchall("SELECT user_id FROM users WHERE "+where, params)
+    users = [int(r['user_id']) for r in users if not is_admin(int(r['user_id']))]
+    async with await connect_db() as conn:
+        cur = await conn.execute("INSERT INTO broadcast_jobs(admin_id,audience,message_text,status,created_at) VALUES(?,?,?,?,?)", (callback.from_user.id,audience,msg,'draft',now_ts()))
+        job_id = cur.lastrowid
+        await conn.executemany("INSERT INTO broadcast_recipients(job_id,user_id) VALUES(?,?)", [(job_id,u) for u in users])
+        await conn.commit()
+    await state.clear()
+    labels={'all':'Все доступные','active':'Активные за 30 дней','inactive':'Неактивные 30+ дней'}
+    await callback.message.answer(f"📣 <b>Предпросмотр рассылки #{job_id}</b>\nАудитория: {labels[audience]}\nПолучателей: <b>{len(users)}</b>\n\n<b>Текст:</b>\n{html.escape(msg)}\n\nПосле отправки будет кнопка отключения общих рассылок.", reply_markup=broadcast_confirm_kb(job_id))
+    await callback.answer()
+
+
+async def run_broadcast(bot: Bot, job_id: int, admin_id: int):
+    global _broadcast_task
     try:
-        users = await db_fetchall("""SELECT user_id FROM users WHERE user_id>0
-            AND user_id NOT IN (SELECT user_id FROM channel_invite_campaign)
-            ORDER BY user_id""")
-        for user in users:
-            uid = int(user['user_id'])
-            if is_admin(uid):
-                _channel_campaign_progress['skipped'] += 1
+        rows = await db_fetchall("SELECT user_id FROM broadcast_recipients WHERE job_id=? AND status='pending' ORDER BY user_id", (job_id,))
+        job = await db_fetchone("SELECT message_text FROM broadcast_jobs WHERE id=?", (job_id,))
+        if not job:
+            return
+        for row in rows:
+            current = await db_fetchone("SELECT status FROM broadcast_jobs WHERE id=?", (job_id,))
+            if not current or current['status'] != 'running':
+                break
+            uid=int(row['user_id'])
+            user=await db_fetchone("SELECT broadcast_opt_out,is_banned FROM users WHERE user_id=?", (uid,))
+            if not user or user['broadcast_opt_out'] or user['is_banned']:
+                await db_execute("UPDATE broadcast_recipients SET status='skipped' WHERE job_id=? AND user_id=?", (job_id,uid))
                 continue
-            _channel_campaign_progress['checked'] += 1
-            joined = await channel_membership(bot, uid)
-            if joined is True:
-                _channel_campaign_progress['skipped'] += 1
-                continue
-            if joined is None:
-                _channel_campaign_progress['unknown'] += 1
-                continue
-            # Reserve the user before sending: restarts must never resend automatically.
-            await db_execute("INSERT OR IGNORE INTO channel_invite_campaign(user_id,status,attempted_at) VALUES(?,?,?)", (uid, 'attempted', now_ts()))
+            # Claim BEFORE sending. Interrupted attempts are not resent automatically.
+            await db_execute("UPDATE broadcast_recipients SET status='attempted',attempted_at=? WHERE job_id=? AND user_id=? AND status='pending'", (now_ts(),job_id,uid))
             try:
-                await bot.send_message(uid,
-                    "📢 <b>Важное уведомление от «Попутчик Китай»!</b>\n\n"
-                    "Мы заметили, что многие пользователи нашего бота до сих пор не подписаны на канал с объявлениями.\n\n"
-                    "⚠️ <b>Из-за этого вы можете пропускать новые поездки, предложения попутчиков и заявки на отправку посылок!</b>\n\n"
-                    "✈️ В нашем канале регулярно публикуются новые маршруты.\n\n"
-                    "📦 Вы можете первыми находить попутчиков или людей, которым нужно передать посылку.\n\n"
-                    "🔥 <b>Чтобы не пропускать новые объявления, обязательно подпишитесь на наш канал!</b>\n\n"
-                    "🔔 Подписка на канал теперь необходима для использования бота.\n\n"
-                    "После подписки нажмите «✅ Проверить подписку», чтобы продолжить пользоваться сервисом.",
-                    reply_markup=channel_discovery_kb())
-                await db_execute("UPDATE channel_invite_campaign SET status='sent' WHERE user_id=?", (uid,))
-                _channel_campaign_progress['sent'] += 1
+                await bot.send_message(uid, html.escape(job['message_text']), reply_markup=broadcast_unsubscribe_kb())
+                await db_execute("UPDATE broadcast_recipients SET status='sent' WHERE job_id=? AND user_id=?", (job_id,uid))
             except Exception as exc:
-                await db_execute("UPDATE channel_invite_campaign SET status='failed',error=? WHERE user_id=?", (str(exc)[:300], uid))
-                _channel_campaign_progress['failed'] += 1
-            await asyncio.sleep(0.12)
-        _channel_campaign_progress['status'] = 'завершена'
+                await db_execute("UPDATE broadcast_recipients SET status='failed',error=? WHERE job_id=? AND user_id=?", (str(exc)[:300],job_id,uid))
+            await asyncio.sleep(0.15)
+        current = await db_fetchone("SELECT status FROM broadcast_jobs WHERE id=?", (job_id,))
+        if current and current['status']=='running':
+            await db_execute("UPDATE broadcast_jobs SET status='completed',finished_at=? WHERE id=?", (now_ts(),job_id))
     except Exception:
-        logger.exception('Channel invite campaign failed')
-        _channel_campaign_progress['status'] = 'ошибка, проверьте логи'
-    try:
-        await bot.send_message(admin_id, "📣 Рассылка: " + str(_channel_campaign_progress))
-    except Exception:
-        logger.exception('Cannot notify campaign admin')
+        logger.exception("Broadcast job %s failed",job_id)
+        await db_execute("UPDATE broadcast_jobs SET status='paused' WHERE id=?",(job_id,))
+    finally:
+        counts=await db_fetchall("SELECT status,COUNT(*) n FROM broadcast_recipients WHERE job_id=? GROUP BY status",(job_id,))
+        summary=', '.join(f"{r['status']}: {r['n']}" for r in counts)
+        try:
+            await bot.send_message(admin_id, f"📣 Рассылка #{job_id}: {summary}\nОткройте раздел «Рассылки» для деталей.")
+        except Exception:
+            logger.exception("Cannot notify broadcast admin")
 
 
-@router.callback_query(F.data == "admin_channel:send")
-async def admin_channel_send(callback: CallbackQuery, bot: Bot):
-    global _channel_campaign_task
+@router.callback_query(F.data.startswith("admin_broadcast:send:"))
+async def broadcast_send(callback: CallbackQuery, bot: Bot):
+    global _broadcast_task
     if not is_admin(callback.from_user.id):
-        await callback.answer("Нет доступа", show_alert=True)
-        return
-    if not CHANNEL_USERNAME:
-        await callback.answer("CHANNEL_USERNAME не задан", show_alert=True)
-        return
-    if _channel_campaign_task and not _channel_campaign_task.done():
-        await callback.answer("Рассылка уже идёт", show_alert=True)
-        return
-    _channel_campaign_task = asyncio.create_task(run_channel_invite_campaign(bot, callback.from_user.id))
-    await callback.answer("Рассылка запущена")
-    await callback.message.answer("📣 Рассылка запущена. Прогресс можно посмотреть в админке.", reply_markup=channel_campaign_kb())
-
-
-@router.callback_query(F.data == "admin_channel:status")
-async def admin_channel_status(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("Нет доступа", show_alert=True)
-        return
-    counts = await db_fetchall("SELECT status, COUNT(*) AS n FROM channel_invite_campaign GROUP BY status")
-    details = ", ".join(f"{r['status']}: {r['n']}" for r in counts) or "нет записей"
-    await callback.message.answer("📊 <b>Рассылка</b>\n" + str(_channel_campaign_progress) + "\nБаза: " + details, reply_markup=channel_campaign_kb())
+        return await callback.answer("Нет доступа", show_alert=True)
+    job_id=int(callback.data.rsplit(':',1)[1])
+    job=await db_fetchone("SELECT * FROM broadcast_jobs WHERE id=?",(job_id,))
+    if not job or job['admin_id']!=callback.from_user.id or job['status'] not in ('draft','paused'):
+        return await callback.answer("Рассылка уже запущена или недоступна", show_alert=True)
+    if _broadcast_task and not _broadcast_task.done():
+        return await callback.answer("Другая рассылка выполняется", show_alert=True)
+    await db_execute("UPDATE broadcast_jobs SET status='running',started_at=COALESCE(started_at,?) WHERE id=?",(now_ts(),job_id))
+    _broadcast_task=asyncio.create_task(run_broadcast(bot,job_id,callback.from_user.id))
+    await callback.message.answer(f"🚀 Рассылка #{job_id} запущена.",reply_markup=broadcast_stop_kb(job_id))
     await callback.answer()
 
 
-@router.callback_query(F.data == "admin_channel:back")
-async def admin_channel_back(callback: CallbackQuery):
+@router.callback_query(F.data.startswith("admin_broadcast:cancel:"))
+async def broadcast_cancel_job(callback: CallbackQuery):
     if not is_admin(callback.from_user.id):
-        await callback.answer("Нет доступа", show_alert=True)
-        return
-    await callback.message.answer(await admin_stats_text(), reply_markup=admin_menu_kb())
+        return await callback.answer("Нет доступа", show_alert=True)
+    job_id=int(callback.data.rsplit(':',1)[1])
+    await db_execute("UPDATE broadcast_jobs SET status='cancelled' WHERE id=? AND status='draft' AND admin_id=?",(job_id,callback.from_user.id))
+    await callback.message.answer("❌ Черновик отменён.",reply_markup=broadcast_home_kb())
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admin_broadcast:stop:"))
+async def broadcast_stop(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("Нет доступа", show_alert=True)
+    job_id=int(callback.data.rsplit(':',1)[1])
+    await db_execute("UPDATE broadcast_jobs SET status='paused' WHERE id=? AND status='running'",(job_id,))
+    await callback.answer("Остановка запрошена",show_alert=True)
+
+
+@router.callback_query(F.data == "admin_broadcast:status")
+async def broadcast_status(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("Нет доступа", show_alert=True)
+    job=await db_fetchone("SELECT * FROM broadcast_jobs ORDER BY id DESC LIMIT 1")
+    if not job:
+        await callback.message.answer("Рассылок пока не было.",reply_markup=broadcast_home_kb())
+    else:
+        rows=await db_fetchall("SELECT status,COUNT(*) n FROM broadcast_recipients WHERE job_id=? GROUP BY status",(job['id'],))
+        summary='\n'.join(f"{r['status']}: {r['n']}" for r in rows)
+        buttons=[]
+        if job['status']=='paused':
+            buttons.append([InlineKeyboardButton(text="▶️ Продолжить",callback_data=f"admin_broadcast:send:{job['id']}")])
+        if job['status']=='running':
+            buttons.append([InlineKeyboardButton(text="⏸ Остановить",callback_data=f"admin_broadcast:stop:{job['id']}")])
+        buttons.append([InlineKeyboardButton(text="🔄 Обновить",callback_data="admin_broadcast:status")])
+        buttons.append([InlineKeyboardButton(text="⬅️ Рассылки",callback_data="admin_broadcast:home")])
+        await callback.message.answer(f"📊 <b>Рассылка #{job['id']}</b>\nСтатус: {job['status']}\nАудитория: {job['audience']}\n{summary}",reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin_broadcast:back")
+async def broadcast_back(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("Нет доступа", show_alert=True)
+    await callback.message.answer(await admin_stats_text(),reply_markup=admin_menu_kb())
     await callback.answer()
 
 
@@ -10951,6 +11076,7 @@ async def main():
         raise RuntimeError("Set BOT_TOKEN env var")
 
     await init_db()
+    await db_execute("UPDATE broadcast_jobs SET status='paused' WHERE status='running'")
     import ai_import
     ai_import.publish_callback = publish_ai_draft
     from ai_import import init_db as init_ai_import_db

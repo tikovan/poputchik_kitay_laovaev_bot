@@ -11,7 +11,7 @@ from functools import lru_cache
 from contextlib import closing
 from datetime import datetime, timedelta
 from typing import List, Optional, Tuple
-from  aiogram import Bot, Dispatcher, F, Router
+from aiogram import Bot, Dispatcher, F, Router, BaseMiddleware
 from aiogram.client.session.middlewares.base import BaseRequestMiddleware
 from aiogram.exceptions import TelegramForbiddenError
 from aiogram.client.default import DefaultBotProperties

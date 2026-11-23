@@ -973,6 +973,12 @@ async def init_db():
         await ensure_column(conn, "cargo_leads", "photo_file_id", "photo_file_id TEXT")
         await ensure_column(conn, "cargo_leads", "delivery_date", "delivery_date TEXT")
 
+        await conn.execute("""CREATE TABLE IF NOT EXISTS channel_invite_campaign (
+            user_id INTEGER PRIMARY KEY,
+            status TEXT NOT NULL,
+            attempted_at INTEGER NOT NULL,
+            error TEXT
+        )""")
         await conn.commit()
 
 
@@ -2498,6 +2504,7 @@ def admin_menu_kb():
         [InlineKeyboardButton(text="🛂 Верификации", callback_data="admin:verifications")],
         [InlineKeyboardButton(text="🆘 Последние жалобы", callback_data="admin:complaints")],
         [InlineKeyboardButton(text="📊 Аудитория и аналитика", callback_data="admin_users:home")],
+        [InlineKeyboardButton(text="📣 Пригласить в канал", callback_data="admin_channel:preview")],
         [InlineKeyboardButton(text="👤 Пользователь", callback_data="admin:user_lookup")],
         [InlineKeyboardButton(text="💰 Заявки на поднятие", callback_data="admin:bump_orders")],
         [InlineKeyboardButton(text="📊 Статистика сервиса", callback_data="admin:stats")],
@@ -8164,6 +8171,132 @@ async def stats_handler(message: Message):
         )
 
     await message.answer(text, reply_markup=main_menu(message.from_user.id))
+
+
+# Manual, one-time channel invitation for existing users. Never starts automatically.
+_channel_campaign_task = None
+_channel_campaign_progress = {"status": "не запускалась", "checked": 0, "sent": 0, "skipped": 0, "failed": 0, "unknown": 0}
+
+
+def channel_campaign_kb(confirm=False):
+    rows = []
+    if confirm:
+        rows.append([InlineKeyboardButton(text="🚀 Подтвердить рассылку", callback_data="admin_channel:send")])
+    rows.append([InlineKeyboardButton(text="📊 Статус рассылки", callback_data="admin_channel:status")])
+    rows.append([InlineKeyboardButton(text="⬅️ Админка", callback_data="admin_channel:back")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@router.callback_query(F.data == "admin_channel:preview")
+async def admin_channel_preview(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+    if not CHANNEL_USERNAME:
+        await callback.answer("CHANNEL_USERNAME не задан", show_alert=True)
+        return
+    counts = await db_fetchone("""SELECT
+      (SELECT COUNT(*) FROM users WHERE user_id>0 AND user_id NOT IN (SELECT user_id FROM channel_invite_campaign)) AS eligible,
+      (SELECT COUNT(*) FROM channel_invite_campaign WHERE status='sent') AS sent,
+      (SELECT COUNT(*) FROM channel_invite_campaign WHERE status='failed') AS failed""")
+    await callback.message.answer(
+        "📣 <b>Разовая рассылка приглашений</b>\n\n"
+        f"Потенциально для проверки: <b>{counts['eligible']}</b> пользователей.\n"
+        f"Ранее отправлено: <b>{counts['sent']}</b>. Ошибок доставки: <b>{counts['failed']}</b>.\n\n"
+        "Перед отправкой каждому будет проверена подписка через Telegram. "
+        "Уже подписанным ничего не отправляем. Если проверка недоступна — пропускаем. "
+        "Каждому пользователю сообщение отправляется не более одного раза.\n\n"
+        "⚠️ Число неподписанных заранее неизвестно; показано число пользователей для проверки. "
+        "Отправка запускается только после подтверждения.",
+        reply_markup=channel_campaign_kb(confirm=not (_channel_campaign_task and not _channel_campaign_task.done()))
+    )
+    await callback.answer()
+
+
+async def run_channel_invite_campaign(bot: Bot, admin_id: int):
+    global _channel_campaign_progress
+    _channel_campaign_progress = {"status": "идёт", "checked": 0, "sent": 0, "skipped": 0, "failed": 0, "unknown": 0}
+    try:
+        users = await db_fetchall("""SELECT user_id FROM users WHERE user_id>0
+            AND user_id NOT IN (SELECT user_id FROM channel_invite_campaign)
+            ORDER BY user_id""")
+        for user in users:
+            uid = int(user['user_id'])
+            if is_admin(uid):
+                _channel_campaign_progress['skipped'] += 1
+                continue
+            _channel_campaign_progress['checked'] += 1
+            joined = await channel_membership(bot, uid)
+            if joined is True:
+                _channel_campaign_progress['skipped'] += 1
+                continue
+            if joined is None:
+                _channel_campaign_progress['unknown'] += 1
+                continue
+            # Reserve the user before sending: restarts must never resend automatically.
+            await db_execute("INSERT OR IGNORE INTO channel_invite_campaign(user_id,status,attempted_at) VALUES(?,?,?)", (uid, 'attempted', now_ts()))
+            try:
+                await bot.send_message(uid,
+                    "📢 <b>Важное уведомление от «Попутчик Китай»!</b>\n\n"
+                    "Мы заметили, что многие пользователи нашего бота до сих пор не подписаны на канал с объявлениями.\n\n"
+                    "⚠️ <b>Из-за этого вы можете пропускать новые поездки, предложения попутчиков и заявки на отправку посылок!</b>\n\n"
+                    "✈️ В нашем канале регулярно публикуются новые маршруты.\n\n"
+                    "📦 Вы можете первыми находить попутчиков или людей, которым нужно передать посылку.\n\n"
+                    "🔥 <b>Чтобы не пропускать новые объявления, обязательно подпишитесь на наш канал!</b>\n\n"
+                    "🔔 Подписка на канал теперь необходима для использования бота.\n\n"
+                    "После подписки нажмите «✅ Проверить подписку», чтобы продолжить пользоваться сервисом.",
+                    reply_markup=channel_discovery_kb())
+                await db_execute("UPDATE channel_invite_campaign SET status='sent' WHERE user_id=?", (uid,))
+                _channel_campaign_progress['sent'] += 1
+            except Exception as exc:
+                await db_execute("UPDATE channel_invite_campaign SET status='failed',error=? WHERE user_id=?", (str(exc)[:300], uid))
+                _channel_campaign_progress['failed'] += 1
+            await asyncio.sleep(0.12)
+        _channel_campaign_progress['status'] = 'завершена'
+    except Exception:
+        logger.exception('Channel invite campaign failed')
+        _channel_campaign_progress['status'] = 'ошибка, проверьте логи'
+    try:
+        await bot.send_message(admin_id, "📣 Рассылка: " + str(_channel_campaign_progress))
+    except Exception:
+        logger.exception('Cannot notify campaign admin')
+
+
+@router.callback_query(F.data == "admin_channel:send")
+async def admin_channel_send(callback: CallbackQuery, bot: Bot):
+    global _channel_campaign_task
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+    if not CHANNEL_USERNAME:
+        await callback.answer("CHANNEL_USERNAME не задан", show_alert=True)
+        return
+    if _channel_campaign_task and not _channel_campaign_task.done():
+        await callback.answer("Рассылка уже идёт", show_alert=True)
+        return
+    _channel_campaign_task = asyncio.create_task(run_channel_invite_campaign(bot, callback.from_user.id))
+    await callback.answer("Рассылка запущена")
+    await callback.message.answer("📣 Рассылка запущена. Прогресс можно посмотреть в админке.", reply_markup=channel_campaign_kb())
+
+
+@router.callback_query(F.data == "admin_channel:status")
+async def admin_channel_status(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+    counts = await db_fetchall("SELECT status, COUNT(*) AS n FROM channel_invite_campaign GROUP BY status")
+    details = ", ".join(f"{r['status']}: {r['n']}" for r in counts) or "нет записей"
+    await callback.message.answer("📊 <b>Рассылка</b>\n" + str(_channel_campaign_progress) + "\nБаза: " + details, reply_markup=channel_campaign_kb())
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin_channel:back")
+async def admin_channel_back(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+    await callback.message.answer(await admin_stats_text(), reply_markup=admin_menu_kb())
+    await callback.answer()
 
 
 @router.message(Command("admin"))

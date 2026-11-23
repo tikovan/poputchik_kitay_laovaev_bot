@@ -2695,9 +2695,8 @@ def dispute_actions_kb(dispute: aiosqlite.Row, viewer_user_id: int) -> InlineKey
 def main_menu(user_id: Optional[int] = None):
     """Six core actions, with advanced features one level deeper."""
     keyboard = [
-        [KeyboardButton(text=NAV_FIND)],
-        [KeyboardButton(text="✈️ Взять посылку"), KeyboardButton(text="📦 Отправить посылку")],
         [KeyboardButton(text=NAV_CHANNEL)],
+        [KeyboardButton(text="✈️ Взять посылку"), KeyboardButton(text="📦 Отправить посылку")],
         [KeyboardButton(text="📋 Мои объявления"), KeyboardButton(text=NAV_MORE)],
     ]
     return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
@@ -2705,6 +2704,7 @@ def main_menu(user_id: Optional[int] = None):
 
 def more_menu(user_id: Optional[int] = None):
     keyboard = [
+        [KeyboardButton(text=NAV_FIND)],
         [KeyboardButton(text="🚀 Быстрая доставка (карго)")],
         [KeyboardButton(text="🤝 Мои сделки"), KeyboardButton(text="🔔 Подписки")],
         [KeyboardButton(text="🆕 Новые объявления"), KeyboardButton(text="🔥 Популярные маршруты")],
@@ -5720,7 +5720,7 @@ async def global_main_menu_router(message: Message, state: FSMContext):
     await state.clear()
 
     if text == NAV_MORE:
-        await message.answer("☰ Дополнительные функции:", reply_markup=more_menu(message.from_user.id))
+        await message.answer("☰ Ещё — выберите действие", reply_markup=more_menu(message.from_user.id))
         return
 
     if text == NAV_BACK:

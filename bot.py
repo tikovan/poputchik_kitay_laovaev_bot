@@ -262,7 +262,7 @@ STEP_NUMBERS = {name: i + 1 for i, name in enumerate(STEP_ORDER)}
 
 # New navigation labels; legacy commands remain recognized for old Telegram keyboards.
 NAV_FIND = "🔎 Найти попутчика или посылку"
-NAV_CHANNEL = "📢 Все объявления — канал"
+NAV_CHANNEL = "🔥 Смотреть все объявления"
 NAV_MORE = "☰ Ещё"
 NAV_BACK = "⬅️ Главное меню"
 

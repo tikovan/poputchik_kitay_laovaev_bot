@@ -929,6 +929,9 @@ async def init_db():
         await ensure_column(conn, "users", "active_chat_deal_id", "active_chat_deal_id INTEGER")
         await ensure_column(conn, "users", "last_chat_message_at", "last_chat_message_at INTEGER DEFAULT 0")
         await ensure_column(conn, "users", "chat_message_count_10min", "chat_message_count_10min INTEGER DEFAULT 0")
+        await ensure_column(conn, "users", "bot_contact_status", "bot_contact_status TEXT DEFAULT 'unknown'")
+        await ensure_column(conn, "users", "bot_contact_checked_at", "bot_contact_checked_at INTEGER")
+        await ensure_column(conn, "users", "bot_contact_error", "bot_contact_error TEXT")
         await ensure_column(conn, "users", "verified_at", "verified_at INTEGER")
         await ensure_column(conn, "users", "verification_type", "verification_type TEXT")
 
@@ -8353,6 +8356,7 @@ def admin_users_menu_kb():
         [InlineKeyboardButton(text="📋 Все", callback_data="admin_users:list:all:0"), InlineKeyboardButton(text="🟢 Активные 30д", callback_data="admin_users:list:active:0")],
         [InlineKeyboardButton(text="💤 Неактивные 30д", callback_data="admin_users:list:inactive:0"), InlineKeyboardButton(text="🆕 Новые 30д", callback_data="admin_users:list:new:0")],
         [InlineKeyboardButton(text="🛂 Верифицированные", callback_data="admin_users:list:verified:0"), InlineKeyboardButton(text="🚫 Бан", callback_data="admin_users:list:banned:0")],
+        [InlineKeyboardButton(text="📵 Блокировали бота", callback_data="admin_users:list:blocked:0"), InlineKeyboardButton(text="❔ Не проверены", callback_data="admin_users:list:unknown:0")],
         [InlineKeyboardButton(text="🔎 Поиск", callback_data="admin:user_lookup"), InlineKeyboardButton(text="📥 Excel", callback_data="admin_users:export")],
     ])
 
@@ -8363,6 +8367,8 @@ def admin_users_filter(mode, now):
     if mode == "new": return "created_at>=?", (now-30*86400,)
     if mode == "verified": return "is_verified=1", ()
     if mode == "banned": return "is_banned=1", ()
+    if mode == "blocked": return "bot_contact_status='blocked'", ()
+    if mode == "unknown": return "COALESCE(bot_contact_status,'unknown')='unknown'", ()
     return "1=1", ()
 
 
@@ -8377,13 +8383,17 @@ async def admin_users_home(callback: CallbackQuery):
       SUM(CASE WHEN last_action_at>=? THEN 1 ELSE 0 END) active1,
       SUM(CASE WHEN last_action_at>=? THEN 1 ELSE 0 END) active7,
       SUM(CASE WHEN last_action_at>=? THEN 1 ELSE 0 END) active30,
-      SUM(CASE WHEN COALESCE(last_action_at,0)<? THEN 1 ELSE 0 END) inactive30
+      SUM(CASE WHEN COALESCE(last_action_at,0)<? THEN 1 ELSE 0 END) inactive30,
+      SUM(CASE WHEN bot_contact_status='blocked' THEN 1 ELSE 0 END) blocked,
+      SUM(CASE WHEN COALESCE(bot_contact_status,'unknown')='unknown' THEN 1 ELSE 0 END) unknown
       FROM users WHERE user_id>0""", (now-30*86400,now-86400,now-7*86400,now-30*86400,now-30*86400))
     await callback.message.answer(
         f"👥 <b>Пользователи</b>\n\nВсего: {row['total'] or 0}\nНовые за 30 дней: {row['new30'] or 0}\n"
         f"Активны 24ч / 7д / 30д: {row['active1'] or 0} / {row['active7'] or 0} / {row['active30'] or 0}\n"
-        f"Неактивны 30+ дней: {row['inactive30'] or 0}\n\n"
-        "ℹ️ Активность основана на last_action_at; действия без обновления этого поля пока не учитываются.",
+        f"Неактивны 30+ дней: {row['inactive30'] or 0}\n"
+        f"📵 Telegram запретил отправку: {row['blocked'] or 0}\n"
+        f"❔ Статус доставки не проверен: {row['unknown'] or 0}\n\n"
+        "ℹ️ Теперь учитываются входящие сообщения, кнопки и inline-поиск. Историческую активность восстановить нельзя. Статус доставки определяется только при реальной отправке; массовых проверочных сообщений бот не отправляет.",
         reply_markup=admin_users_menu_kb())
     await callback.answer()
 
@@ -8399,7 +8409,7 @@ async def admin_users_list(callback: CallbackQuery):
     except (ValueError,TypeError):
         await callback.answer("Неверный фильтр", show_alert=True)
         return
-    if mode not in ("all","active","inactive","new","verified","banned"):
+    if mode not in ("all","active","inactive","new","verified","banned","blocked","unknown"):
         await callback.answer("Неверный фильтр", show_alert=True)
         return
     condition,params = admin_users_filter(mode,now_ts())
@@ -8409,7 +8419,7 @@ async def admin_users_list(callback: CallbackQuery):
     page_size=10
     if page*page_size>=total and total: page=max(0,(total-1)//page_size)
     rows = await db_fetchall(f"SELECT user_id,username,full_name,created_at,last_action_at FROM users WHERE {where} ORDER BY created_at DESC LIMIT ? OFFSET ?", params+(page_size,page*page_size))
-    labels={"all":"Все","active":"Активные 30д","inactive":"Неактивные 30д","new":"Новые 30д","verified":"Верифицированные","banned":"Заблокированные"}
+    labels={"all":"Все","active":"Активные 30д","inactive":"Неактивные 30д","new":"Новые 30д","verified":"Верифицированные","banned":"Бан администратора","blocked":"Telegram запретил отправку","unknown":"Доставка не проверена"}
     buttons=[]
     for r in rows:
         name=("@"+r['username']) if r['username'] else (r['full_name'] or str(r['user_id']))
@@ -8429,7 +8439,7 @@ async def admin_users_export(callback: CallbackQuery):
         await callback.answer("Нет доступа",show_alert=True)
         return
     rows=await db_fetchall("""SELECT u.user_id,u.username,u.full_name,u.created_at,u.last_action_at,
-      u.is_verified,u.is_banned,u.is_cargo,
+      u.is_verified,u.is_banned,u.is_cargo,u.bot_contact_status,u.bot_contact_checked_at,
       (SELECT COUNT(*) FROM posts p WHERE p.user_id=u.user_id) posts_total,
       (SELECT COUNT(*) FROM posts p WHERE p.user_id=u.user_id AND p.status='active' AND (p.expires_at IS NULL OR p.expires_at>?)) posts_active,
       (SELECT COUNT(*) FROM route_subscriptions s WHERE s.user_id=u.user_id) subscriptions,
@@ -8437,13 +8447,13 @@ async def admin_users_export(callback: CallbackQuery):
       FROM users u WHERE u.user_id>0 ORDER BY u.created_at DESC""",(now_ts(),))
     output=io.StringIO(newline="")
     writer=csv.writer(output,delimiter=';')
-    writer.writerow(['Telegram ID','Username','Имя','Регистрация UTC','Последняя активность UTC','Верифицирован','Бан админа','Карго','Объявлений всего','Активных объявлений','Подписок','Завершенных сделок'])
+    writer.writerow(['Telegram ID','Username','Имя','Регистрация UTC','Последняя активность UTC','Верифицирован','Бан админа','Карго','Объявлений всего','Активных объявлений','Подписок','Завершенных сделок','Статус Telegram','Проверка доставки UTC'])
     def dt(ts): return datetime.utcfromtimestamp(int(ts)).strftime('%Y-%m-%d %H:%M:%S') if ts else ''
     def safe(v):
         v=str(v or '')
         return "'"+v if v.startswith(('=','+','-','@','\t','\r')) else v
     for r in rows:
-        writer.writerow([r['user_id'],safe(r['username']),safe(r['full_name']),dt(r['created_at']),dt(r['last_action_at']),r['is_verified'],r['is_banned'],r['is_cargo'],r['posts_total'],r['posts_active'],r['subscriptions'],r['completed_deals']])
+        writer.writerow([r['user_id'],safe(r['username']),safe(r['full_name']),dt(r['created_at']),dt(r['last_action_at']),r['is_verified'],r['is_banned'],r['is_cargo'],r['posts_total'],r['posts_active'],r['subscriptions'],r['completed_deals'],r['bot_contact_status'],dt(r['bot_contact_checked_at'])])
     payload=('\ufeff'+output.getvalue()).encode('utf-8')
     await callback.message.answer_document(BufferedInputFile(payload,filename=f"poputchik_users_{datetime.utcnow():%Y%m%d}.csv"),caption=f"📥 Экспорт: {len(rows)} пользователей. CSV открывается в Excel (разделитель — точка с запятой).")
     await callback.answer()
@@ -10477,6 +10487,42 @@ async def publish_ai_draft(data: dict, draft_id: int, bot: Bot) -> int:
         logger.exception("AI post %s coincidence notifications failed", post_id)
     return post_id
 
+
+# Track every incoming interaction, including AI import router callbacks.
+class UserActivityMiddleware(BaseMiddleware):
+    async def __call__(self, handler, event, data):
+        user = getattr(event, "from_user", None)
+        if user and not user.is_bot and user.id > 0:
+            try:
+                # Only update existing users; onboarding/registration logic stays unchanged.
+                await db_execute("UPDATE users SET last_action_at=?, bot_contact_status='reachable', bot_contact_checked_at=?, bot_contact_error=NULL WHERE user_id=?", (now_ts(), now_ts(), user.id))
+            except Exception:
+                logger.exception("Cannot record activity for user %s", user.id)
+        return await handler(event, data)
+
+
+class DeliveryStatusMiddleware(BaseRequestMiddleware):
+    async def __call__(self, make_request, bot, method):
+        # Only direct private chat sends; never confuse channel/group failures with blocked users.
+        method_name = method.__class__.__name__
+        chat_id = getattr(method, "chat_id", None)
+        track = method_name in {"SendMessage", "SendPhoto", "SendDocument", "SendVideo", "SendAnimation", "SendAudio", "SendVoice", "SendSticker"} and isinstance(chat_id, int) and chat_id > 0
+        try:
+            result = await make_request(bot, method)
+        except TelegramForbiddenError as exc:
+            if track:
+                try:
+                    await db_execute("UPDATE users SET bot_contact_status='blocked', bot_contact_checked_at=?, bot_contact_error=? WHERE user_id=?", (now_ts(), str(exc)[:250], chat_id))
+                except Exception:
+                    logger.exception("Cannot record Telegram delivery failure")
+            raise
+        if track:
+            try:
+                await db_execute("UPDATE users SET bot_contact_status='reachable', bot_contact_checked_at=?, bot_contact_error=NULL WHERE user_id=?", (now_ts(), chat_id))
+            except Exception:
+                logger.exception("Cannot record successful Telegram delivery")
+        return result
+
 async def main():
     if not BOT_TOKEN:
         raise RuntimeError("Set BOT_TOKEN env var")
@@ -10492,6 +10538,8 @@ async def main():
         default=DefaultBotProperties(parse_mode=ParseMode.HTML)
     )
 
+    bot.session.middleware(DeliveryStatusMiddleware())
+
     await bot.set_my_commands([
         BotCommand(command="start", description="Запустить бота"),
         BotCommand(command="new_trip", description="Взять посылку"),
@@ -10502,6 +10550,9 @@ async def main():
     ])
 
     dp = Dispatcher(storage=MemoryStorage())
+    dp.message.outer_middleware(UserActivityMiddleware())
+    dp.callback_query.outer_middleware(UserActivityMiddleware())
+    dp.inline_query.outer_middleware(UserActivityMiddleware())
     from ai_import import router as ai_import_router
     dp.include_router(ai_import_router)
     dp.include_router(router)

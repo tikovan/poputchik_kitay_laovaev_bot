@@ -942,6 +942,25 @@ async def init_db():
             inline_searches INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY(user_id, day_utc))""")
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_user_activity_days_day ON user_activity_days(day_utc)")
+        await conn.executescript("""
+        CREATE TABLE IF NOT EXISTS user_product_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            event_type TEXT NOT NULL,
+            post_id INTEGER,
+            created_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_product_events_type_time ON user_product_events(event_type, created_at);
+        CREATE INDEX IF NOT EXISTS idx_product_events_user ON user_product_events(user_id, created_at);
+        CREATE TABLE IF NOT EXISTS contact_feedback (
+            user_id INTEGER NOT NULL,
+            post_id INTEGER NOT NULL,
+            contacted_at INTEGER NOT NULL,
+            result TEXT,
+            answered_at INTEGER,
+            PRIMARY KEY (user_id, post_id)
+        );
+        """)
         await ensure_column(conn, "users", "verified_at", "verified_at INTEGER")
         await ensure_column(conn, "users", "verification_type", "verification_type TEXT")
 
@@ -8187,6 +8206,36 @@ async def sub_delete(callback: CallbackQuery):
     await callback.answer("Подписка удалена" if ok else "Не найдено", show_alert=True)
 
 
+async def record_product_event(user_id: int, event_type: str, post_id=None):
+    try:
+        await db_execute("INSERT INTO user_product_events(user_id,event_type,post_id,created_at) VALUES(?,?,?,?)", (user_id, event_type, post_id, now_ts()))
+    except Exception:
+        logger.exception("Product analytics event failed: %s", event_type)
+
+
+@router.callback_query(F.data.startswith("contact_feedback:"))
+async def contact_feedback_handler(callback: CallbackQuery):
+    if not callback.from_user:
+        return
+    try:
+        _, result, raw_post_id = callback.data.split(":", 2)
+        post_id = int(raw_post_id)
+    except (ValueError, AttributeError):
+        await callback.answer("Некорректный ответ", show_alert=True)
+        return
+    if result not in ("yes", "no"):
+        await callback.answer("Некорректный ответ", show_alert=True)
+        return
+    row = await db_fetchone("SELECT 1 FROM contact_feedback WHERE user_id=? AND post_id=?", (callback.from_user.id, post_id))
+    if not row:
+        await callback.answer("Контакт не найден", show_alert=True)
+        return
+    await db_execute("UPDATE contact_feedback SET result=?, answered_at=? WHERE user_id=? AND post_id=?", (result, now_ts(), callback.from_user.id, post_id))
+    await record_product_event(callback.from_user.id, "contact_feedback_" + result, post_id)
+    await callback.answer("Спасибо за ответ!")
+    await callback.message.answer("Спасибо! Ваш ответ поможет улучшить поиск попутчиков.")
+
+
 @router.callback_query(F.data.startswith("contact:"))
 async def contact_owner(callback: CallbackQuery, state: FSMContext):
     _, post_id, owner_id = callback.data.split(":")
@@ -8220,11 +8269,20 @@ async def contact_owner(callback: CallbackQuery, state: FSMContext):
         deal_id=None
     )
 
+    await record_product_event(callback.from_user.id, "contact_opened", post_id)
+    await db_execute("""INSERT INTO contact_feedback(user_id,post_id,contacted_at)
+        VALUES(?,?,?) ON CONFLICT(user_id,post_id) DO UPDATE SET contacted_at=excluded.contacted_at""",
+        (callback.from_user.id, post_id, now_ts()))
     await callback.message.answer(
         "💬 <b>Чат с владельцем объявления открыт.</b>\n\n"
         "Просто напишите сообщение — я отправлю его через бота.\n"
         "Дальше вы можете продолжать переписку здесь без повторных нажатий.\n\n"
-        "⚠️ Никогда не переводите предоплату незнакомым людям."
+        "⚠️ Никогда не переводите предоплату незнакомым людям.\n\n"
+        "Когда узнаете результат, можете ответить: удалось договориться?",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Да", callback_data=f"contact_feedback:yes:{post_id}"),
+             InlineKeyboardButton(text="❌ Нет", callback_data=f"contact_feedback:no:{post_id}")]
+        ])
     )
 
     await callback.answer()
@@ -8373,6 +8431,7 @@ def admin_users_menu_kb():
         [InlineKeyboardButton(text="🛂 Верифицированные", callback_data="admin_users:list:verified:0"), InlineKeyboardButton(text="🚫 Бан", callback_data="admin_users:list:banned:0")],
         [InlineKeyboardButton(text="📵 Блокировали бота", callback_data="admin_users:list:blocked:0"), InlineKeyboardButton(text="❔ Не проверены", callback_data="admin_users:list:unknown:0")],
         [InlineKeyboardButton(text="📈 Конверсия", callback_data="admin_users:funnel"), InlineKeyboardButton(text="📊 Рост 30д", callback_data="admin_users:growth")],
+        [InlineKeyboardButton(text="🔎 Использование сервиса", callback_data="admin_users:usage")],
         [InlineKeyboardButton(text="🔗 Источники", callback_data="admin_users:sources"), InlineKeyboardButton(text="🔎 Поиск", callback_data="admin:user_lookup")],
         [InlineKeyboardButton(text="📥 Excel", callback_data="admin_users:export")],
     ])
@@ -8447,6 +8506,38 @@ async def admin_users_funnel(callback: CallbackQuery):
       "Возвраты считаются только с момента установки этой версии. "
       "AI-объявления исключены из числа создавших объявление.",
       reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="👥 Назад",callback_data="admin_users:home")]]))
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin_users:usage")
+async def admin_users_usage(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+    since = now_ts() - 30 * 86400
+    rows = await db_fetchall("""SELECT event_type, COUNT(*) events, COUNT(DISTINCT user_id) people
+        FROM user_product_events WHERE created_at>=? GROUP BY event_type""", (since,))
+    metrics = {r['event_type']: (r['events'], r['people']) for r in rows}
+    contacts = await db_fetchone("""SELECT COUNT(*) total,
+        SUM(CASE WHEN result='yes' THEN 1 ELSE 0 END) yes_count,
+        SUM(CASE WHEN result='no' THEN 1 ELSE 0 END) no_count
+        FROM contact_feedback WHERE contacted_at>=?""", (since,))
+    def line(name, key):
+        count, people = metrics.get(key, (0, 0))
+        return f"{name}: {people} чел. / {count} действий"
+    await callback.message.answer(
+        "🔎 <b>Использование сервиса — 30 дней</b>\n\n" +
+        "\n".join([
+            line("Inline-поиск", "inline_search"),
+            line("Просмотры объявлений*", "post_view"),
+            line("Открыли чат с автором", "contact_opened"),
+            line("Действия в поиске*", "browse_action")
+        ]) +
+        f"\n\n📨 Контактов с предложением обратной связи: {contacts['total'] or 0}"
+        f"\n✅ Договорились: {contacts['yes_count'] or 0}"
+        f"\n❌ Не договорились: {contacts['no_count'] or 0}"
+        "\n\nℹ️ События собираются только после обновления. *Учитываются известные кнопки; это не все возможные просмотры/поиски. Обратная связь добровольная, не подтверждает фактическую передачу посылки.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="👥 Назад", callback_data="admin_users:home")]]))
     await callback.answer()
 
 
@@ -10587,6 +10678,14 @@ class UserActivityMiddleware(BaseMiddleware):
                 await db_execute(f"""INSERT INTO user_activity_days(user_id,day_utc,{kind}) VALUES(?,?,1)
                   ON CONFLICT(user_id,day_utc) DO UPDATE SET {kind}={kind}+1""",
                   (user.id, datetime.utcfromtimestamp(ts).strftime('%Y-%m-%d')))
+                if isinstance(event, InlineQuery):
+                    await record_product_event(user.id, "inline_search")
+                elif isinstance(event, CallbackQuery):
+                    action = event.data or ""
+                    if action.startswith(("post:", "viewpost:", "recentpost:", "openpost:")):
+                        await record_product_event(user.id, "post_view")
+                    elif action.startswith(("find:", "search:", "browse:", "recentpage:")):
+                        await record_product_event(user.id, "browse_action")
             except Exception:
                 logger.exception("Cannot record activity for user %s", user.id)
         return await handler(event, data)

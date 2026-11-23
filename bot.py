@@ -2484,7 +2484,7 @@ def admin_menu_kb():
         [InlineKeyboardButton(text="📊 Аудитория и аналитика", callback_data="admin_users:home")],
         [InlineKeyboardButton(text="👤 Пользователь", callback_data="admin:user_lookup")],
         [InlineKeyboardButton(text="💰 Заявки на поднятие", callback_data="admin:bump_orders")],
-        [InlineKeyboardButton(text="📊 Статистика", callback_data="admin:stats")],
+        [InlineKeyboardButton(text="📊 Статистика сервиса", callback_data="admin:stats")],
     ])
 
 
@@ -8425,7 +8425,7 @@ async def admin_users_funnel(callback: CallbackQuery):
       (SELECT COUNT(*) FROM users WHERE user_id>0) users,
       (SELECT COUNT(DISTINCT user_id) FROM posts WHERE user_id>0 AND COALESCE(is_ai,0)=0) posted,
       (SELECT COUNT(DISTINCT user_id) FROM route_subscriptions WHERE user_id>0) subscribed,
-      (SELECT COUNT(DISTINCT user_id) FROM deals WHERE owner_user_id>0 OR requester_user_id>0) deal_users,
+      (SELECT COUNT(*) FROM (SELECT owner_user_id AS user_id FROM deals WHERE owner_user_id>0 UNION SELECT requester_user_id AS user_id FROM deals WHERE requester_user_id>0)) deal_users,
       (SELECT COUNT(DISTINCT user_id) FROM (
           SELECT owner_user_id AS user_id FROM deals WHERE status='completed' AND owner_user_id>0
           UNION SELECT requester_user_id FROM deals WHERE status='completed' AND requester_user_id>0

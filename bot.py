@@ -934,6 +934,14 @@ async def init_db():
         await ensure_column(conn, "users", "bot_contact_status", "bot_contact_status TEXT DEFAULT 'unknown'")
         await ensure_column(conn, "users", "bot_contact_checked_at", "bot_contact_checked_at INTEGER")
         await ensure_column(conn, "users", "bot_contact_error", "bot_contact_error TEXT")
+        await ensure_column(conn, "users", "acquisition_source", "acquisition_source TEXT")
+        await ensure_column(conn, "users", "first_start_at", "first_start_at INTEGER")
+        await conn.execute("""CREATE TABLE IF NOT EXISTS user_activity_days (
+            user_id INTEGER NOT NULL, day_utc TEXT NOT NULL,
+            messages INTEGER NOT NULL DEFAULT 0, callbacks INTEGER NOT NULL DEFAULT 0,
+            inline_searches INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(user_id, day_utc))""")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_user_activity_days_day ON user_activity_days(day_utc)")
         await ensure_column(conn, "users", "verified_at", "verified_at INTEGER")
         await ensure_column(conn, "users", "verification_type", "verification_type TEXT")
 
@@ -2473,7 +2481,7 @@ def admin_menu_kb():
         [InlineKeyboardButton(text="📚 Все объявления", callback_data="admin:all_posts")],
         [InlineKeyboardButton(text="🛂 Верификации", callback_data="admin:verifications")],
         [InlineKeyboardButton(text="🆘 Последние жалобы", callback_data="admin:complaints")],
-        [InlineKeyboardButton(text="👥 Пользователи", callback_data="admin_users:home")],
+        [InlineKeyboardButton(text="📊 Аудитория и аналитика", callback_data="admin_users:home")],
         [InlineKeyboardButton(text="👤 Пользователь", callback_data="admin:user_lookup")],
         [InlineKeyboardButton(text="💰 Заявки на поднятие", callback_data="admin:bump_orders")],
         [InlineKeyboardButton(text="📊 Статистика", callback_data="admin:stats")],
@@ -5740,6 +5748,11 @@ async def global_main_menu_router(message: Message, state: FSMContext):
 async def start_handler(message: Message, state: FSMContext):
     try:
         await upsert_user(message)
+        # Deep-link attribution does not override existing start payloads or original source.
+        raw_arg = message.text.split(" ", 1)[1].strip() if message.text and " " in message.text else ""
+        if re.fullmatch(r"src_[a-z0-9_]{1,40}", raw_arg):
+            await db_execute("""UPDATE users SET acquisition_source=?, first_start_at=COALESCE(first_start_at,?)
+              WHERE user_id=? AND acquisition_source IS NULL AND created_at>=?""", (raw_arg[4:], now_ts(), message.from_user.id, now_ts()-120))
         await state.clear()
 
         if await is_user_banned(message.from_user.id):
@@ -8359,7 +8372,9 @@ def admin_users_menu_kb():
         [InlineKeyboardButton(text="💤 Неактивные 30д", callback_data="admin_users:list:inactive:0"), InlineKeyboardButton(text="🆕 Новые 30д", callback_data="admin_users:list:new:0")],
         [InlineKeyboardButton(text="🛂 Верифицированные", callback_data="admin_users:list:verified:0"), InlineKeyboardButton(text="🚫 Бан", callback_data="admin_users:list:banned:0")],
         [InlineKeyboardButton(text="📵 Блокировали бота", callback_data="admin_users:list:blocked:0"), InlineKeyboardButton(text="❔ Не проверены", callback_data="admin_users:list:unknown:0")],
-        [InlineKeyboardButton(text="🔎 Поиск", callback_data="admin:user_lookup"), InlineKeyboardButton(text="📥 Excel", callback_data="admin_users:export")],
+        [InlineKeyboardButton(text="📈 Конверсия", callback_data="admin_users:funnel"), InlineKeyboardButton(text="📊 Рост 30д", callback_data="admin_users:growth")],
+        [InlineKeyboardButton(text="🔗 Источники", callback_data="admin_users:sources"), InlineKeyboardButton(text="🔎 Поиск", callback_data="admin:user_lookup")],
+        [InlineKeyboardButton(text="📥 Excel", callback_data="admin_users:export")],
     ])
 
 
@@ -8390,13 +8405,80 @@ async def admin_users_home(callback: CallbackQuery):
       SUM(CASE WHEN COALESCE(bot_contact_status,'unknown')='unknown' THEN 1 ELSE 0 END) unknown
       FROM users WHERE user_id>0""", (now-30*86400,now-86400,now-7*86400,now-30*86400,now-30*86400))
     await callback.message.answer(
-        f"👥 <b>Пользователи</b>\n\nВсего: {row['total'] or 0}\nНовые за 30 дней: {row['new30'] or 0}\n"
+        f"📊 <b>Аудитория и аналитика</b>\n\nВсего: {row['total'] or 0}\nНовые за 30 дней: {row['new30'] or 0}\n"
         f"Активны 24ч / 7д / 30д: {row['active1'] or 0} / {row['active7'] or 0} / {row['active30'] or 0}\n"
         f"Неактивны 30+ дней: {row['inactive30'] or 0}\n"
         f"📵 Telegram запретил отправку: {row['blocked'] or 0}\n"
         f"❔ Статус доставки не проверен: {row['unknown'] or 0}\n\n"
         "ℹ️ Теперь учитываются входящие сообщения, кнопки и inline-поиск. Историческую активность восстановить нельзя. Статус доставки определяется только при реальной отправке; массовых проверочных сообщений бот не отправляет.",
         reply_markup=admin_users_menu_kb())
+    await callback.answer()
+
+
+# Аналитика использует исторические таблицы; события активности доступны только после обновления.
+@router.callback_query(F.data == "admin_users:funnel")
+async def admin_users_funnel(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+    r = await db_fetchone("""SELECT
+      (SELECT COUNT(*) FROM users WHERE user_id>0) users,
+      (SELECT COUNT(DISTINCT user_id) FROM posts WHERE user_id>0 AND COALESCE(is_ai,0)=0) posted,
+      (SELECT COUNT(DISTINCT user_id) FROM route_subscriptions WHERE user_id>0) subscribed,
+      (SELECT COUNT(DISTINCT user_id) FROM deals WHERE owner_user_id>0 OR requester_user_id>0) deal_users,
+      (SELECT COUNT(DISTINCT user_id) FROM (
+          SELECT owner_user_id AS user_id FROM deals WHERE status='completed' AND owner_user_id>0
+          UNION SELECT requester_user_id FROM deals WHERE status='completed' AND requester_user_id>0
+       )) completed,
+      (SELECT COUNT(DISTINCT user_id) FROM user_activity_days) tracked,
+      (SELECT COUNT(*) FROM (SELECT user_id FROM user_activity_days GROUP BY user_id HAVING COUNT(*)>=2)) returned""")
+    total = int(r['users'] or 0)
+    def pct(v): return f"{(100*int(v or 0)/total):.1f}%" if total else '0%'
+    await callback.message.answer(
+      f"📈 <b>Конверсия пользователей</b>\n\n"
+      f"👥 Зарегистрированы: {total}\n"
+      f"📦 Создали объявление: {r['posted']} ({pct(r['posted'])})\n"
+      f"🔔 Подписались на маршрут: {r['subscribed']} ({pct(r['subscribed'])})\n"
+      f"🤝 Участвовали в сделке: {r['deal_users']} ({pct(r['deal_users'])})\n"
+      f"✅ Участвовали в завершённой сделке: {r['completed']} ({pct(r['completed'])})\n\n"
+      f"📅 Активность отслежена у: {r['tracked']}\n"
+      f"🔁 Действовали в 2+ разных дня: {r['returned']}\n\n"
+      "ℹ️ Это независимые сегменты, а не последовательная воронка. "
+      "Возвраты считаются только с момента установки этой версии. "
+      "AI-объявления исключены из числа создавших объявление.",
+      reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="👥 Назад",callback_data="admin_users:home")]]))
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin_users:growth")
+async def admin_users_growth(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+    start = now_ts()-29*86400
+    rows = await db_fetchall("""SELECT date(created_at,'unixepoch') day,COUNT(*) n FROM users
+      WHERE user_id>0 AND created_at>=? GROUP BY day ORDER BY day""", (start,))
+    days = {r['day']:int(r['n']) for r in rows}
+    today = datetime.utcnow().date()
+    lines = [f"{(today-timedelta(days=i)).isoformat()}: {days.get((today-timedelta(days=i)).isoformat(),0)}" for i in range(29,-1,-1)]
+    await callback.message.answer("📊 <b>Новые регистрации за 30 дней (UTC)</b>\n\n<code>"+"\n".join(lines)+"</code>",reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="👥 Назад",callback_data="admin_users:home")]]))
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin_users:sources")
+async def admin_users_sources(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+    rows=await db_fetchall("""SELECT COALESCE(acquisition_source,'unknown') source, COUNT(*) n
+      FROM users WHERE user_id>0 GROUP BY source ORDER BY n DESC LIMIT 15""")
+    lines=[f"• {html.escape(str(r['source']))}: {r['n']}" for r in rows]
+    await callback.message.answer("🔗 <b>Источники регистрации</b>\n\n"+"\n".join(lines)+
+      "\n\nНовые ссылки для размещения:\n"
+      f"Канал: {bot_link('src_channel')}\nГруппы: {bot_link('src_groups')}\nДрузья: {bot_link('src_friends')}\nРеклама: {bot_link('src_ads')}\n\n"
+      "Источник фиксируется при первом /start с меткой; старые регистрации остаются unknown. "
+      "Telegram не передаёт источник обычного запуска без метки.",
+      reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="👥 Назад",callback_data="admin_users:home")]]))
     await callback.answer()
 
 
@@ -8441,7 +8523,7 @@ async def admin_users_export(callback: CallbackQuery):
         await callback.answer("Нет доступа",show_alert=True)
         return
     rows=await db_fetchall("""SELECT u.user_id,u.username,u.full_name,u.created_at,u.last_action_at,
-      u.is_verified,u.is_banned,u.is_cargo,u.bot_contact_status,u.bot_contact_checked_at,
+      u.is_verified,u.is_banned,u.is_cargo,u.bot_contact_status,u.bot_contact_checked_at,u.acquisition_source,
       (SELECT COUNT(*) FROM posts p WHERE p.user_id=u.user_id) posts_total,
       (SELECT COUNT(*) FROM posts p WHERE p.user_id=u.user_id AND p.status='active' AND (p.expires_at IS NULL OR p.expires_at>?)) posts_active,
       (SELECT COUNT(*) FROM route_subscriptions s WHERE s.user_id=u.user_id) subscriptions,
@@ -8449,13 +8531,13 @@ async def admin_users_export(callback: CallbackQuery):
       FROM users u WHERE u.user_id>0 ORDER BY u.created_at DESC""",(now_ts(),))
     output=io.StringIO(newline="")
     writer=csv.writer(output,delimiter=';')
-    writer.writerow(['Telegram ID','Username','Имя','Регистрация UTC','Последняя активность UTC','Верифицирован','Бан админа','Карго','Объявлений всего','Активных объявлений','Подписок','Завершенных сделок','Статус Telegram','Проверка доставки UTC'])
+    writer.writerow(['Telegram ID','Username','Имя','Регистрация UTC','Последняя активность UTC','Верифицирован','Бан админа','Карго','Объявлений всего','Активных объявлений','Подписок','Завершенных сделок','Статус Telegram','Проверка доставки UTC','Источник регистрации'])
     def dt(ts): return datetime.utcfromtimestamp(int(ts)).strftime('%Y-%m-%d %H:%M:%S') if ts else ''
     def safe(v):
         v=str(v or '')
         return "'"+v if v.startswith(('=','+','-','@','\t','\r')) else v
     for r in rows:
-        writer.writerow([r['user_id'],safe(r['username']),safe(r['full_name']),dt(r['created_at']),dt(r['last_action_at']),r['is_verified'],r['is_banned'],r['is_cargo'],r['posts_total'],r['posts_active'],r['subscriptions'],r['completed_deals'],r['bot_contact_status'],dt(r['bot_contact_checked_at'])])
+        writer.writerow([r['user_id'],safe(r['username']),safe(r['full_name']),dt(r['created_at']),dt(r['last_action_at']),r['is_verified'],r['is_banned'],r['is_cargo'],r['posts_total'],r['posts_active'],r['subscriptions'],r['completed_deals'],r['bot_contact_status'],dt(r['bot_contact_checked_at']),safe(r['acquisition_source'])])
     payload=('\ufeff'+output.getvalue()).encode('utf-8')
     await callback.message.answer_document(BufferedInputFile(payload,filename=f"poputchik_users_{datetime.utcnow():%Y%m%d}.csv"),caption=f"📥 Экспорт: {len(rows)} пользователей. CSV открывается в Excel (разделитель — точка с запятой).")
     await callback.answer()
@@ -10497,7 +10579,14 @@ class UserActivityMiddleware(BaseMiddleware):
         if user and not user.is_bot and user.id > 0:
             try:
                 # Only update existing users; onboarding/registration logic stays unchanged.
-                await db_execute("UPDATE users SET last_action_at=?, bot_contact_status='reachable', bot_contact_checked_at=?, bot_contact_error=NULL WHERE user_id=?", (now_ts(), now_ts(), user.id))
+                ts = now_ts()
+                await db_execute("UPDATE users SET last_action_at=?, bot_contact_status='reachable', bot_contact_checked_at=?, bot_contact_error=NULL WHERE user_id=?", (ts, ts, user.id))
+                # Daily counters avoid retaining message contents and raw search queries.
+                kind = ('callbacks' if isinstance(event, CallbackQuery) else
+                        'inline_searches' if isinstance(event, InlineQuery) else 'messages')
+                await db_execute(f"""INSERT INTO user_activity_days(user_id,day_utc,{kind}) VALUES(?,?,1)
+                  ON CONFLICT(user_id,day_utc) DO UPDATE SET {kind}={kind}+1""",
+                  (user.id, datetime.utcfromtimestamp(ts).strftime('%Y-%m-%d')))
             except Exception:
                 logger.exception("Cannot record activity for user %s", user.id)
         return await handler(event, data)

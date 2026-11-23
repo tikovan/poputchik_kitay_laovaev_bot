@@ -1,4 +1,6 @@
 import asyncio
+import io
+import csv
 import html
 import os 
 import re
@@ -26,6 +28,7 @@ from aiogram.types import (
     InputTextMessageContent,
     KeyboardButton,
     Message,
+    BufferedInputFile,
     ReplyKeyboardMarkup,
 )
 from dotenv import load_dotenv
@@ -1358,7 +1361,14 @@ async def build_admin_user_profile_text(user_id: int) -> Optional[str]:
         return None
 
     avg_rating, reviews_count = await user_rating_summary(user_id)
-    
+    extra = await db_fetchone("""SELECT u.created_at,u.last_action_at,
+        (SELECT COUNT(*) FROM route_subscriptions rs WHERE rs.user_id=u.user_id) subs,
+        (SELECT COUNT(*) FROM posts p WHERE p.user_id=u.user_id AND p.post_type='trip') trips,
+        (SELECT COUNT(*) FROM posts p WHERE p.user_id=u.user_id AND p.post_type='parcel') parcels
+        FROM users u WHERE u.user_id=?""", (user_id,))
+    def crm_date(value):
+        return datetime.utcfromtimestamp(int(value)).strftime('%d.%m.%Y %H:%M UTC') if value else 'нет данных'
+
     return (
         f"👤 <b>Профиль пользователя</b>\n\n"
         f"<b>USER_ID:</b> {user_id}\n"
@@ -1372,6 +1382,10 @@ async def build_admin_user_profile_text(user_id: int) -> Optional[str]:
         f"<b>Завершенных сделок:</b> {profile['completed_deals']}\n"
         f"<b>Жалоб на пользователя:</b> {profile['complaints_received']}\n"
         f"<b>Рейтинг:</b> {avg_rating:.1f} ({reviews_count} {reviews_word(reviews_count)})\n"
+        f"<b>Регистрация:</b> {crm_date(extra['created_at'])}\n"
+        f"<b>Последняя активность:</b> {crm_date(extra['last_action_at'])}\n"
+        f"<b>Подписок:</b> {extra['subs']}\n"
+        f"<b>Поездок / посылок:</b> {extra['trips']} / {extra['parcels']}\n"
     )
     
 
@@ -2454,6 +2468,7 @@ def admin_menu_kb():
         [InlineKeyboardButton(text="📚 Все объявления", callback_data="admin:all_posts")],
         [InlineKeyboardButton(text="🛂 Верификации", callback_data="admin:verifications")],
         [InlineKeyboardButton(text="🆘 Последние жалобы", callback_data="admin:complaints")],
+        [InlineKeyboardButton(text="👥 Пользователи", callback_data="admin_users:home")],
         [InlineKeyboardButton(text="👤 Пользователь", callback_data="admin:user_lookup")],
         [InlineKeyboardButton(text="💰 Заявки на поднятие", callback_data="admin:bump_orders")],
         [InlineKeyboardButton(text="📊 Статистика", callback_data="admin:stats")],
@@ -8329,6 +8344,108 @@ async def admin_ban_user_direct(callback: CallbackQuery):
         pass
 
     await callback.message.answer(f"🚫 Пользователь {user_id} забанен.")
+    await callback.answer()
+
+
+# ===== Админ CRM пользователей (без изменений существующей модерации) =====
+def admin_users_menu_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📋 Все", callback_data="admin_users:list:all:0"), InlineKeyboardButton(text="🟢 Активные 30д", callback_data="admin_users:list:active:0")],
+        [InlineKeyboardButton(text="💤 Неактивные 30д", callback_data="admin_users:list:inactive:0"), InlineKeyboardButton(text="🆕 Новые 30д", callback_data="admin_users:list:new:0")],
+        [InlineKeyboardButton(text="🛂 Верифицированные", callback_data="admin_users:list:verified:0"), InlineKeyboardButton(text="🚫 Бан", callback_data="admin_users:list:banned:0")],
+        [InlineKeyboardButton(text="🔎 Поиск", callback_data="admin:user_lookup"), InlineKeyboardButton(text="📥 Excel", callback_data="admin_users:export")],
+    ])
+
+
+def admin_users_filter(mode, now):
+    if mode == "active": return "last_action_at>=?", (now-30*86400,)
+    if mode == "inactive": return "COALESCE(last_action_at,0)<?", (now-30*86400,)
+    if mode == "new": return "created_at>=?", (now-30*86400,)
+    if mode == "verified": return "is_verified=1", ()
+    if mode == "banned": return "is_banned=1", ()
+    return "1=1", ()
+
+
+@router.callback_query(F.data == "admin_users:home")
+async def admin_users_home(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+    now = now_ts()
+    row = await db_fetchone("""SELECT COUNT(*) total,
+      SUM(CASE WHEN created_at>=? THEN 1 ELSE 0 END) new30,
+      SUM(CASE WHEN last_action_at>=? THEN 1 ELSE 0 END) active1,
+      SUM(CASE WHEN last_action_at>=? THEN 1 ELSE 0 END) active7,
+      SUM(CASE WHEN last_action_at>=? THEN 1 ELSE 0 END) active30,
+      SUM(CASE WHEN COALESCE(last_action_at,0)<? THEN 1 ELSE 0 END) inactive30
+      FROM users WHERE user_id>0""", (now-30*86400,now-86400,now-7*86400,now-30*86400,now-30*86400))
+    await callback.message.answer(
+        f"👥 <b>Пользователи</b>\n\nВсего: {row['total'] or 0}\nНовые за 30 дней: {row['new30'] or 0}\n"
+        f"Активны 24ч / 7д / 30д: {row['active1'] or 0} / {row['active7'] or 0} / {row['active30'] or 0}\n"
+        f"Неактивны 30+ дней: {row['inactive30'] or 0}\n\n"
+        "ℹ️ Активность основана на last_action_at; действия без обновления этого поля пока не учитываются.",
+        reply_markup=admin_users_menu_kb())
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admin_users:list:"))
+async def admin_users_list(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+    try:
+        _,_,mode,page_str = callback.data.split(":")
+        page = max(0,int(page_str))
+    except (ValueError,TypeError):
+        await callback.answer("Неверный фильтр", show_alert=True)
+        return
+    if mode not in ("all","active","inactive","new","verified","banned"):
+        await callback.answer("Неверный фильтр", show_alert=True)
+        return
+    condition,params = admin_users_filter(mode,now_ts())
+    where = f"user_id>0 AND ({condition})"
+    count = await db_fetchone(f"SELECT COUNT(*) c FROM users WHERE {where}",params)
+    total = int(count['c'] or 0)
+    page_size=10
+    if page*page_size>=total and total: page=max(0,(total-1)//page_size)
+    rows = await db_fetchall(f"SELECT user_id,username,full_name,created_at,last_action_at FROM users WHERE {where} ORDER BY created_at DESC LIMIT ? OFFSET ?", params+(page_size,page*page_size))
+    labels={"all":"Все","active":"Активные 30д","inactive":"Неактивные 30д","new":"Новые 30д","verified":"Верифицированные","banned":"Заблокированные"}
+    buttons=[]
+    for r in rows:
+        name=("@"+r['username']) if r['username'] else (r['full_name'] or str(r['user_id']))
+        buttons.append([InlineKeyboardButton(text=(name[:35]+" · "+str(r['user_id']))[:64],callback_data=f"admin_user:{r['user_id']}")])
+    nav=[]
+    if page: nav.append(InlineKeyboardButton(text="⬅️",callback_data=f"admin_users:list:{mode}:{page-1}"))
+    if (page+1)*page_size<total: nav.append(InlineKeyboardButton(text="➡️",callback_data=f"admin_users:list:{mode}:{page+1}"))
+    if nav: buttons.append(nav)
+    buttons.append([InlineKeyboardButton(text="👥 К разделу",callback_data="admin_users:home")])
+    await callback.message.answer(f"👥 <b>{labels[mode]}</b> · {total} пользователей · страница {page+1}",reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin_users:export")
+async def admin_users_export(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа",show_alert=True)
+        return
+    rows=await db_fetchall("""SELECT u.user_id,u.username,u.full_name,u.created_at,u.last_action_at,
+      u.is_verified,u.is_banned,u.is_cargo,
+      (SELECT COUNT(*) FROM posts p WHERE p.user_id=u.user_id) posts_total,
+      (SELECT COUNT(*) FROM posts p WHERE p.user_id=u.user_id AND p.status='active' AND (p.expires_at IS NULL OR p.expires_at>?)) posts_active,
+      (SELECT COUNT(*) FROM route_subscriptions s WHERE s.user_id=u.user_id) subscriptions,
+      (SELECT COUNT(*) FROM deals d WHERE (d.owner_user_id=u.user_id OR d.requester_user_id=u.user_id) AND d.status='completed') completed_deals
+      FROM users u WHERE u.user_id>0 ORDER BY u.created_at DESC""",(now_ts(),))
+    output=io.StringIO(newline="")
+    writer=csv.writer(output,delimiter=';')
+    writer.writerow(['Telegram ID','Username','Имя','Регистрация UTC','Последняя активность UTC','Верифицирован','Бан админа','Карго','Объявлений всего','Активных объявлений','Подписок','Завершенных сделок'])
+    def dt(ts): return datetime.utcfromtimestamp(int(ts)).strftime('%Y-%m-%d %H:%M:%S') if ts else ''
+    def safe(v):
+        v=str(v or '')
+        return "'"+v if v.startswith(('=','+','-','@','\t','\r')) else v
+    for r in rows:
+        writer.writerow([r['user_id'],safe(r['username']),safe(r['full_name']),dt(r['created_at']),dt(r['last_action_at']),r['is_verified'],r['is_banned'],r['is_cargo'],r['posts_total'],r['posts_active'],r['subscriptions'],r['completed_deals']])
+    payload=('\ufeff'+output.getvalue()).encode('utf-8')
+    await callback.message.answer_document(BufferedInputFile(payload,filename=f"poputchik_users_{datetime.utcnow():%Y%m%d}.csv"),caption=f"📥 Экспорт: {len(rows)} пользователей. CSV открывается в Excel (разделитель — точка с запятой).")
     await callback.answer()
 
 

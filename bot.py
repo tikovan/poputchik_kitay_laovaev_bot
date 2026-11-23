@@ -931,6 +931,7 @@ async def init_db():
         await ensure_column(conn, "users", "active_chat_deal_id", "active_chat_deal_id INTEGER")
         await ensure_column(conn, "users", "last_chat_message_at", "last_chat_message_at INTEGER DEFAULT 0")
         await ensure_column(conn, "users", "chat_message_count_10min", "chat_message_count_10min INTEGER DEFAULT 0")
+        await ensure_column(conn, "users", "last_interaction_at", "last_interaction_at INTEGER DEFAULT 0")
         await ensure_column(conn, "users", "bot_contact_status", "bot_contact_status TEXT DEFAULT 'unknown'")
         await ensure_column(conn, "users", "bot_contact_checked_at", "bot_contact_checked_at INTEGER")
         await ensure_column(conn, "users", "bot_contact_error", "bot_contact_error TEXT")
@@ -1393,7 +1394,7 @@ async def build_admin_user_profile_text(user_id: int) -> Optional[str]:
         return None
 
     avg_rating, reviews_count = await user_rating_summary(user_id)
-    extra = await db_fetchone("""SELECT u.created_at,u.last_action_at,
+    extra = await db_fetchone("""SELECT u.created_at,u.last_interaction_at,
         (SELECT COUNT(*) FROM route_subscriptions rs WHERE rs.user_id=u.user_id) subs,
         (SELECT COUNT(*) FROM posts p WHERE p.user_id=u.user_id AND p.post_type='trip') trips,
         (SELECT COUNT(*) FROM posts p WHERE p.user_id=u.user_id AND p.post_type='parcel') parcels
@@ -1415,7 +1416,7 @@ async def build_admin_user_profile_text(user_id: int) -> Optional[str]:
         f"<b>Жалоб на пользователя:</b> {profile['complaints_received']}\n"
         f"<b>Рейтинг:</b> {avg_rating:.1f} ({reviews_count} {reviews_word(reviews_count)})\n"
         f"<b>Регистрация:</b> {crm_date(extra['created_at'])}\n"
-        f"<b>Последняя активность:</b> {crm_date(extra['last_action_at'])}\n"
+        f"<b>Последняя активность:</b> {crm_date(extra['last_interaction_at'])}\n"
         f"<b>Подписок:</b> {extra['subs']}\n"
         f"<b>Поездок / посылок:</b> {extra['trips']} / {extra['parcels']}\n"
     )
@@ -8438,8 +8439,8 @@ def admin_users_menu_kb():
 
 
 def admin_users_filter(mode, now):
-    if mode == "active": return "last_action_at>=?", (now-30*86400,)
-    if mode == "inactive": return "COALESCE(last_action_at,0)<?", (now-30*86400,)
+    if mode == "active": return "last_interaction_at>=?", (now-30*86400,)
+    if mode == "inactive": return "COALESCE(last_interaction_at,0)<?", (now-30*86400,)
     if mode == "new": return "created_at>=?", (now-30*86400,)
     if mode == "verified": return "is_verified=1", ()
     if mode == "banned": return "is_banned=1", ()
@@ -8456,10 +8457,10 @@ async def admin_users_home(callback: CallbackQuery):
     now = now_ts()
     row = await db_fetchone("""SELECT COUNT(*) total,
       SUM(CASE WHEN created_at>=? THEN 1 ELSE 0 END) new30,
-      SUM(CASE WHEN last_action_at>=? THEN 1 ELSE 0 END) active1,
-      SUM(CASE WHEN last_action_at>=? THEN 1 ELSE 0 END) active7,
-      SUM(CASE WHEN last_action_at>=? THEN 1 ELSE 0 END) active30,
-      SUM(CASE WHEN COALESCE(last_action_at,0)<? THEN 1 ELSE 0 END) inactive30,
+      SUM(CASE WHEN last_interaction_at>=? THEN 1 ELSE 0 END) active1,
+      SUM(CASE WHEN last_interaction_at>=? THEN 1 ELSE 0 END) active7,
+      SUM(CASE WHEN last_interaction_at>=? THEN 1 ELSE 0 END) active30,
+      SUM(CASE WHEN COALESCE(last_interaction_at,0)<? THEN 1 ELSE 0 END) inactive30,
       SUM(CASE WHEN bot_contact_status='blocked' THEN 1 ELSE 0 END) blocked,
       SUM(CASE WHEN COALESCE(bot_contact_status,'unknown')='unknown' THEN 1 ELSE 0 END) unknown
       FROM users WHERE user_id>0""", (now-30*86400,now-86400,now-7*86400,now-30*86400,now-30*86400))
@@ -8593,7 +8594,7 @@ async def admin_users_list(callback: CallbackQuery):
     total = int(count['c'] or 0)
     page_size=10
     if page*page_size>=total and total: page=max(0,(total-1)//page_size)
-    rows = await db_fetchall(f"SELECT user_id,username,full_name,created_at,last_action_at FROM users WHERE {where} ORDER BY created_at DESC LIMIT ? OFFSET ?", params+(page_size,page*page_size))
+    rows = await db_fetchall(f"SELECT user_id,username,full_name,created_at,last_interaction_at FROM users WHERE {where} ORDER BY created_at DESC LIMIT ? OFFSET ?", params+(page_size,page*page_size))
     labels={"all":"Все","active":"Активные 30д","inactive":"Неактивные 30д","new":"Новые 30д","verified":"Верифицированные","banned":"Бан администратора","blocked":"Telegram запретил отправку","unknown":"Доставка не проверена"}
     buttons=[]
     for r in rows:
@@ -8613,7 +8614,7 @@ async def admin_users_export(callback: CallbackQuery):
     if not is_admin(callback.from_user.id):
         await callback.answer("Нет доступа",show_alert=True)
         return
-    rows=await db_fetchall("""SELECT u.user_id,u.username,u.full_name,u.created_at,u.last_action_at,
+    rows=await db_fetchall("""SELECT u.user_id,u.username,u.full_name,u.created_at,u.last_interaction_at,
       u.is_verified,u.is_banned,u.is_cargo,u.bot_contact_status,u.bot_contact_checked_at,u.acquisition_source,
       (SELECT COUNT(*) FROM posts p WHERE p.user_id=u.user_id) posts_total,
       (SELECT COUNT(*) FROM posts p WHERE p.user_id=u.user_id AND p.status='active' AND (p.expires_at IS NULL OR p.expires_at>?)) posts_active,
@@ -8628,7 +8629,7 @@ async def admin_users_export(callback: CallbackQuery):
         v=str(v or '')
         return "'"+v if v.startswith(('=','+','-','@','\t','\r')) else v
     for r in rows:
-        writer.writerow([r['user_id'],safe(r['username']),safe(r['full_name']),dt(r['created_at']),dt(r['last_action_at']),r['is_verified'],r['is_banned'],r['is_cargo'],r['posts_total'],r['posts_active'],r['subscriptions'],r['completed_deals'],r['bot_contact_status'],dt(r['bot_contact_checked_at']),safe(r['acquisition_source'])])
+        writer.writerow([r['user_id'],safe(r['username']),safe(r['full_name']),dt(r['created_at']),dt(r['last_interaction_at']),r['is_verified'],r['is_banned'],r['is_cargo'],r['posts_total'],r['posts_active'],r['subscriptions'],r['completed_deals'],r['bot_contact_status'],dt(r['bot_contact_checked_at']),safe(r['acquisition_source'])])
     payload=('\ufeff'+output.getvalue()).encode('utf-8')
     await callback.message.answer_document(BufferedInputFile(payload,filename=f"poputchik_users_{datetime.utcnow():%Y%m%d}.csv"),caption=f"📥 Экспорт: {len(rows)} пользователей. CSV открывается в Excel (разделитель — точка с запятой).")
     await callback.answer()
@@ -10671,7 +10672,7 @@ class UserActivityMiddleware(BaseMiddleware):
             try:
                 # Only update existing users; onboarding/registration logic stays unchanged.
                 ts = now_ts()
-                await db_execute("UPDATE users SET last_action_at=?, bot_contact_status='reachable', bot_contact_checked_at=?, bot_contact_error=NULL WHERE user_id=?", (ts, ts, user.id))
+                await db_execute("UPDATE users SET last_interaction_at=?, bot_contact_status='reachable', bot_contact_checked_at=?, bot_contact_error=NULL WHERE user_id=?", (ts, ts, user.id))
                 # Daily counters avoid retaining message contents and raw search queries.
                 kind = ('callbacks' if isinstance(event, CallbackQuery) else
                         'inline_searches' if isinstance(event, InlineQuery) else 'messages')

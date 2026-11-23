@@ -354,15 +354,11 @@ EDIT_FIELD_PROMPTS = {
 }
 
 WELCOME_TEXT = (
-    "👋 <b>Привет.</b>\n\n"
-    "Это <b>Попутчик Китай</b> — сервис для передачи посылок <b>из Китая и в Китай</b> через попутчиков.\n\n"
-    "<b>Здесь можно отправить свою посылку или взять чужую по маршруту.</b>\n\n"
-    "🔎 <b>Обязательно подпишись на канал с объявлениями:</b>\n"
-    "👉 <a href='https://t.me/china_poputchik'>Открыть канал</a>\n\n"
-   "🤖 Я сам ищу для вас подходящие совпадения и уведомляю, когда они появляются.\n\n"
-   "В правом углу поисковой строки есть квадратик с 4-мя кружочками — нажми — это твой центр управления ботом.\n\n"
-    "⬇️ <b>Синяя кнопка МЕНЮ — это только лишь меню с базовыми командами бота</b>"
+    "👋 <b>Попутчик Китай</b>\n\n"
+    "Здесь можно отправить посылку или найти попутчика, который летит нужным маршрутом.\n\n"
+    "⬇️ Выберите действие в меню ниже."
 )
+
 ONBOARDING_TEXTS = {
     1: (
         "👋 <b>Добро пожаловать в Попутчик Китай</b>\n\n"
@@ -384,17 +380,7 @@ ONBOARDING_TEXTS = {
     "Система <b>сама находит пользователей с подходящими маршрутами, пока вы пьете свой лате.</b>"
     ),
 
-    3: (
-        "📢 <b>Все объявления публикуются в канале</b>\n\n"
-        "Каждая поездка и каждая посылка\n"
-        "автоматически публикуются в нашем канале.\n\n"
-        "Это основной поток объявлений сервиса.\n\n"
-        "ОБЯЗАТЕЛЬНО ПОДПИШИСЬ на канал,чтобы:\n\n"
-        "🔔 моментально видеть новые маршруты\n"
-        "⚡ писать пользователям первым\n"
-        "📦 быстрее находить попутчиков\n\n"
-        "👉 <a href='https://t.me/china_poputchik'>Открыть канал</a>"
-    ),
+
 }
 
 def onboarding_next_kb(screen: int):
@@ -5857,7 +5843,7 @@ async def channel_intro_check(callback: CallbackQuery, bot: Bot):
         status = str(member.status).lower()
         joined = status in {"member", "administrator", "creator", "owner"} or (status == "restricted" and bool(getattr(member, "is_member", False)))
         await db_execute("UPDATE users SET channel_membership_checked_at=?, channel_membership_status=? WHERE user_id=?", (now_ts(), "member" if joined else "not_member", callback.from_user.id))
-        await callback.answer("✅ Вы подписаны! Спасибо!" if joined else "Вы пока не подписаны. Откройте канал по кнопке выше.", show_alert=True)
+        await callback.answer("✅ Вы подписаны! Спасибо! Нажмите «Продолжить в боте»." if joined else "Вы пока не подписаны. Откройте канал по кнопке выше.", show_alert=True)
     except Exception:
         logger.exception("Channel membership check failed")
         await callback.answer("Не удалось проверить подписку. Продолжить пользоваться ботом можно без проверки.", show_alert=True)
@@ -6007,28 +5993,16 @@ async def start_handler(message: Message, state: FSMContext):
 @router.callback_query(F.data.startswith("onboarding_next:"))
 async def onboarding_next_handler(callback: CallbackQuery, state: FSMContext):
     try:
-        current = int(callback.data.split(":")[1])
-    except Exception:
+        current = int(callback.data.split(":", 1)[1])
+    except (ValueError, IndexError):
         await callback.answer("Ошибка", show_alert=True)
         return
 
     next_screen = current + 1
-    if next_screen > 6:
-        next_screen = 6
-
-    state_map = {
-        1: OnboardingFlow.screen_1,
-        2: OnboardingFlow.screen_2,
-        3: OnboardingFlow.screen_3,
-        4: OnboardingFlow.screen_4,
-        5: OnboardingFlow.screen_5,
-        6: OnboardingFlow.screen_6,
-    }
-
-    if next_screen == 6:
-        await set_onboarding_completed(callback.from_user.id)
-
-    await state.set_state(state_map[next_screen])
+    if current not in ONBOARDING_TEXTS or next_screen not in ONBOARDING_TEXTS:
+        await callback.answer("Ознакомление уже завершено.")
+        return
+    await state.set_state(getattr(OnboardingFlow, f"screen_{next_screen}"))
     await show_onboarding_screen(callback.message, next_screen)
     await callback.answer()
 

@@ -944,6 +944,9 @@ async def init_db():
         await ensure_column(conn, "users", "bot_contact_error", "bot_contact_error TEXT")
         await ensure_column(conn, "users", "acquisition_source", "acquisition_source TEXT")
         await ensure_column(conn, "users", "first_start_at", "first_start_at INTEGER")
+        await ensure_column(conn, "users", "channel_intro_seen_at", "channel_intro_seen_at INTEGER")
+        await ensure_column(conn, "users", "channel_membership_checked_at", "channel_membership_checked_at INTEGER")
+        await ensure_column(conn, "users", "channel_membership_status", "channel_membership_status TEXT")
         await conn.execute("""CREATE TABLE IF NOT EXISTS user_activity_days (
             user_id INTEGER NOT NULL, day_utc TEXT NOT NULL,
             messages INTEGER NOT NULL DEFAULT 0, callbacks INTEGER NOT NULL DEFAULT 0,
@@ -5799,6 +5802,75 @@ async def global_main_menu_router(message: Message, state: FSMContext):
         return
         
 
+# One-time channel discovery: optional, never blocks core bot functions.
+CHANNEL_LINK = "https://t.me/china_poputchik"
+
+def channel_discovery_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔥 Открыть канал с объявлениями", url=CHANNEL_LINK)],
+        [InlineKeyboardButton(text="✅ Проверить подписку", callback_data="channel_intro:check")],
+        [InlineKeyboardButton(text="➡️ Продолжить в боте", callback_data="channel_intro:continue")],
+    ])
+
+async def channel_discovery_if_new(message: Message) -> bool:
+    row = await db_fetchone("SELECT channel_intro_seen_at FROM users WHERE user_id=?", (message.from_user.id,))
+    if row and row["channel_intro_seen_at"]:
+        return False
+    # Existing channel members should never see the discovery prompt.
+    # On an API/configuration error, do not assume they are unsubscribed.
+    if CHANNEL_USERNAME:
+        try:
+            member = await message.bot.get_chat_member(CHANNEL_USERNAME, message.from_user.id)
+            status = str(member.status).lower()
+            joined = status in {"member", "administrator", "creator", "owner"} or (status == "restricted" and bool(getattr(member, "is_member", False)))
+            await db_execute(
+                "UPDATE users SET channel_membership_checked_at=?, channel_membership_status=? WHERE user_id=?",
+                (now_ts(), "member" if joined else "not_member", message.from_user.id),
+            )
+            if joined:
+                await db_execute("UPDATE users SET channel_intro_seen_at=? WHERE user_id=?", (now_ts(), message.from_user.id))
+                return False
+        except Exception:
+            logger.exception("Could not check channel membership before showing discovery")
+            return False
+    else:
+        # A missing channel ID is not proof that a user is unsubscribed.
+        logger.warning("CHANNEL_USERNAME missing: skipping channel discovery prompt")
+        return False
+    await db_execute("UPDATE users SET channel_intro_seen_at=? WHERE user_id=?", (now_ts(), message.from_user.id))
+    await message.answer(
+        "🔥 <b>Где смотреть все объявления?</b>\n\n"
+        "В Telegram-канале <b>Попутчик Китай</b> публикуются все новые поездки и посылки. "
+        "Подпишитесь, чтобы видеть предложения в ленте и не пропускать подходящие маршруты.\n\n"
+        "Бот также работает без подписки: здесь можно создавать объявления и искать совпадения.",
+        reply_markup=channel_discovery_kb(),
+    )
+    return True
+
+@router.callback_query(F.data == "channel_intro:check")
+async def channel_intro_check(callback: CallbackQuery, bot: Bot):
+    if not CHANNEL_USERNAME:
+        await callback.answer("Проверка подписки пока не настроена. Канал можно открыть по кнопке выше.", show_alert=True)
+        return
+    try:
+        member = await bot.get_chat_member(CHANNEL_USERNAME, callback.from_user.id)
+        status = str(member.status).lower()
+        joined = status in {"member", "administrator", "creator", "owner"} or (status == "restricted" and bool(getattr(member, "is_member", False)))
+        await db_execute("UPDATE users SET channel_membership_checked_at=?, channel_membership_status=? WHERE user_id=?", (now_ts(), "member" if joined else "not_member", callback.from_user.id))
+        await callback.answer("✅ Вы подписаны! Спасибо!" if joined else "Вы пока не подписаны. Откройте канал по кнопке выше.", show_alert=True)
+    except Exception:
+        logger.exception("Channel membership check failed")
+        await callback.answer("Не удалось проверить подписку. Продолжить пользоваться ботом можно без проверки.", show_alert=True)
+
+@router.callback_query(F.data == "channel_intro:continue")
+async def channel_intro_continue(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    if not await is_onboarding_completed(callback.from_user.id):
+        await state.set_state(OnboardingFlow.screen_1)
+        await show_onboarding_screen(callback.message, 1)
+    else:
+        await callback.message.answer("Выберите действие в меню ниже.", reply_markup=main_menu(callback.from_user.id))
+
 @router.message(CommandStart())
 async def start_handler(message: Message, state: FSMContext):
     try:
@@ -5910,6 +5982,9 @@ async def start_handler(message: Message, state: FSMContext):
                 row,
                 prefix_text="📤 Открыто объявление по ссылке:"
             )
+            return
+
+        if await channel_discovery_if_new(message):
             return
 
         if not await is_onboarding_completed(message.from_user.id):

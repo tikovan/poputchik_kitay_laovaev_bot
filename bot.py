@@ -5788,74 +5788,86 @@ async def global_main_menu_router(message: Message, state: FSMContext):
         return
         
 
-# One-time channel discovery: optional, never blocks core bot functions.
+# Required channel membership gate. No permanent "seen" bypass.
 CHANNEL_LINK = "https://t.me/china_poputchik"
 
 def channel_discovery_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔥 Открыть канал с объявлениями", url=CHANNEL_LINK)],
+        [InlineKeyboardButton(text="🔥 Подписаться на канал", url=CHANNEL_LINK)],
         [InlineKeyboardButton(text="✅ Проверить подписку", callback_data="channel_intro:check")],
-        [InlineKeyboardButton(text="➡️ Продолжить в боте", callback_data="channel_intro:continue")],
     ])
 
+CHANNEL_GATE_TEXT = (
+    "🔥 <b>Чтобы пользоваться «Попутчик Китай», подпишитесь на наш канал.</b>\n\n"
+    "Там публикуются все новые поездки и посылки. "
+    "После подписки нажмите «✅ Проверить подписку», и бот откроет меню."
+)
+
+async def channel_membership(bot: Bot, user_id: int) -> Optional[bool]:
+    if not CHANNEL_USERNAME:
+        logger.error("CHANNEL_USERNAME is not configured; membership gate cannot verify")
+        return None
+    try:
+        member = await bot.get_chat_member(CHANNEL_USERNAME, user_id)
+        status = getattr(member.status, "value", str(member.status)).lower()
+        joined = status in {"member", "administrator", "creator", "owner"} or (
+            status == "restricted" and bool(getattr(member, "is_member", False))
+        )
+        await db_execute(
+            "UPDATE users SET channel_membership_checked_at=?, channel_membership_status=? WHERE user_id=?",
+            (now_ts(), "member" if joined else "not_member", user_id),
+        )
+        return joined
+    except Exception:
+        logger.exception("Cannot verify channel membership for user %s", user_id)
+        return None
+
 async def channel_discovery_if_new(message: Message) -> bool:
-    row = await db_fetchone("SELECT channel_intro_seen_at FROM users WHERE user_id=?", (message.from_user.id,))
-    if row and row["channel_intro_seen_at"]:
-        return False
-    # Existing channel members should never see the discovery prompt.
-    # On an API/configuration error, do not assume they are unsubscribed.
-    if CHANNEL_USERNAME:
-        try:
-            member = await message.bot.get_chat_member(CHANNEL_USERNAME, message.from_user.id)
-            status = str(member.status).lower()
-            joined = status in {"member", "administrator", "creator", "owner"} or (status == "restricted" and bool(getattr(member, "is_member", False)))
-            await db_execute(
-                "UPDATE users SET channel_membership_checked_at=?, channel_membership_status=? WHERE user_id=?",
-                (now_ts(), "member" if joined else "not_member", message.from_user.id),
-            )
-            if joined:
-                await db_execute("UPDATE users SET channel_intro_seen_at=? WHERE user_id=?", (now_ts(), message.from_user.id))
-                return False
-        except Exception:
-            logger.exception("Could not check channel membership before showing discovery")
-            return False
-    else:
-        # A missing channel ID is not proof that a user is unsubscribed.
-        logger.warning("CHANNEL_USERNAME missing: skipping channel discovery prompt")
-        return False
-    await db_execute("UPDATE users SET channel_intro_seen_at=? WHERE user_id=?", (now_ts(), message.from_user.id))
-    await message.answer(
-        "🔥 <b>Где смотреть все объявления?</b>\n\n"
-        "В Telegram-канале <b>Попутчик Китай</b> публикуются все новые поездки и посылки. "
-        "Подпишитесь, чтобы видеть предложения в ленте и не пропускать подходящие маршруты.\n\n"
-        "Бот также работает без подписки: здесь можно создавать объявления и искать совпадения.",
-        reply_markup=channel_discovery_kb(),
-    )
-    return True
+    # Membership is checked by ChannelGateMiddleware for every private interaction.
+    return False
 
 @router.callback_query(F.data == "channel_intro:check")
-async def channel_intro_check(callback: CallbackQuery, bot: Bot):
-    if not CHANNEL_USERNAME:
-        await callback.answer("Проверка подписки пока не настроена. Канал можно открыть по кнопке выше.", show_alert=True)
+async def channel_intro_check(callback: CallbackQuery, bot: Bot, state: FSMContext):
+    joined = await channel_membership(bot, callback.from_user.id)
+    if joined is None:
+        await callback.answer("Не удалось проверить подписку. Попробуйте позже или обратитесь в поддержку.", show_alert=True)
         return
-    try:
-        member = await bot.get_chat_member(CHANNEL_USERNAME, callback.from_user.id)
-        status = str(member.status).lower()
-        joined = status in {"member", "administrator", "creator", "owner"} or (status == "restricted" and bool(getattr(member, "is_member", False)))
-        await db_execute("UPDATE users SET channel_membership_checked_at=?, channel_membership_status=? WHERE user_id=?", (now_ts(), "member" if joined else "not_member", callback.from_user.id))
-        await callback.answer("✅ Вы подписаны! Спасибо! Нажмите «Продолжить в боте»." if joined else "Вы пока не подписаны. Откройте канал по кнопке выше.", show_alert=True)
-    except Exception:
-        logger.exception("Channel membership check failed")
-        await callback.answer("Не удалось проверить подписку. Продолжить пользоваться ботом можно без проверки.", show_alert=True)
-
-@router.callback_query(F.data == "channel_intro:continue")
-async def channel_intro_continue(callback: CallbackQuery, state: FSMContext):
-    await callback.answer()
+    if not joined:
+        await callback.answer("Подписка пока не найдена. Подпишитесь на канал и повторите проверку.", show_alert=True)
+        return
+    await callback.answer("✅ Подписка подтверждена!")
     if not await is_onboarding_completed(callback.from_user.id):
         await state.set_state(OnboardingFlow.screen_1)
         await show_onboarding_screen(callback.message, 1)
     else:
-        await callback.message.answer("Выберите действие в меню ниже.", reply_markup=main_menu(callback.from_user.id))
+        await callback.message.answer("✅ Подписка подтверждена. Выберите действие в меню ниже.", reply_markup=main_menu(callback.from_user.id))
+
+class ChannelGateMiddleware(BaseMiddleware):
+    async def __call__(self, handler, event, data):
+        user = getattr(event, "from_user", None)
+        if not user or user.is_bot or not isinstance(event, (Message, CallbackQuery, InlineQuery)):
+            return await handler(event, data)
+        # Channel announcements and admin operations are not user onboarding.
+        if isinstance(event, Message) and event.chat.type != "private":
+            return await handler(event, data)
+        if isinstance(event, CallbackQuery) and (not event.message or event.message.chat.type != "private"):
+            return await handler(event, data)
+        if is_admin(user.id):
+            return await handler(event, data)
+        if isinstance(event, CallbackQuery) and event.data == "channel_intro:check":
+            return await handler(event, data)
+        bot = data.get("bot")
+        joined = await channel_membership(bot, user.id)
+        if joined is True:
+            return await handler(event, data)
+        if isinstance(event, InlineQuery):
+            await event.answer([], cache_time=1, is_personal=True)
+        elif isinstance(event, CallbackQuery):
+            await event.answer("Для продолжения нужна подписка на канал.", show_alert=True)
+            await bot.send_message(user.id, CHANNEL_GATE_TEXT, reply_markup=channel_discovery_kb())
+        else:
+            await event.answer(CHANNEL_GATE_TEXT, reply_markup=channel_discovery_kb())
+        return None
 
 @router.message(CommandStart())
 async def start_handler(message: Message, state: FSMContext):
@@ -10828,8 +10840,11 @@ async def main():
     ])
 
     dp = Dispatcher(storage=MemoryStorage())
+    dp.message.outer_middleware(ChannelGateMiddleware())
     dp.message.outer_middleware(UserActivityMiddleware())
+    dp.callback_query.outer_middleware(ChannelGateMiddleware())
     dp.callback_query.outer_middleware(UserActivityMiddleware())
+    dp.inline_query.outer_middleware(ChannelGateMiddleware())
     dp.inline_query.outer_middleware(UserActivityMiddleware())
     from ai_import import router as ai_import_router
     dp.include_router(ai_import_router)
